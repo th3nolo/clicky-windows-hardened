@@ -262,25 +262,37 @@ class BundledSkillPolicyTests(unittest.TestCase):
                 policy.check_bundled_skills()
 
 
-VALID_BUILD = r'''
-@echo off
-set "EXPECTED_UV_VERSION=0.11.19"
-set "EXPECTED_PYTHON_VERSION=3.12.10"
-if /I "%~1"=="installer" (
-  echo [ERROR] Installer builds are disabled.
-)
-uv lock --check --offline --no-build --no-sources --no-python-downloads
-uv sync --frozen --group build --no-build ^
-  --no-managed-python --no-python-downloads --keyring-provider disabled ^
-  --link-mode copy --no-cache
-uv export --frozen --no-dev --no-emit-project --format cyclonedx1.5
-> "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (
-echo LOCAL TEST ONLY - UNSIGNED - DO NOT DISTRIBUTE
-'''
+VALID_BUILD = (ROOT / "build.bat").read_text(encoding="utf-8")
 VALID_WORKFLOW = r'''
-steps:
-  - name: Validate
-    run: python tools/check_dependency_policy.py --verify-pypi
+name: Dependency policy
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the pinned Python runtime
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12.10"
+          cache: ""
+          check-latest: false
+
+      - name: Validate dependency policy
+        shell: pwsh
+        run: python tools/check_dependency_policy.py --verify-pypi
 '''
 
 
@@ -293,7 +305,174 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
 
     def test_prefix_like_argument_does_not_satisfy_policy(self) -> None:
         tampered = VALID_BUILD.replace("--group build", "--group buildx")
-        with self.assertRaisesRegex(AssertionError, "hardened uv sync"):
+        with self.assertRaisesRegex(AssertionError, "exact reviewed argument"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_command_boundaries_and_expansions_cannot_supply_arguments(self) -> None:
+        insertions = (
+            "& rem",
+            "&& rem",
+            "|| rem",
+            "| rem",
+            ">nul & rem",
+            "%UNREVIEWED_ARGUMENTS%",
+            "--no-frozen",
+        )
+        for insertion in insertions:
+            with self.subTest(insertion=insertion):
+                tampered = VALID_BUILD.replace(
+                    "uv sync --frozen",
+                    f"uv sync {insertion} --frozen",
+                    1,
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "exact reviewed argument"
+                ):
+                    policy.check_build_script(
+                        build_text=tampered,
+                        workflow_text=VALID_WORKFLOW,
+                    )
+
+    def test_required_command_inside_dead_block_is_rejected(self) -> None:
+        sync = (
+            "uv sync --frozen --group build --no-build "
+            "--no-managed-python --no-python-downloads "
+            '--python "%EXPECTED_PYTHON_VERSION%" '
+            '--default-index "%PYPI_INDEX%" --index-strategy first-index '
+            "--keyring-provider disabled --link-mode copy --no-cache"
+        )
+        nested = "if 1==0 (\n  " + sync.replace("\n", "\n  ") + "\n)"
+        tampered = VALID_BUILD.replace(sync, nested)
+        with self.assertRaisesRegex(AssertionError, "top-level uv sync"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_early_top_level_goto_is_rejected(self) -> None:
+        tampered = VALID_BUILD.replace(
+            "uv lock --check", "goto :cleanup\nuv lock --check", 1
+        )
+        with self.assertRaisesRegex(AssertionError, "top-level transfer"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_uv_failure_block_cannot_mask_failure(self) -> None:
+        tampered = VALID_BUILD.replace(
+            "    echo [ERROR] uv.lock does not match pyproject.toml.\n"
+            "    goto :cleanup",
+            "    echo [ERROR] uv.lock does not match pyproject.toml.\n"
+            "    exit /b 0\n"
+            "    goto :cleanup",
+            1,
+        )
+        self.assertNotEqual(tampered, VALID_BUILD)
+        with self.assertRaisesRegex(AssertionError, "exact reviewed fail-closed body"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_unconditional_replacement_for_reviewed_guard_is_rejected(self) -> None:
+        tampered = VALID_BUILD.replace(
+            'if /I "%~1"=="installer" (',
+            "if 1==1 (",
+            1,
+        )
+        with self.assertRaisesRegex(AssertionError, "exact reviewed conditions"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_critical_build_settings_cannot_be_reassigned(self) -> None:
+        cases = (
+            'set "EXPECTED_UV_VERSION=9.9.9"',
+            'set "EXPECTED_PYTHON_VERSION=9.9.9"',
+            'set "PYPI_INDEX=https://attacker.example/simple"',
+        )
+        for reassignment in cases:
+            with self.subTest(reassignment=reassignment):
+                tampered = VALID_BUILD.replace(
+                    "uv lock --check",
+                    f"{reassignment}\nuv lock --check",
+                    1,
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "exactly one reviewed assignment"
+                ):
+                    policy.check_build_script(
+                        build_text=tampered,
+                        workflow_text=VALID_WORKFLOW,
+                    )
+
+    def test_command_name_indirection_is_rejected(self) -> None:
+        variants = (
+            'set "ASSIGN=set"\n!ASSIGN! "EXPECTED_UV_VERSION=9.9.9"',
+            'set "ASSIGN=set"\n%ASSIGN% "EXPECTED_UV_VERSION=9.9.9"',
+            'for %%A in (set) do %%A "EXPECTED_UV_VERSION=9.9.9"',
+        )
+        for commands in variants:
+            with self.subTest(commands=commands):
+                tampered = VALID_BUILD.replace(
+                    "uv lock --check",
+                    f"{commands}\nuv lock --check",
+                    1,
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "exact reviewed build script content"
+                ):
+                    policy.check_build_script(
+                        build_text=tampered,
+                        workflow_text=VALID_WORKFLOW,
+                    )
+
+    def test_caret_obfuscated_build_setting_reassignment_is_rejected(self) -> None:
+        variants = (
+            's^et "EXPECTED_UV_VERSION=9.9.9"',
+            'set^ "EXPECTED_UV_VERSION=9.9.9"',
+            '^set "EXPECTED_UV_VERSION=9.9.9"',
+        )
+        for reassignment in variants:
+            with self.subTest(reassignment=reassignment):
+                tampered = VALID_BUILD.replace(
+                    "uv lock --check",
+                    f"{reassignment}\nuv lock --check",
+                    1,
+                )
+                with self.assertRaisesRegex(AssertionError, "unreviewed caret escaping"):
+                    policy.check_build_script(
+                        build_text=tampered,
+                        workflow_text=VALID_WORKFLOW,
+                    )
+
+    def test_indirect_build_setting_reassignment_is_rejected(self) -> None:
+        tampered = VALID_BUILD.replace(
+            "uv lock --check",
+            'set "TARGET_SETTING=EXPECTED_UV_VERSION"\n'
+            'set "!TARGET_SETTING!=9.9.9"\n'
+            "uv lock --check",
+            1,
+        )
+        with self.assertRaisesRegex(AssertionError, "static variable names"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
+    def test_critical_build_setting_inside_guard_is_rejected(self) -> None:
+        assignment = 'set "EXPECTED_UV_VERSION=0.11.19"'
+        tampered = VALID_BUILD.replace(f"{assignment}\n", "", 1).replace(
+            'if /I "%~1"=="installer" (',
+            f'if /I "%~1"=="installer" (\n  {assignment}',
+            1,
+        )
+        with self.assertRaisesRegex(AssertionError, "top-level preamble"):
             policy.check_build_script(
                 build_text=tampered,
                 workflow_text=VALID_WORKFLOW,
@@ -324,23 +503,138 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
             )
 
     def test_commented_pypi_check_cannot_satisfy_workflow(self) -> None:
-        workflow = r'''
-steps:
-  # run: python tools/check_dependency_policy.py --verify-pypi
-  - run: python tools/check_dependency_policy.py
-'''
-        with self.assertRaisesRegex(AssertionError, "authoritative PyPI"):
+        workflow = VALID_WORKFLOW.replace(
+            "        run: python tools/check_dependency_policy.py --verify-pypi",
+            "        # run: python tools/check_dependency_policy.py --verify-pypi\n"
+            "        run: python tools/check_dependency_policy.py",
+        )
+        with self.assertRaisesRegex(AssertionError, "CI dependency-policy step"):
             policy.check_build_script(
                 build_text=VALID_BUILD,
                 workflow_text=workflow,
             )
 
     def test_inline_comment_cannot_supply_verify_pypi_flag(self) -> None:
-        workflow = r'''
-steps:
-  - run: python tools/check_dependency_policy.py # --verify-pypi
-'''
-        with self.assertRaisesRegex(AssertionError, "authoritative PyPI"):
+        workflow = VALID_WORKFLOW.replace(
+            "        run: python tools/check_dependency_policy.py --verify-pypi",
+            "        run: python tools/check_dependency_policy.py # --verify-pypi",
+        )
+        with self.assertRaisesRegex(AssertionError, "CI dependency-policy step"):
+            policy.check_build_script(
+                build_text=VALID_BUILD,
+                workflow_text=workflow,
+            )
+
+    def test_echo_dead_conditional_and_masked_failure_are_rejected(self) -> None:
+        command = "python tools/check_dependency_policy.py --verify-pypi"
+        variants = (
+            f"echo {command}",
+            f"if ($false) {{ {command} }}",
+            f"{command} || exit 0",
+            f'Write-Output "{command}"',
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                workflow = VALID_WORKFLOW.replace(
+                    f"        run: {command}",
+                    f"        run: {variant}",
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "exact unconditional, unmasked"
+                ):
+                    policy.check_build_script(
+                        build_text=VALID_BUILD,
+                        workflow_text=workflow,
+                    )
+
+    def test_step_or_job_conditions_and_continue_on_error_are_rejected(self) -> None:
+        variants = (
+            VALID_WORKFLOW.replace(
+                "        shell: pwsh",
+                "        if: false\n        shell: pwsh",
+            ),
+            VALID_WORKFLOW.replace(
+                "        shell: pwsh",
+                "        continue-on-error: true\n        shell: pwsh",
+            ),
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                "    if: false\n    runs-on: windows-2022",
+            ),
+        )
+        for workflow in variants:
+            with self.subTest(workflow=workflow):
+                with self.assertRaisesRegex(
+                    AssertionError, "unconditional and unmasked"
+                ):
+                    policy.check_build_script(
+                        build_text=VALID_BUILD,
+                        workflow_text=workflow,
+                    )
+
+    def test_pre_policy_steps_cannot_tamper_with_checker_or_python(self) -> None:
+        policy_step = "      - name: Validate dependency policy"
+        variants = (
+            "      - name: Rewrite the checker\n"
+            "        shell: pwsh\n"
+            "        run: Set-Content tools/check_dependency_policy.py pass\n",
+            "      - name: Shadow Python\n"
+            "        shell: pwsh\n"
+            "        run: Add-Content $env:GITHUB_PATH C:\\untrusted\n",
+        )
+        for prior_step in variants:
+            with self.subTest(prior_step=prior_step):
+                workflow = VALID_WORKFLOW.replace(
+                    policy_step,
+                    prior_step + policy_step,
+                    1,
+                )
+                with self.assertRaisesRegex(
+                    AssertionError, "must begin with the exact reviewed"
+                ):
+                    policy.check_build_script(
+                        build_text=VALID_BUILD,
+                        workflow_text=workflow,
+                    )
+
+    def test_validate_job_cannot_be_made_inert(self) -> None:
+        variants = (
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                "    needs: gate\n    runs-on: windows-2022",
+            )
+            + "\n  gate:\n    if: false\n    runs-on: windows-2022\n    steps: []\n",
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                "    runs-on: self-hosted",
+            ),
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                '    "if": false\n    runs-on: windows-2022',
+            ),
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                "    if : false\n    runs-on: windows-2022",
+            ),
+            VALID_WORKFLOW.replace(
+                "    runs-on: windows-2022",
+                "    <<: {if: false}\n    runs-on: windows-2022",
+            ),
+        )
+        for workflow in variants:
+            with self.subTest(workflow=workflow):
+                with self.assertRaises(AssertionError):
+                    policy.check_build_script(
+                        build_text=VALID_BUILD,
+                        workflow_text=workflow,
+                    )
+
+    def test_trigger_filters_cannot_silently_skip_policy(self) -> None:
+        workflow = VALID_WORKFLOW.replace(
+            "  pull_request:",
+            "  pull_request:\n    paths-ignore: ['**']",
+        )
+        with self.assertRaisesRegex(AssertionError, "exact reviewed workflow envelope"):
             policy.check_build_script(
                 build_text=VALID_BUILD,
                 workflow_text=workflow,

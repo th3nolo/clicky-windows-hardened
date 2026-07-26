@@ -484,27 +484,93 @@ def check_legacy_manifests() -> None:
             fail(f"{filename} must not contain installable requirements")
 
 
-def _batch_commands(text: str) -> tuple[str, ...]:
-    """Return executable logical batch lines, excluding full-line comments."""
-    commands: list[str] = []
+@dataclass(frozen=True)
+class BatchCommand:
+    text: str
+    depth: int
+
+
+EXPECTED_BUILD_SCRIPT_SHA256 = (
+    "d8f3552ea6c9f79f18b8ed9bc8267430ca5ac9b636d238e79952d3713a2ea3fe"
+)
+
+
+_EXPECTED_PRE_EXPORT_GUARDS = (
+    'if /i "%~1"=="installer" (',
+    'if not "%~1"=="" (',
+    "if errorlevel 1 (",
+    'if not "!found_uv_version!"=="%expected_uv_version%" (',
+    'if not exist "pyproject.toml" (',
+    'if not exist "uv.lock" (',
+    'if not exist "clicky.spec" (',
+    'if exist "build" (',
+    'if exist "dist" (',
+    "if errorlevel 1 (",
+    'if exist "!uv_project_environment!" (',
+    "if errorlevel 1 (",
+    "if errorlevel 1 (",
+    "if errorlevel 1 (",
+    'if not exist "dist\\clicky\\clicky.exe" (',
+)
+
+
+def _batch_parenthesis_delta(command: str) -> int:
+    delta = 0
+    quoted = False
+    escaped = False
+    for character in command:
+        if escaped:
+            escaped = False
+            continue
+        if character == "^":
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if not quoted and character == "(":
+            delta += 1
+        elif not quoted and character == ")":
+            delta -= 1
+    if quoted or escaped:
+        fail(f"build.bat contains malformed quoting or escaping: {command!r}")
+    return delta
+
+
+def _batch_command_records(text: str) -> tuple[BatchCommand, ...]:
+    """Return logical batch commands with their surrounding block depth."""
+    records: list[BatchCommand] = []
     pending = ""
+    pending_depth = 0
+    depth = 0
     for physical_line in text.splitlines():
         stripped = physical_line.strip()
         if not stripped:
             continue
         uncommented = stripped.removeprefix("@").lstrip()
-        if uncommented.startswith("::") or re.match(r"(?i)^rem(?:\s|$)", uncommented):
+        if uncommented.startswith("::") or re.match(
+            r"(?i)^rem(?:\s|$)", uncommented
+        ):
             continue
+        if not pending:
+            pending_depth = depth
         continued = stripped.endswith("^")
         fragment = stripped[:-1].rstrip() if continued else stripped
         pending = f"{pending} {fragment}".strip()
         if continued:
             continue
-        commands.append(" ".join(pending.split()))
+        command = " ".join(pending.split())
+        records.append(BatchCommand(command, pending_depth))
+        depth += _batch_parenthesis_delta(command)
+        if depth < 0:
+            fail("build.bat closes a command block that was not open")
         pending = ""
     if pending:
         fail("build.bat ends with an unterminated caret continuation")
-    return tuple(commands)
+    if depth != 0:
+        fail("build.bat contains an unterminated command block")
+    return tuple(records)
+
 
 
 def _strip_unquoted_comment(value: str, marker: str) -> str:
@@ -558,6 +624,152 @@ def _workflow_run_commands(text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
+def _require_authoritative_pypi_step(text: str) -> None:
+    """Require one unconditional, unmasked PyPI policy step in validate."""
+    lines = text.splitlines()
+    effective = [
+        line.rstrip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    try:
+        jobs_index = effective.index("jobs:")
+    except ValueError:
+        fail("CI must retain the exact reviewed workflow envelope")
+    if effective[: jobs_index + 1] != [
+        "name: Dependency policy",
+        "on:",
+        "  push:",
+        "  pull_request:",
+        "permissions:",
+        "  contents: read",
+        "jobs:",
+    ]:
+        fail("CI must retain the exact reviewed workflow envelope")
+
+    try:
+        trigger_index = effective.index("on:")
+        permissions_index = effective.index("permissions:", trigger_index + 1)
+    except ValueError:
+        fail("CI must retain unconditional push and pull_request triggers")
+    if effective[trigger_index:permissions_index] != [
+        "on:",
+        "  push:",
+        "  pull_request:",
+    ]:
+        fail("CI dependency policy triggers must be exactly push and pull_request")
+
+    job_markers = [
+        index for index, line in enumerate(lines) if line.rstrip() == "  validate:"
+    ]
+    if len(job_markers) != 1:
+        fail("CI must contain exactly one validate job")
+    job_start = job_markers[0]
+    job_end = len(lines)
+    for index in range(job_start + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+            job_end = index
+            break
+    job_lines = lines[job_start:job_end]
+    job_envelope = []
+    for line in job_lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        key_match = re.match(
+            r"""^\s*(?P<key>"[^"]*"|'[^']*'|[A-Za-z0-9_-]+)\s*:\s*(?P<value>.*)$""",
+            line,
+        )
+        if key_match is None:
+            if indent == 4:
+                fail("CI validate job contains an unreviewed job-level entry")
+            continue
+        key = key_match.group("key").strip("\"'").casefold()
+        value = _strip_unquoted_comment(key_match.group("value").strip(), "#")
+        if key in {"if", "continue-on-error"}:
+            fail("CI validate job and policy step must be unconditional and unmasked")
+        if indent == 4:
+            job_envelope.append((key, value))
+
+    if job_envelope != [
+        ("runs-on", "windows-2022"),
+        ("timeout-minutes", "5"),
+        ("steps", ""),
+    ]:
+        fail(
+            "CI validate job must use the exact reviewed Windows runner, timeout, "
+            "and direct steps envelope"
+        )
+
+    step_marker = "      - name: Validate dependency policy"
+    step_indexes = [
+        index
+        for index in range(job_start, job_end)
+        if lines[index].rstrip() == step_marker
+    ]
+    if len(step_indexes) != 1:
+        fail("CI validate job must contain exactly one named dependency-policy step")
+    step_start = step_indexes[0]
+    step_end = job_end
+    for index in range(step_start + 1, job_end):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= 6:
+            step_end = index
+            break
+    actual_step = [
+        line.strip()
+        for line in lines[step_start:step_end]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    expected_step = [
+        "- name: Validate dependency policy",
+        "shell: pwsh",
+        "run: python tools/check_dependency_policy.py --verify-pypi",
+    ]
+    if actual_step != expected_step:
+        fail(
+            "CI dependency-policy step must be the exact unconditional, "
+            "unmasked reviewed command"
+        )
+
+    steps_indexes = [
+        index
+        for index in range(job_start, step_start)
+        if lines[index].rstrip() == "    steps:"
+    ]
+    if len(steps_indexes) != 1:
+        fail("CI validate job must retain one direct steps list")
+    actual_prefix = [
+        _strip_unquoted_comment(line.strip(), "#")
+        for line in lines[steps_indexes[0] + 1 : step_end]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    expected_prefix = [
+        "- name: Check out the reviewed revision",
+        f"uses: actions/checkout@{EXPECTED_ACTIONS['actions/checkout']}",
+        "with:",
+        "persist-credentials: false",
+        "- name: Set up the pinned Python runtime",
+        f"uses: actions/setup-python@{EXPECTED_ACTIONS['actions/setup-python']}",
+        "with:",
+        f'python-version: "{EXPECTED_PYTHON}"',
+        'cache: ""',
+        "check-latest: false",
+        "- name: Validate dependency policy",
+        "shell: pwsh",
+        "run: python tools/check_dependency_policy.py --verify-pypi",
+    ]
+    if actual_prefix != expected_prefix:
+        fail(
+            "CI validate job must begin with the exact reviewed checkout, "
+            "Python setup, and dependency-policy steps"
+        )
+
+
 def _batch_command_tokens(command: str) -> tuple[str, ...]:
     """Tokenize the constrained batch commands checked by this policy."""
     tokens: list[str] = []
@@ -582,29 +794,22 @@ def _batch_command_tokens(command: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
-def _contains_token_sequence(
-    tokens: tuple[str, ...], required: tuple[str, ...]
-) -> bool:
-    if not required or len(required) > len(tokens):
-        return False
-    return any(
-        tokens[index : index + len(required)] == required
-        for index in range(len(tokens) - len(required) + 1)
-    )
-
-
 def _require_batch_command(
-    commands: tuple[str, ...],
+    records: tuple[BatchCommand, ...],
     prefix: str,
-    required_arguments: tuple[str, ...],
-) -> None:
+    expected_arguments: tuple[str, ...],
+) -> int:
     prefix_tokens = _batch_command_tokens(prefix)
-    required_tokens = tuple(
-        _batch_command_tokens(argument) for argument in required_arguments
+    expected_tail = tuple(
+        token
+        for argument in expected_arguments
+        for token in _batch_command_tokens(argument)
     )
-    candidates: list[tuple[str, ...]] = []
-    for command in commands:
-        tokens = _batch_command_tokens(command)
+    candidates: list[tuple[int, tuple[str, ...]]] = []
+    for index, record in enumerate(records):
+        if record.depth != 0:
+            continue
+        tokens = _batch_command_tokens(record.text)
         if len(tokens) < len(prefix_tokens):
             continue
         executable_matches = tokens[0] in {
@@ -615,15 +820,144 @@ def _require_batch_command(
             tokens[1 : len(prefix_tokens)] == prefix_tokens[1:]
         )
         if executable_matches and subcommands_match:
-            candidates.append(tokens[len(prefix_tokens) :])
+            candidates.append((index, tokens[len(prefix_tokens) :]))
 
-    if not candidates or not any(
-        all(_contains_token_sequence(candidate, required) for required in required_tokens)
-        for candidate in candidates
+    if len(candidates) != 1 or candidates[0][1] != expected_tail:
+        fail(
+            f"build.bat must contain one top-level {prefix} command with "
+            f"the exact reviewed argument vector: {list(expected_arguments)}"
+        )
+    return candidates[0][0]
+
+
+def _require_immediate_batch_failure_check(
+    records: tuple[BatchCommand, ...],
+    command_index: int,
+    prefix: str,
+    expected_error: str,
+) -> None:
+    check_index = command_index + 1
+    if (
+        check_index >= len(records)
+        or records[check_index].depth != 0
+        or records[check_index].text.casefold() != "if errorlevel 1 ("
+    ):
+        fail(f"{prefix} must be followed immediately by 'if errorlevel 1 ('")
+
+    block_index = check_index + 1
+    block: list[str] = []
+    while block_index < len(records) and records[block_index].depth > 0:
+        record = records[block_index]
+        if record.depth == 1:
+            block.append(record.text.casefold())
+        block_index += 1
+    expected = (expected_error.casefold(), "goto :cleanup", ")")
+    if tuple(block) != expected:
+        fail(f"{prefix} failure block must match the exact reviewed fail-closed body")
+
+
+def _reject_early_top_level_transfers(
+    records: tuple[BatchCommand, ...], last_required_index: int
+) -> None:
+    for record in records[:last_required_index]:
+        if record.depth != 0:
+            continue
+        lowered = record.text.removeprefix("@").casefold()
+        if re.match(r"^(?:goto|call|exit)(?:\s|$)", lowered):
+            fail(
+                "build.bat contains a top-level transfer before dependency "
+                f"validation completes: {record.text}"
+            )
+        if lowered.startswith("if ") and not lowered.endswith("("):
+            fail(
+                "build.bat contains non-block conditional control flow before "
+                f"dependency validation completes: {record.text}"
+            )
+
+
+def _require_reviewed_build_script(text: str) -> None:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    if digest != EXPECTED_BUILD_SCRIPT_SHA256:
+        fail("build.bat must retain the exact reviewed build script content")
+
+
+def _require_reviewed_pre_export_guards(
+    records: tuple[BatchCommand, ...], export_index: int
+) -> None:
+    actual = tuple(
+        record.text.removeprefix("@").casefold()
+        for record in records[:export_index]
+        if record.depth == 0
+        and record.text.removeprefix("@").casefold().startswith("if ")
+    )
+    if actual != _EXPECTED_PRE_EXPORT_GUARDS:
+        fail(
+            "build.bat pre-export guards must match the exact reviewed "
+            "conditions and order"
+        )
+
+
+def _reject_unreviewed_batch_escaping(
+    records: tuple[BatchCommand, ...], last_required_index: int
+) -> None:
+    approved = (
+        'for /f "tokens=2" %%v in (\'uv --version 2^>nul\') '
+        'do set "found_uv_version=%%v"'
+    )
+    for record in records[:last_required_index]:
+        if "^" in record.text and record.text.casefold() != approved:
+            fail(
+                "build.bat contains unreviewed caret escaping before dependency "
+                f"validation completes: {record.text}"
+            )
+
+
+def _reject_indirect_batch_assignments(
+    records: tuple[BatchCommand, ...], last_required_index: int
+) -> None:
+    assignment = re.compile(
+        r'(?i)(?:^|[\s&|()])@?set(?:\s+/(?:a|p))?\s+"?(?P<name>[^=\s"]+)='
+    )
+    for record in records[:last_required_index]:
+        for match in assignment.finditer(record.text):
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", match.group("name")) is None:
+                fail(
+                    "build.bat assignments before dependency validation must use "
+                    f"static variable names: {record.text}"
+                )
+
+
+def _require_single_batch_assignment(
+    records: tuple[BatchCommand, ...], name: str, value: str
+) -> None:
+    assignment = re.compile(
+        rf'(?i)(?:^|[\s&|()])@?set(?:\s+/(?:a|p))?\s+"?{re.escape(name)}='
+    )
+    matches = [
+        (index, record)
+        for index, record in enumerate(records)
+        if assignment.search(record.text)
+    ]
+    first_guard_index = next(
+        (
+            index
+            for index, record in enumerate(records)
+            if record.depth == 0
+            and record.text.removeprefix("@").casefold().startswith("if ")
+        ),
+        len(records),
+    )
+    expected = f'set "{name}={value}"'.casefold()
+    if (
+        len(matches) != 1
+        or matches[0][0] >= first_guard_index
+        or matches[0][1].depth != 0
+        or matches[0][1].text.removeprefix("@").casefold() != expected
     ):
         fail(
-            f"build.bat is missing hardened {prefix} command arguments: "
-            f"{list(required_arguments)}"
+            "build.bat pinned settings must each have exactly one reviewed assignment "
+            f"in the top-level preamble: {name}"
         )
 
 
@@ -635,23 +969,29 @@ def check_build_script(
     text = build_text
     if text is None:
         text = (ROOT / "build.bat").read_text(encoding="utf-8")
-    commands = _batch_commands(text)
-    lowered_commands = tuple(command.lower() for command in commands)
-    required_exact = {
-        f'set "expected_uv_version={EXPECTED_UV.lower()}"',
-        f'set "expected_python_version={EXPECTED_PYTHON.lower()}"',
-    }
-    missing_exact = required_exact - set(lowered_commands)
-    if missing_exact:
-        fail(f"build.bat is missing required pinned settings: {sorted(missing_exact)}")
+    records = _batch_command_records(text)
+    commands = tuple(record.text for record in records)
+    for name, value in (
+        ("EXPECTED_UV_VERSION", EXPECTED_UV),
+        ("EXPECTED_PYTHON_VERSION", EXPECTED_PYTHON),
+        ("PYPI_INDEX", EXPECTED_INDEX),
+    ):
+        _require_single_batch_assignment(records, name, value)
 
-    _require_batch_command(
-        commands,
+    lock_index = _require_batch_command(
+        records,
         "uv lock",
-        ("--check", "--offline", "--no-build", "--no-sources", "--no-python-downloads"),
+        (
+            "--check",
+            "--offline",
+            "--no-build",
+            "--no-sources",
+            "--no-python-downloads",
+            '--python "%EXPECTED_PYTHON_VERSION%"',
+        ),
     )
-    _require_batch_command(
-        commands,
+    sync_index = _require_batch_command(
+        records,
         "uv sync",
         (
             "--frozen",
@@ -659,16 +999,51 @@ def check_build_script(
             "--no-build",
             "--no-managed-python",
             "--no-python-downloads",
+            '--python "%EXPECTED_PYTHON_VERSION%"',
+            '--default-index "%PYPI_INDEX%"',
+            "--index-strategy first-index",
             "--keyring-provider disabled",
             "--link-mode copy",
             "--no-cache",
         ),
     )
-    _require_batch_command(
-        commands,
+    export_index = _require_batch_command(
+        records,
         "uv export",
-        ("--frozen", "--no-dev", "--no-emit-project", "--format cyclonedx1.5"),
+        (
+            "--frozen",
+            "--no-dev",
+            "--no-emit-project",
+            "--format cyclonedx1.5",
+            '--output-file "dist\\Clicky\\sbom.cdx.json"',
+        ),
     )
+    if not lock_index < sync_index < export_index:
+        fail("build.bat dependency commands are not in the reviewed order")
+    _reject_unreviewed_batch_escaping(records, export_index)
+    _reject_indirect_batch_assignments(records, export_index)
+    for command_index, prefix, expected_error in (
+        (
+            lock_index,
+            "uv lock",
+            "echo [ERROR] uv.lock does not match pyproject.toml.",
+        ),
+        (
+            sync_index,
+            "uv sync",
+            "echo [ERROR] Frozen wheel-only dependency sync failed.",
+        ),
+        (
+            export_index,
+            "uv export",
+            "echo [ERROR] CycloneDX SBOM generation failed.",
+        ),
+    ):
+        _require_immediate_batch_failure_check(
+            records, command_index, prefix, expected_error
+        )
+    _require_reviewed_pre_export_guards(records, export_index)
+    _reject_early_top_level_transfers(records, export_index)
     if not any(
         command.lower().startswith("echo ")
         and "installer builds are disabled." in command.lower()
@@ -714,21 +1089,15 @@ def check_build_script(
             fail(f"build.bat invokes or references Inno Setup: {command}")
     if any(re.match(r"(?i)^:build_installer(?:\s|$)", command) for command in commands):
         fail("build.bat contains a disabled installer-build label")
+    _require_reviewed_build_script(text)
 
     workflow = workflow_text
     if workflow is None:
         workflow = (
             ROOT / ".github" / "workflows" / "dependency-policy.yml"
         ).read_text(encoding="utf-8")
+    _require_authoritative_pypi_step(workflow)
     workflow_commands = _workflow_run_commands(workflow)
-    if not any(
-        re.search(
-            r"(?i)(?:^|\s)python(?:\.exe)?\s+tools/check_dependency_policy\.py\s+--verify-pypi(?:\s|$)",
-            command,
-        )
-        for command in workflow_commands
-    ):
-        fail("CI must validate the lock against authoritative PyPI metadata")
     for command in workflow_commands:
         lowered = command.lower()
         if "uv_no_sources" in lowered:
