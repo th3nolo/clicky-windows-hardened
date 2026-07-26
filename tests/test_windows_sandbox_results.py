@@ -10,6 +10,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
+from xml.sax.saxutils import escape
 
 import tools.verify_windows_sandbox_results as verifier
 
@@ -71,7 +72,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>cmd.exe /d /c C:\ClickyInput\windows-sandbox-validate.cmd</Command>
+    <Command>{escape(verifier._EXPECTED_LOGON_COMMAND)}</Command>
   </LogonCommand>
 </Configuration>
 """
@@ -231,7 +232,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
 
 
 class SandboxBootstrapSafetyTests(unittest.TestCase):
-    def test_validator_refuses_host_execution_before_shutdown(self) -> None:
+    def test_host_launchable_validator_never_requests_shutdown(self) -> None:
         script = (
             Path(__file__).resolve().parents[1]
             / "tools"
@@ -240,15 +241,26 @@ class SandboxBootstrapSafetyTests(unittest.TestCase):
         host_guard = 'if /I not "%USERNAME%"=="WDAGUtilityAccount" ('
         self.assertIn(host_guard, script)
         self.assertLess(script.index(host_guard), script.index('set "INPUT='))
-        self.assertEqual(script.count("shutdown.exe /s /t 5"), 1)
-        marker = "\n:shutdown_if_sandbox\n"
-        self.assertIn(marker, script)
-        shutdown_subroutine = script.rpartition(marker)[2]
-        self.assertIn(
-            'if /I "%USERNAME%"=="WDAGUtilityAccount" (',
-            shutdown_subroutine,
+        self.assertNotIn("shutdown.exe", script.casefold())
+        self.assertIn("PASS.pending", script)
+        self.assertNotIn("PASS.txt", script)
+
+    def test_wsb_wrapper_publishes_pass_only_after_shutdown_is_scheduled(self) -> None:
+        command = verifier._EXPECTED_LOGON_COMMAND
+        shutdown_identity = (
+            "$shutdown = [IO.Path]::Combine($env:SystemRoot, "
+            "'System32', 'shutdown.exe')"
         )
-        self.assertIn("shutdown.exe /s /t 5", shutdown_subroutine)
+        shutdown = "& $shutdown /s /t 5"
+        publish = (
+            "Move-Item -LiteralPath 'C:\\ValidationOutput\\PASS.pending' "
+            "-Destination 'C:\\ValidationOutput\\PASS.txt'"
+        )
+        self.assertIn(shutdown_identity, command)
+        self.assertIn(shutdown, command)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { exit 90 }", command)
+        self.assertIn(publish, command)
+        self.assertLess(command.index(shutdown), command.index(publish))
 
 
 if __name__ == "__main__":

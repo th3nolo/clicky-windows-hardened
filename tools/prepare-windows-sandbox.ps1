@@ -201,7 +201,7 @@ try {
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>cmd.exe /d /c C:\ClickyInput\windows-sandbox-validate.cmd</Command>
+    <Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -NonInteractive -Command "&amp; 'C:\ClickyInput\windows-sandbox-validate.cmd'; `$validationExit = `$LASTEXITCODE; `$shutdown = [IO.Path]::Combine(`$env:SystemRoot, 'System32', 'shutdown.exe'); &amp; `$shutdown /s /t 5 *&gt; `$null; if (`$LASTEXITCODE -ne 0) { exit 90 }; if (`$validationExit -ne 0) { exit `$validationExit }; Move-Item -LiteralPath 'C:\ValidationOutput\PASS.pending' -Destination 'C:\ValidationOutput\PASS.txt' -Force -ErrorAction Stop; exit 0"</Command>
   </LogonCommand>
 </Configuration>
 "@

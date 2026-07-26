@@ -50,6 +50,19 @@ _INPUT_LIMITS = {
     "windows-sandbox-validate.cmd": 1024 * 1024,
 }
 _EDGE_TTS_HOST = "speech.platform.bing.com"
+_EXPECTED_LOGON_COMMAND = (
+    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
+    r"-NoLogo -NoProfile -NonInteractive -Command \""
+    r"& 'C:\ClickyInput\windows-sandbox-validate.cmd'; "
+    r"$validationExit = $LASTEXITCODE; "
+    r"$shutdown = [IO.Path]::Combine($env:SystemRoot, 'System32', 'shutdown.exe'); "
+    r"& $shutdown /s /t 5 *> $null; "
+    r"if ($LASTEXITCODE -ne 0) { exit 90 }; "
+    r"if ($validationExit -ne 0) { exit $validationExit }; "
+    r"Move-Item -LiteralPath 'C:\ValidationOutput\PASS.pending' "
+    r"-Destination 'C:\ValidationOutput\PASS.txt' -Force -ErrorAction Stop; "
+    r"exit 0\""
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -123,8 +136,7 @@ def _validate_wsb(run_root: Path, input_directory: Path, results: Path) -> None:
     for name, expected in expected_settings.items():
         _require(root.findtext(name) == expected, f"unexpected WSB {name} setting")
     _require(
-        root.findtext("./LogonCommand/Command")
-        == r"cmd.exe /d /c C:\ClickyInput\windows-sandbox-validate.cmd",
+        root.findtext("./LogonCommand/Command") == _EXPECTED_LOGON_COMMAND,
         "unexpected WSB logon command",
     )
 

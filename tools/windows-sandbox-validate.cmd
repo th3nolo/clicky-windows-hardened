@@ -1,10 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM Safety boundary: this validator is destructive only inside Windows Sandbox.
-REM A normal host invocation must stop before touching inputs or requesting shutdown.
+REM Accidental-use guard only. The .wsb LogonCommand owns shutdown because
+REM environment variables are not an authentication boundary for a host script.
 if /I not "%USERNAME%"=="WDAGUtilityAccount" (
-    echo [FAIL] This validator may run only as the Windows Sandbox account.
+    echo [FAIL] This validator may run only from the Windows Sandbox launcher.
     exit /b 4
 )
 
@@ -19,12 +19,10 @@ set "LOG=%OUTPUT%\sandbox-validation.log"
 set "RESULT=1"
 
 if not exist "%OUTPUT%" (
-    call :shutdown_if_sandbox
     exit /b 2
 )
 for /f "delims=" %%F in ('dir /b /a "%OUTPUT%" 2^>nul') do (
     echo [FAIL] Refusing a non-empty validation output directory.
-    call :shutdown_if_sandbox
     exit /b 3
 )
 > "%LOG%" echo Clicky Windows Sandbox validation started
@@ -172,18 +170,9 @@ set "RESULT=0"
 :finish
 if "%RESULT%"=="0" (
     >> "%LOG%" echo [PASS] Windows Sandbox validation completed.
-    > "%OUTPUT%\PASS.txt" echo PASS
+    > "%OUTPUT%\PASS.pending" echo PASS
 ) else (
     >> "%LOG%" echo [FAIL] Windows Sandbox validation stopped.
     > "%OUTPUT%\FAIL.txt" echo FAIL
 )
-call :shutdown_if_sandbox
 exit /b %RESULT%
-
-:shutdown_if_sandbox
-if /I "%USERNAME%"=="WDAGUtilityAccount" (
-    shutdown.exe /s /t 5 >nul 2>&1
-) else (
-    echo [WARN] Shutdown skipped outside Windows Sandbox.
-)
-exit /b 0
