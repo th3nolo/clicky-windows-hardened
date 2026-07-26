@@ -16,6 +16,11 @@ SECURITY STATUS:
 We use --onedir (not --onefile) because faster-whisper and ctranslate2 ship
 large native DLLs. A one-file build extracts those files to a temporary
 directory at every launch, increasing startup time and transient-file surface.
+
+Python modules are also collected as external bytecode instead of an embedded
+PYZ archive. This keeps the executable payload inspectable and avoids presenting
+antivirus engines with a large compressed-code overlay. The exact distribution
+tree and its future signed installer must protect these external files.
 """
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -111,7 +116,7 @@ a = Analysis(
         "notebook", "jupyter", "IPython",
         "torch.distributions", "torch.onnx",
     ],
-    noarchive=False,
+    noarchive=True,              # external bytecode; avoid an opaque PYZ payload
 )
 
 pyz = PYZ(a.pure)

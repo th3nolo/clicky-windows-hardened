@@ -404,6 +404,27 @@ jobs:
 '''
 
 
+class PackagingPolicyTests(unittest.TestCase):
+    def test_packaging_policy_requires_external_python_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "installer.iss").write_bytes((ROOT / "installer.iss").read_bytes())
+            spec = (ROOT / "clicky.spec").read_text(encoding="utf-8")
+            (root / "clicky.spec").write_text(spec, encoding="utf-8")
+
+            with mock.patch.object(policy, "ROOT", root):
+                policy.check_packaging_policy()
+                (root / "clicky.spec").write_text(
+                    spec.replace("noarchive=True", "noarchive=False"),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "keep Python bytecode external and inspectable",
+                ):
+                    policy.check_packaging_policy()
+
+
 class BatchAndWorkflowPolicyTests(unittest.TestCase):
     def test_effective_hardened_commands_are_accepted(self) -> None:
         policy.check_build_script(

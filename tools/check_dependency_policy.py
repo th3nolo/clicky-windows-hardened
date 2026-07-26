@@ -1352,6 +1352,8 @@ def check_packaging_policy() -> None:
         fail("clicky.spec must not load build-time PyInstaller hooks")
     if _literal_keyword(analysis_calls[0], "runtime_hooks") != []:
         fail("clicky.spec must not install runtime hooks")
+    if _literal_keyword(analysis_calls[0], "noarchive") is not True:
+        fail("clicky.spec must keep Python bytecode external and inspectable")
     if _literal_keyword(exe_calls[0], "exclude_binaries") is not True:
         fail("clicky.spec must remain an inspectable one-directory build")
     if _literal_keyword(exe_calls[0], "upx") is not False:
