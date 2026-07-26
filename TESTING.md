@@ -31,7 +31,7 @@ This check validates exact dependency pins, the publication cutoff, the sole ind
 uv run --frozen --no-sync --python "3.12.10" python -m unittest discover -s tests -p "test_*.py" -v
 ~~~
 
-The suite covers dependency policy, URL and IP rejection, redirect handling, connected-peer verification, bounded response reads, skill approvals, DPAPI token storage and migration, privacy defaults, local model resolution, model hashes, and Ollama model identity.
+The suite covers live dependency provenance logic, URL and IP rejection, redirect handling, connected-peer verification, bounded response reads, bundled and user skill integrity, DPAPI token storage and migration, explicit privacy permissions, private audio cleanup, complete local-model hashing, and Ollama model identity.
 
 Network behavior is tested with fakes. A unit test must not make a live external request. Use generated dummy tokens and temporary files only.
 
@@ -78,13 +78,15 @@ Use synthetic screen content, test accounts, and temporary process-scoped keys. 
 ### Privacy defaults
 
 1. Start with no existing `%LOCALAPPDATA%\Clicky\preferences.json`.
-2. Launch Clicky.
-3. Confirm **Web Search** is off in the tray.
-4. Confirm **Journal Logging** is off in the tray.
-5. Ask a local question.
-6. Confirm no `journal.db` is created and no search request occurs.
-7. Enable one toggle, restart, and confirm only that explicit choice persists.
-8. Disable it again and confirm the stored preference changes.
+2. Launch Clicky and confirm the privacy dialog appears before microphone or hotkey capture starts.
+3. Close the dialog and confirm the microphone is unopened, speech is silent, and no screenshot is taken. Restart and confirm the dialog returns.
+4. Choose **Keep all disabled** and confirm all three denials persist.
+5. Grant only microphone permission. Confirm microphone capture works while cloud TTS remains silent and screen capture remains blocked.
+6. Grant cloud TTS using synthetic text and verify only the selected provider destination.
+7. Grant screen capture while displaying synthetic content on every monitor; verify local providers keep images local and the selected cloud provider receives them only after permission.
+8. Confirm **Web Search** and **Journal Logging** are off in the tray and no `journal.db` or search request appears.
+9. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
+10. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
 
 ### Provider keys and preferences
 
@@ -131,11 +133,12 @@ Do not test with code that launches a process, changes system state, or accesses
 Use small generated fixture files for unit tests. For an approved real-model smoke test:
 
 1. Provision the model separately.
-2. Calculate the expected SHA-256.
-3. Confirm the configured file or `model.bin` loads only with the matching digest.
-4. Change the expected digest and confirm loading fails.
-5. Remove or duplicate the cached candidate and confirm resolution fails closed.
-6. Monitor network activity and confirm Clicky does not download a replacement.
+2. For whisper.cpp, hash the selected file. For faster-whisper, compute the whole-directory digest with `python -m audio.stt.local_models <directory>`.
+3. Confirm the configured model loads only with the matching digest.
+4. Change each required faster-whisper file in turn, then add an extra file, and confirm every change invalidates the digest.
+5. Change the expected digest and confirm loading fails.
+6. Remove or duplicate the cached candidate and confirm resolution fails closed.
+7. Monitor network activity and confirm Clicky does not download a replacement.
 
 ### Ollama identity and process behavior
 

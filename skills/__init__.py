@@ -1,7 +1,8 @@
 """
 Skill system for bundled and explicitly approved user extensions.
 
-Bundled skills ship with Clicky. User Python files under ~/.clicky/skills are
+Bundled skills ship with Clicky and must match the signed source manifest. User
+Python files under ~/.clicky/skills are
 disabled unless their filename and SHA-256 digest appear in allowlist.json:
 
     {"version": 1, "approved": {"my_skill.py": "<64 lowercase hex chars>"}}
@@ -22,9 +23,69 @@ from typing import Optional
 
 
 _loaded: list[dict] = []
+_MAX_BUNDLED_SKILL_BYTES = 256 * 1024
 _MAX_USER_SKILL_BYTES = 256 * 1024
 _MAX_ALLOWLIST_BYTES = 64 * 1024
+_BUNDLED_MANIFEST_NAME = "manifest.json"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _bundled_skill_manifest_path() -> Path:
+    return Path(__file__).parent / _BUNDLED_MANIFEST_NAME
+
+
+def _verified_bundled_skill_sources() -> list[tuple[Path, bytes, str]]:
+    """Return bundled skill bytes only when the complete manifest matches."""
+    directory = Path(__file__).parent
+    manifest_path = _bundled_skill_manifest_path()
+    try:
+        if (
+            manifest_path.is_symlink()
+            or manifest_path.stat().st_size > _MAX_ALLOWLIST_BYTES
+        ):
+            return []
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return []
+        manifest = payload.get("files")
+        if not isinstance(manifest, dict) or not manifest:
+            return []
+        approved: dict[str, str] = {}
+        for filename, digest in manifest.items():
+            if (
+                not isinstance(filename, str)
+                or Path(filename).name != filename
+                or filename.startswith("_")
+                or not filename.endswith(".py")
+                or not isinstance(digest, str)
+                or not _SHA256_RE.fullmatch(digest.lower())
+            ):
+                return []
+            approved[filename] = digest.lower()
+
+        bundled = {
+            path.name: path
+            for path in directory.glob("*.py")
+            if not path.name.startswith("_")
+        }
+        if set(bundled) != set(approved):
+            return []
+
+        verified: list[tuple[Path, bytes, str]] = []
+        for filename in sorted(bundled):
+            path = bundled[filename]
+            if path.is_symlink() or path.stat().st_size > _MAX_BUNDLED_SKILL_BYTES:
+                return []
+            source = path.read_bytes()
+            if len(source) > _MAX_BUNDLED_SKILL_BYTES:
+                return []
+            actual = hashlib.sha256(source).hexdigest()
+            if not hmac.compare_digest(actual, approved[filename]):
+                return []
+            verified.append((path, source, actual))
+        return verified
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
 
 
 def _user_skills_dir() -> Path:
@@ -68,10 +129,8 @@ def load_all() -> list[dict]:
     global _loaded
     _loaded = []
 
-    here = Path(__file__).parent
-    for skill_path in sorted(here.glob("*.py")):
-        if not skill_path.name.startswith("_"):
-            _try_import(skill_path)
+    for skill_path, source, digest in _verified_bundled_skill_sources():
+        _try_import(skill_path, source=source, digest=digest)
 
     user_dir = _user_skills_dir()
     approvals = _approved_user_skills()

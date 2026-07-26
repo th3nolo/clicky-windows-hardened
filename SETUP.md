@@ -110,31 +110,39 @@ $env:WHISPERCPP_MODEL = "C:\Models\whisper\ggml-base.bin"
 $env:WHISPERCPP_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 $env:WHISPERCPP_MODEL).Hash.ToLowerInvariant()
 ~~~
 
-For faster-whisper, the configured directory must contain `config.json`, `model.bin`, and `tokenizer.json`. Configure the reviewed `model.bin` hash:
+For faster-whisper, the configured directory must contain `config.json`, `model.bin`, and `tokenizer.json`. Clicky hashes every regular file, its relative path, and its size into one deterministic directory digest. Review the directory first, ensure it contains no symlinks, then compute the exact value with the pinned interpreter:
 
 ~~~powershell
-$env:WHISPER_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 "C:\Models\faster-whisper-base\model.bin").Hash.ToLowerInvariant()
+$modelDir = "C:\Models\faster-whisper-base"
+$env:WHISPER_MODEL_SHA256 = (& uv run --frozen --no-sync --python "3.12.10" python -m audio.stt.local_models $modelDir).Trim()
 ~~~
 
-The model directory or reviewed cache snapshot must match the selected `whisper_model` preference.
+The complete model directory or reviewed cache snapshot must match the selected `whisper_model` preference. Adding, removing, renaming, or changing any file invalidates the digest.
 
-Wake-word recognition is optional. Push-to-talk still works when it is unavailable. To enable it, provide a complete local faster-whisper model directory and its `model.bin` hash:
+Wake-word recognition is optional. Push-to-talk still works when it is unavailable. To enable it, provide and hash a separate complete faster-whisper directory:
 
 ~~~powershell
 $env:CLICKY_WAKE_MODEL = "C:\Models\faster-whisper-tiny-en"
-$env:CLICKY_WAKE_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 "$env:CLICKY_WAKE_MODEL\model.bin").Hash.ToLowerInvariant()
+$env:CLICKY_WAKE_MODEL_SHA256 = (& uv run --frozen --no-sync --python "3.12.10" python -m audio.stt.local_models $env:CLICKY_WAKE_MODEL).Trim()
 ~~~
 
 A missing or mismatched digest disables that local model instead of downloading a replacement.
 
 ## Privacy defaults
 
-Web search and journal logging start off. Enable either feature explicitly from the tray only after reviewing its data flow. The choice is then stored as a non-secret preference.
+On first launch, microphone access, cloud text-to-speech, and screen capture are independent unchecked permissions. Closing the dialog grants nothing. Choosing **Keep all disabled** records an intentional denial; reopen it through **Tray → Setup & Diagnostics → Privacy permissions**.
+
+- Microphone permission allows the continuous local wake-word stream and push-to-talk capture.
+- Cloud TTS permission sends assistant response text to Microsoft Edge TTS, OpenAI, or ElevenLabs, depending on the selected provider.
+- Screen permission captures every monitor. Images stay local with Ollama or LM Studio and are sent to the selected cloud AI provider otherwise. The window-title Privacy Guard is heuristic only.
+- Temporary WAV files use a private per-user directory and are removed after use; a startup sweep removes crash leftovers from terminated processes.
+
+Web search and journal logging also start off. Enable either feature explicitly from the tray only after reviewing its data flow.
 
 - Web search sends the search text to DuckDuckGo or Tavily and fetches public result pages.
 - Journal logging stores question, answer, active application, and window-title context in `%LOCALAPPDATA%\Clicky\journal.db`.
 
-Cloud AI and speech providers receive request data needed for their feature. Use test content until provider behavior and account settings have been reviewed.
+Cloud providers receive the request data described above. Use synthetic test content until provider behavior and account settings have been reviewed.
 
 ## Run from source
 

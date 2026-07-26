@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from privacy_controls import PRIVACY_NOTICE_VERSION
+
 
 _PREFERENCES_VERSION = 1
 _MAX_PREFERENCES_BYTES = 64 * 1024
@@ -24,7 +26,13 @@ _PREFERENCE_STRING_LIMITS = {
     "hotkey": 128,
     "stt_provider": 32,
 }
-_PREFERENCE_BOOL_KEYS = {"journal_enabled", "web_search_enabled"}
+_PREFERENCE_BOOL_KEYS = {
+    "journal_enabled",
+    "web_search_enabled",
+    "microphone_consent",
+    "cloud_tts_consent",
+    "screen_capture_consent",
+}
 _PREFERENCES_LOCK = threading.Lock()
 
 
@@ -51,6 +59,13 @@ def _sanitize_preferences(values) -> dict:
         value = values.get(key)
         if isinstance(value, bool):
             clean[key] = value
+    notice_version = values.get("privacy_consent_version")
+    if (
+        isinstance(notice_version, int)
+        and not isinstance(notice_version, bool)
+        and 0 <= notice_version <= PRIVACY_NOTICE_VERSION
+    ):
+        clean["privacy_consent_version"] = notice_version
     mic = values.get("mic_device_index")
     if mic is None or (isinstance(mic, int) and not isinstance(mic, bool) and 0 <= mic <= 4096):
         clean["mic_device_index"] = mic
@@ -270,6 +285,18 @@ class Config:
     web_search_enabled: bool = field(
         default_factory=lambda: bool(_preference("web_search_enabled", False))
     )
+    privacy_consent_version: int = field(
+        default_factory=lambda: int(_preference("privacy_consent_version", 0))
+    )
+    microphone_consent: bool = field(
+        default_factory=lambda: bool(_preference("microphone_consent", False))
+    )
+    cloud_tts_consent: bool = field(
+        default_factory=lambda: bool(_preference("cloud_tts_consent", False))
+    )
+    screen_capture_consent: bool = field(
+        default_factory=lambda: bool(_preference("screen_capture_consent", False))
+    )
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
     )
@@ -403,6 +430,33 @@ class Config:
     def set_web_search_enabled(self, enabled: bool) -> None:
         self.web_search_enabled = bool(enabled)
         _save_preferences(web_search_enabled=self.web_search_enabled)
+
+    def set_privacy_permissions(
+        self,
+        *,
+        microphone: bool,
+        cloud_tts: bool,
+        screen_capture: bool,
+        notice_version: int,
+    ) -> None:
+        """Atomically persist explicit privacy choices for the current notice."""
+        if notice_version != PRIVACY_NOTICE_VERSION:
+            raise ValueError("Unsupported privacy notice version")
+        if not all(
+            isinstance(value, bool)
+            for value in (microphone, cloud_tts, screen_capture)
+        ):
+            raise TypeError("Privacy permissions must be booleans")
+        _save_preferences(
+            privacy_consent_version=notice_version,
+            microphone_consent=microphone,
+            cloud_tts_consent=cloud_tts,
+            screen_capture_consent=screen_capture,
+        )
+        self.privacy_consent_version = notice_version
+        self.microphone_consent = microphone
+        self.cloud_tts_consent = cloud_tts
+        self.screen_capture_consent = screen_capture
 
 
 # Singleton

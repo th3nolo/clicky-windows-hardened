@@ -17,6 +17,8 @@ class LocalModelUnavailable(RuntimeError):
 _SAFE_MODEL_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _FASTER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
+_FASTER_DIGEST_DOMAIN = b"clicky-faster-whisper-directory-v1\0"
+_MAX_FASTER_MODEL_FILES = 4096
 
 
 def validate_sha256(value: str, variable_name: str) -> str:
@@ -83,11 +85,83 @@ def _valid_faster_directory(path: Path) -> bool:
     )
 
 
-def _verified_faster_directory(path: Path, expected_sha256: str) -> Path:
+def faster_whisper_directory_sha256(path: Path) -> str:
+    """Hash every regular file in a faster-whisper directory deterministically."""
+    try:
+        if path.is_symlink():
+            raise LocalModelUnavailable(
+                f"Faster-whisper model directories cannot be symlinks: {path}"
+            )
+        resolved = path.resolve(strict=True)
+        files = sorted(
+            (candidate for candidate in resolved.rglob("*") if candidate.is_file()),
+            key=lambda candidate: candidate.relative_to(resolved).as_posix(),
+        )
+    except LocalModelUnavailable:
+        raise
+    except OSError as exc:
+        raise LocalModelUnavailable(
+            f"Could not enumerate faster-whisper model directory {path}: {exc}"
+        ) from exc
+
+    missing = [
+        filename
+        for filename in _FASTER_REQUIRED_FILES
+        if not _nonempty_file(resolved / filename)
+    ]
+    if missing:
+        raise LocalModelUnavailable(
+            "Incomplete faster-whisper model directory; missing non-empty files: "
+            + ", ".join(missing)
+        )
+    if not files or len(files) > _MAX_FASTER_MODEL_FILES:
+        raise LocalModelUnavailable(
+            f"Faster-whisper model directory must contain between 1 and "
+            f"{_MAX_FASTER_MODEL_FILES} regular files: {resolved}"
+        )
+
+    digest = hashlib.sha256()
+    digest.update(_FASTER_DIGEST_DOMAIN)
+    for candidate in files:
+        try:
+            if candidate.is_symlink():
+                raise LocalModelUnavailable(
+                    f"Faster-whisper model files cannot be symlinks: {candidate}"
+                )
+            candidate.resolve(strict=True).relative_to(resolved)
+            relative = candidate.relative_to(resolved).as_posix().encode("utf-8")
+            before = candidate.stat()
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            digest.update(before.st_size.to_bytes(8, "big"))
+            with candidate.open("rb") as model_file:
+                for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            after = candidate.stat()
+        except LocalModelUnavailable:
+            raise
+        except (OSError, ValueError) as exc:
+            raise LocalModelUnavailable(
+                f"Could not hash faster-whisper model file {candidate}: {exc}"
+            ) from exc
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise LocalModelUnavailable(
+                f"Faster-whisper model file changed while it was hashed: {candidate}"
+            )
+    return digest.hexdigest()
+
+
+def _verified_faster_directory(
+    path: Path, expected_sha256: str, variable_name: str
+) -> Path:
     resolved = path.resolve()
-    require_file_sha256(
-        resolved / "model.bin", expected_sha256, "WHISPER_MODEL_SHA256"
-    )
+    normalized = validate_sha256(expected_sha256, variable_name)
+    actual = faster_whisper_directory_sha256(resolved)
+    if not hmac.compare_digest(actual, normalized):
+        raise LocalModelUnavailable(
+            f"SHA-256 mismatch for faster-whisper directory {resolved}. Refusing "
+            f"to load it because its complete contents do not match {variable_name}."
+        )
     return resolved
 
 
@@ -109,10 +183,11 @@ def resolve_faster_whisper_model(
     model_spec: str,
     expected_sha256: str,
     *,
+    digest_variable: str = "WHISPER_MODEL_SHA256",
     cache_roots: Optional[Iterable[Path]] = None,
 ) -> Path:
-    """Resolve a complete local model and verify its model.bin identity."""
-    validate_sha256(expected_sha256, "WHISPER_MODEL_SHA256")
+    """Resolve a local model and verify every file with one directory digest."""
+    validate_sha256(expected_sha256, digest_variable)
     spec = (model_spec or "").strip()
     if not spec:
         raise LocalModelUnavailable(
@@ -122,7 +197,9 @@ def resolve_faster_whisper_model(
 
     explicit = _expanded_path(spec)
     if _valid_faster_directory(explicit):
-        return _verified_faster_directory(explicit, expected_sha256)
+        return _verified_faster_directory(
+            explicit, expected_sha256, digest_variable
+        )
     if _looks_like_path(spec):
         raise LocalModelUnavailable(
             f"The configured faster-whisper model directory is missing or "
@@ -152,7 +229,9 @@ def resolve_faster_whisper_model(
             if revision and _SAFE_MODEL_NAME.fullmatch(revision):
                 referenced = repo / "snapshots" / revision
                 if _valid_faster_directory(referenced):
-                    return _verified_faster_directory(referenced, expected_sha256)
+                    return _verified_faster_directory(
+                        referenced, expected_sha256, digest_variable
+                    )
         snapshots = repo / "snapshots"
         if snapshots.is_dir():
             candidates.extend(
@@ -161,7 +240,9 @@ def resolve_faster_whisper_model(
 
     unique = sorted({candidate.resolve() for candidate in candidates}, key=str)
     if len(unique) == 1:
-        return _verified_faster_directory(unique[0], expected_sha256)
+        return _verified_faster_directory(
+            unique[0], expected_sha256, digest_variable
+        )
     if len(unique) > 1:
         raise LocalModelUnavailable(
             f"Multiple cached snapshots exist for {spec!r}. Select the exact "
@@ -248,3 +329,23 @@ def resolve_whisper_cpp_model(
         f"No local whisper.cpp model was found for {spec!r}. Clicky will not "
         "download it. Provision a verified GGML/GGUF model separately."
     )
+
+
+def _main(argv: Optional[list[str]] = None) -> int:
+    """Print the reviewed digest used for a faster-whisper directory."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Compute Clicky's complete faster-whisper directory digest."
+    )
+    parser.add_argument("directory", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        print(faster_whisper_directory_sha256(args.directory))
+    except LocalModelUnavailable as exc:
+        parser.error(str(exc))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

@@ -31,10 +31,12 @@ in LOGICAL screen pixels, ready to feed directly into the overlay pointer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import threading
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Any, Coroutine, Optional, List, Tuple
 
 log = logging.getLogger("clicky.pointer")
 
@@ -266,19 +268,58 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
 #  TIER 3 — Vision LLM grid fallback (delegated to existing element_locator)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
-    """Last-resort: use the grid-locator path (element_locator.py)."""
+def _run_locator(coroutine: Coroutine[Any, Any, Any]) -> Any:
+    """Run the async locator while preserving this module's synchronous API.
+
+    find_target normally runs outside an asyncio loop. If a caller invokes it
+    from an async context, use a dedicated thread rather than nesting event
+    loops (which Python rejects).
+    """
     try:
-        from ai.element_locator import locate_element  # v1 module
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+
+    result: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coroutine)
+        except BaseException as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
+    """Last-resort: use the Anthropic Computer Use element locator."""
+    try:
+        from ai.element_locator import detect_element
     except ImportError:
         log.warning("element_locator not available — Tier 3 (vision) disabled")
         return None
 
     try:
-        coord = locate_element(query, screenshot, llm_provider)
-        if not coord:
+        detected = _run_locator(detect_element(
+            screenshot_jpeg_b64=screenshot.base64_jpeg,
+            original_width=screenshot.width,
+            original_height=screenshot.height,
+            physical_width=screenshot.physical_width,
+            physical_height=screenshot.physical_height,
+            physical_left=screenshot.physical_left,
+            physical_top=screenshot.physical_top,
+            dpi_scale=screenshot.dpi_scale,
+            screen_index=screenshot.index,
+            user_question=query,
+        ))
+        if not detected:
             return None
-        x, y = coord
+        x, y = detected.x, detected.y
         return Target(
             x=x, y=y, bbox=(x - 20, y - 20, x + 20, y + 20),
             label=query, source="vision",

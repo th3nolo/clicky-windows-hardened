@@ -52,6 +52,7 @@ class TrayManager(QObject):
     on_journal_open       = pyqtSignal()
     on_attach_doc         = pyqtSignal()
     on_run_setup          = pyqtSignal()
+    on_privacy_permissions = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_response_language = pyqtSignal(str)  # "" = auto-detect, else ISO code
@@ -268,6 +269,8 @@ class TrayManager(QObject):
         # ── Setup / Diagnostics ──
         setup_menu = menu.addMenu("Setup && Diagnostics")
         self._build_mic_submenu(setup_menu)
+        privacy_permissions = setup_menu.addAction("Privacy permissions…")
+        privacy_permissions.triggered.connect(self.on_privacy_permissions)
         run_setup = setup_menu.addAction("Run setup wizard again…")
         run_setup.triggered.connect(self.on_run_setup)
         diag = setup_menu.addAction("Save diagnostics report…")

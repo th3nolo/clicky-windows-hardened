@@ -4,7 +4,7 @@ Live model discovery + caching for Claude, OpenAI, and Gemini.
 Each provider exposes a "list models" endpoint we hit on demand:
   • Anthropic:  GET /v1/models                    (key in x-api-key)
   • OpenAI:     GET /v1/models                    (key in Authorization)
-  • Gemini:     GET /v1beta/models?key=...        (key in query)
+  • Gemini:     GET /v1beta/models                (key in x-goog-api-key)
 
 Cached per-provider to %LOCALAPPDATA%\\Clicky\\models_<provider>.json with a
 30-day TTL — long enough that you don't refetch constantly, short enough
@@ -148,7 +148,7 @@ async def _fetch_gemini() -> list[dict]:
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
             "https://generativelanguage.googleapis.com/v1beta/models",
-            params={"key": cfg.google_api_key},
+            headers={"x-goog-api-key": cfg.google_api_key},
         )
     r.raise_for_status()
     data = r.json().get("models", [])

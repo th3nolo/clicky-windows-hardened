@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import tempfile
-import wave
-from pathlib import Path
 from typing import Optional
 
 from audio.capture import pcm16_to_wav, trim_silence
+from audio.secure_temp import secure_wav_file
 from audio.stt.base_stt import BaseSTT
 from audio.stt.local_models import resolve_whisper_cpp_model
 from config import cfg
@@ -66,22 +64,8 @@ class WhisperCppSTT(BaseSTT):
 
     def _sync_transcribe(self, pcm_bytes: bytes) -> str:
         wav_bytes = pcm16_to_wav(pcm_bytes)
-        pcm_bytes = wav_bytes[44:]
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_path = temp_file.name
-        try:
-            with wave.open(temp_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(16000)
-                wav_file.writeframes(pcm_bytes)
+        with secure_wav_file(wav_bytes) as temp_path:
             model = self._load()
             language = cfg.whisper_language or ""
-            segments = model.transcribe(temp_path, language=language)
+            segments = model.transcribe(str(temp_path), language=language)
             return " ".join(segment.text.strip() for segment in segments).strip()
-        finally:
-            try:
-                Path(temp_path).unlink()
-            except Exception:
-                pass

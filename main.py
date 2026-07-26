@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
 from config import cfg
+from audio.secure_temp import initialize_secure_audio_temp
+from privacy_controls import microphone_allowed
 from ui.tray import TrayManager
 from ui.panel import CompanionPanel, AppState
 from ui.overlay import (
@@ -292,6 +294,14 @@ def main():
         _setup_keepalive[0] = wiz
     tray.on_run_setup.connect(_run_setup_again)
 
+    def _run_privacy_permissions():
+        from ui.privacy_consent import request_privacy_permissions
+
+        request_privacy_permissions(force=True)
+        manager.refresh_privacy_permissions()
+
+    tray.on_privacy_permissions.connect(_run_privacy_permissions)
+
     def _save_diagnostics():
         import datetime, json, platform, traceback
         from ai import ollama_bootstrap as ob
@@ -338,6 +348,27 @@ def main():
             tray.show_notification("Diagnostics failed", str(e))
     tray.on_diagnostics.connect(_save_diagnostics)
 
+    # Sensitive capabilities remain off until the current privacy notice has
+    # been accepted. Closing the modal grants nothing and the prompt returns on
+    # the next launch. This runs before microphone or hotkey capture starts.
+    try:
+        from ui.privacy_consent import request_privacy_permissions
+
+        request_privacy_permissions()
+    except Exception as exc:
+        tray.show_notification(
+            "Privacy permissions unavailable",
+            f"Sensitive capabilities remain disabled: {exc}",
+        )
+
+    try:
+        initialize_secure_audio_temp()
+    except Exception as exc:
+        tray.show_notification(
+            "Private audio storage unavailable",
+            f"Local speech transcription will fail closed: {exc}",
+        )
+
     tray.on_quit.connect(lambda: (tray.hide_icon(), manager.shutdown(), app.quit()))
 
     # ── Global hotkey ─────────────────────────────────────────────────────────
@@ -357,9 +388,14 @@ def main():
     manager.start()        # begin ambient mic + wake-word scanning
 
     providers = cfg.describe()
+    input_status = (
+        f"Say 'Clicky' or hold {cfg.hotkey}"
+        if microphone_allowed(cfg)
+        else "Microphone disabled in Privacy permissions"
+    )
     tray.show_notification(
         "Clicky is running",
-        f"Say 'Clicky' or hold {cfg.hotkey}  |  LLM: {providers['llm']}",
+        f"{input_status}  |  LLM: {providers['llm']}",
     )
 
     # ── First-run setup wizard ────────────────────────────────────────────────

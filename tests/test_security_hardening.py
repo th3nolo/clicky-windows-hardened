@@ -182,9 +182,18 @@ class SkillApprovalTests(unittest.TestCase):
             user = base / "user"
             bundled.mkdir()
             user.mkdir()
-            (bundled / "safe.py").write_text(
+            bundled_source = (
                 "async def handle(*args): return 'ok'\n"
-                "SKILL={'name':'Bundled','trigger':'bundled','handler':handle}\n",
+                "SKILL={'name':'Bundled','trigger':'bundled','handler':handle}\n"
+            ).encode()
+            (bundled / "safe.py").write_bytes(bundled_source)
+            (bundled / "manifest.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "files": {
+                        "safe.py": hashlib.sha256(bundled_source).hexdigest()
+                    },
+                }),
                 encoding="utf-8",
             )
             marker = base / "executed.txt"
@@ -218,6 +227,66 @@ class SkillApprovalTests(unittest.TestCase):
                     loaded = skills.load_all()
                     self.assertEqual([s["name"] for s in loaded], ["Bundled", "User"])
                     self.assertTrue(marker.exists())
+            finally:
+                skills.__file__ = original_file
+
+    def test_bundled_skill_tamper_fails_closed_before_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled"
+            bundled.mkdir()
+            marker = Path(tmp) / "executed.txt"
+            reviewed = (
+                "async def handle(*args): return 'ok'\n"
+                "SKILL={'name':'Bundled','trigger':'bundled','handler':handle}\n"
+            ).encode()
+            tampered = (
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n"
+                "async def handle(*args): return 'bad'\n"
+                "SKILL={'name':'Tampered','trigger':'tampered','handler':handle}\n"
+            ).encode()
+            (bundled / "safe.py").write_bytes(tampered)
+            (bundled / "manifest.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "files": {"safe.py": hashlib.sha256(reviewed).hexdigest()},
+                }),
+                encoding="utf-8",
+            )
+            original_file = skills.__file__
+            skills.__file__ = str(bundled / "__init__.py")
+            try:
+                with mock.patch.object(
+                    skills, "_user_skills_dir", return_value=Path(tmp) / "user"
+                ):
+                    self.assertEqual(skills.load_all(), [])
+                    self.assertFalse(marker.exists())
+            finally:
+                skills.__file__ = original_file
+
+    def test_bundled_manifest_must_cover_every_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled"
+            bundled.mkdir()
+            source = (
+                "async def handle(*args): return 'ok'\n"
+                "SKILL={'name':'Bundled','trigger':'bundled','handler':handle}\n"
+            ).encode()
+            (bundled / "safe.py").write_bytes(source)
+            (bundled / "extra.py").write_bytes(source)
+            (bundled / "manifest.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "files": {"safe.py": hashlib.sha256(source).hexdigest()},
+                }),
+                encoding="utf-8",
+            )
+            original_file = skills.__file__
+            skills.__file__ = str(bundled / "__init__.py")
+            try:
+                with mock.patch.object(
+                    skills, "_user_skills_dir", return_value=Path(tmp) / "user"
+                ):
+                    self.assertEqual(skills.load_all(), [])
             finally:
                 skills.__file__ = original_file
 

@@ -21,6 +21,12 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from config import cfg
 from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
+from audio.tts.base_tts import DisabledTTSProvider
+from privacy_controls import (
+    cloud_tts_allowed,
+    microphone_allowed,
+    screen_capture_allowed,
+)
 from screen.capture import capture_all_screens
 from ui.panel import AppState
 from tutor import (
@@ -267,6 +273,7 @@ class CompanionManager(QObject):
         self._llm: Optional[BaseLLMProvider] = None
         self._stt = None
         self._tts = None
+        self._privacy_tts_notice_emitted = False
 
         # Current in-flight generation — tracked so Esc / stop can cancel
         self._current_task: Optional[asyncio.Future] = None
@@ -320,10 +327,11 @@ class CompanionManager(QObject):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self):
-        try:
-            self._listener.start()
-        except Exception as e:
-            self.sig_error.emit(f"Mic error: {e}")
+        if microphone_allowed(cfg):
+            try:
+                self._listener.start()
+            except Exception as e:
+                self.sig_error.emit(f"Mic error: {e}")
         # Sleep/wake watchdog — restarts mic + loop after system resume
         self._start_sleep_watchdog()
         # On startup, refresh any stale model cache in the background.
@@ -385,10 +393,11 @@ class CompanionManager(QObject):
         except Exception:
             pass
         time.sleep(1.0)   # give Windows audio stack time to reinit
-        try:
-            self._listener.start()
-        except Exception as e:
-            self.sig_error.emit(f"Mic restart after sleep failed: {e}")
+        if microphone_allowed(cfg):
+            try:
+                self._listener.start()
+            except Exception as e:
+                self.sig_error.emit(f"Mic restart after sleep failed: {e}")
 
         # 2. If the asyncio loop thread died, restart it
         if not self._thread.is_alive():
@@ -465,7 +474,17 @@ class CompanionManager(QObject):
         return self._stt
 
     def _get_tts(self):
-        if self._tts is None:
+        if not cloud_tts_allowed(cfg):
+            if not isinstance(self._tts, DisabledTTSProvider):
+                self._tts = DisabledTTSProvider()
+            if not self._privacy_tts_notice_emitted:
+                self.sig_error.emit(
+                    "Speech output is disabled until cloud text-to-speech "
+                    "permission is granted in Privacy permissions."
+                )
+                self._privacy_tts_notice_emitted = True
+            return self._tts
+        if self._tts is None or isinstance(self._tts, DisabledTTSProvider):
             provider = cfg.tts_provider()
             if provider == "elevenlabs":
                 from audio.tts.elevenlabs_provider import ElevenLabsProvider
@@ -505,6 +524,13 @@ class CompanionManager(QObject):
     # ── Capture flow ──────────────────────────────────────────────────────────
 
     def _begin_capture(self):
+        if not microphone_allowed(cfg):
+            self.sig_error.emit(
+                "Microphone access is disabled. Open Setup & Diagnostics → "
+                "Privacy permissions to enable it."
+            )
+            self._emit_state(AppState.IDLE)
+            return
         try:
             self._listener.start_recording()
         except Exception as e:
@@ -550,8 +576,8 @@ class CompanionManager(QObject):
             transcript = await asyncio.wait_for(
                 self._get_stt().transcribe(pcm), timeout=90,
             )
-            _log.info("transcript: %r (provider=%s)",
-                      transcript[:120], cfg.llm_provider())
+            _log.info("voice transcription completed (provider=%s)",
+                      cfg.llm_provider())
             if not transcript.strip():
                 self._emit_state(AppState.IDLE)
                 return
@@ -616,7 +642,8 @@ class CompanionManager(QObject):
             # actually wants when they ask "who is MrBeast" while on YouTube.
             sensitive = self._privacy_guard and is_sensitive_window(title)
             identity_q = is_identity_question(transcript)
-            if sensitive or identity_q:
+            screen_permission = screen_capture_allowed(cfg)
+            if sensitive or identity_q or not screen_permission:
                 screenshots = []
                 images_b64 = []
             else:
@@ -671,6 +698,8 @@ class CompanionManager(QObject):
                         transcript,
                         screenshot=shot,
                         llm_provider=self._get_llm(),
+                        # The manager owns the non-blocking async vision fallback.
+                        skip_vision=True,
                     )
                 except Exception:
                     target = None
@@ -796,6 +825,12 @@ class CompanionManager(QObject):
                     "(password manager, banking, login). I did NOT take a "
                     "screenshot. Answer from memory only, and tell the user you "
                     "skipped the screenshot for safety.\n"
+                )
+            elif not screen_permission:
+                system += (
+                    "\n\nSCREEN CAPTURE DISABLED: the user has not granted screen "
+                    "capture permission. No screenshot was taken. Answer without "
+                    "visual context and do not imply that you can see the screen.\n"
                 )
             if search_results:
                 from ai.web_search import build_search_context
@@ -1330,10 +1365,25 @@ class CompanionManager(QObject):
             device=cfg.mic_device_index,
             on_error=self.sig_error.emit,
         )
-        try:
-            self._listener.start()
-        except Exception as e:
-            self.sig_error.emit(f"Could not start mic: {e}")
+        if microphone_allowed(cfg):
+            try:
+                self._listener.start()
+            except Exception as e:
+                self.sig_error.emit(f"Could not start mic: {e}")
+
+    def refresh_privacy_permissions(self) -> None:
+        """Apply persisted choices immediately without restarting Clicky."""
+        self._tts = None
+        self._privacy_tts_notice_emitted = False
+        if microphone_allowed(cfg):
+            try:
+                self._listener.start()
+            except Exception as exc:
+                self.sig_error.emit(f"Could not start mic: {exc}")
+        else:
+            self._listener.stop()
+            if self._state == AppState.LISTENING:
+                self._emit_state(AppState.IDLE)
 
     def set_web_search(self, enabled: bool):
         self._web_search_enabled = bool(enabled)
@@ -1343,6 +1393,12 @@ class CompanionManager(QObject):
             self.sig_error.emit(f"Could not save web search setting: {exc}")
 
     def set_wake_word(self, enabled: bool):
+        if enabled and not microphone_allowed(cfg):
+            self._listener.set_wake_word_enabled(False)
+            self.sig_error.emit(
+                "Wake-word listening requires microphone permission."
+            )
+            return
         self._listener.set_wake_word_enabled(enabled)
 
     def set_slow_mode(self, enabled: bool):
@@ -1360,6 +1416,12 @@ class CompanionManager(QObject):
         """Called when quiz mode flips ON — generates the first question
         without waiting for a user utterance."""
         if self._state != AppState.IDLE:
+            return
+        if not screen_capture_allowed(cfg):
+            self.sig_error.emit(
+                "Quiz Mode needs screen capture permission. Open Setup & "
+                "Diagnostics → Privacy permissions."
+            )
             return
         try:
             self._emit_state(AppState.THINKING)

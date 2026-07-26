@@ -60,6 +60,12 @@ hidden = [
 # ── Heavy packages that ship non-Python assets (DLLs, JSON, voices).
 #    collect_all grabs submodules + data files + binaries + metadata.
 datas, binaries, hiddenimports = [], [], []
+# Dynamically loaded bundled skills stay as source so their reviewed bytes can
+# be verified against the shipped manifest before execution.
+datas += [
+    ("skills/example_self_mode.py", "skills"),
+    ("skills/manifest.json", "skills"),
+]
 for pkg in (
     "faster_whisper",
     "ctranslate2",
