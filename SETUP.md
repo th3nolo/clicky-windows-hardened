@@ -1,54 +1,149 @@
-﻿# Clicky for Windows â€” Setup Guide
+# Clicky for Windows — Hardened setup
 
-## Prerequisites
+This guide prepares the reviewed Windows environment. It does not install or run dependencies automatically.
 
-- Python 3.11+
-- Ollama installed (https://ollama.com) â€” for student/free mode
-- `llama3.2-vision` model pulled: `ollama pull llama3.2-vision`
+## Requirements
 
-## Install
+Use only:
 
-```bash
-cd clicky-windows
+- Windows 10 or 11, x86-64
+- CPython `3.12.10`
+- uv `0.11.19`
+- Git for Windows
 
-# Student version (free, no API keys needed)
-pip install -r requirements-student.txt
+Obtain the exact Python and uv releases from their official projects. Verify the downloaded installer or archive before running it. Do not substitute a newer version.
 
-# Full version (all providers)
-pip install -r requirements.txt
-```
+## Clone the independent derivative
 
-> **PyAudio on Windows** may need: `pip install pipwin && pipwin install pyaudio`
+~~~powershell
+git clone https://github.com/th3nolo/clicky-windows-hardened.git
+Set-Location clicky-windows-hardened
+~~~
 
-## Configure
+This repository derives from [Bitshank-2338/clicky-windows](https://github.com/Bitshank-2338/clicky-windows) source commit `09208d88740db7ba593eb6b95085b63e92a59772`. It is independent and is not an upstream or official release.
 
-```bash
-copy .env.example .env
-# Edit .env and add any API keys you have
-# Everything is optional â€” Ollama is the free fallback
-```
+## Verify the toolchain
 
-## Run
+~~~powershell
+python --version
+uv --version
+~~~
 
-```bash
-python main.py
-```
+The output must be `Python 3.12.10` and `uv 0.11.19`. Stop if either version differs.
 
-A floating panel appears in the bottom-right corner.
-The Clicky icon appears in your system tray.
+## Verify and create the frozen environment
 
-**Hold `Ctrl+Win`** to speak. Release to send.
+First verify that the checked-in lock matches the project without contacting a package index:
 
-## Provider Priority (auto-detected)
+~~~powershell
+uv lock --check --offline --no-build --no-sources --no-python-downloads --python "3.12.10"
+~~~
 
-| Priority | LLM | STT | TTS |
-|----------|-----|-----|-----|
-| 1st | Claude (ANTHROPIC_API_KEY) | Deepgram (DEEPGRAM_API_KEY) | ElevenLabs (ELEVENLABS_API_KEY) |
-| 2nd | OpenAI (OPENAI_API_KEY) | OpenAI Whisper (OPENAI_API_KEY) | OpenAI TTS (OPENAI_API_KEY) |
-| Free | Ollama (local) | faster-whisper (local) | edge-tts (free, no key) |
+Then create the environment from the frozen lock:
 
-## Phases Remaining
+~~~powershell
+uv sync --frozen --group build --no-build --no-sources --no-managed-python --no-python-downloads --python "3.12.10" --default-index "https://pypi.org/simple" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
+~~~
 
-- [ ] Phase 4: Cursor overlay pointing animation (UI complete, coordinate mapping pending)
-- [ ] Phase 5: Web search grounding (Tavily/DuckDuckGo wired in, needs testing)
-- [ ] Phase 6: PyInstaller .exe packaging + installer
+This command refuses source builds and unmanaged Python downloads. Do not use pip, requirement files, editable installs, Git dependencies, or upgrade flags.
+
+## Provider keys
+
+Clicky does not read `.env` or `.env.local`. The example file is informational and is not loaded. Set provider keys only in the PowerShell process that launches Clicky:
+
+~~~powershell
+$env:ANTHROPIC_API_KEY = "..."
+$env:OPENAI_API_KEY = "..."
+$env:GOOGLE_API_KEY = "..."
+$env:DEEPGRAM_API_KEY = "..."
+$env:ELEVENLABS_API_KEY = "..."
+$env:TAVILY_API_KEY = "..."
+~~~
+
+Set only the keys you use. Closing that PowerShell session removes these process-scoped values. Do not commit keys or place them in project files.
+
+Non-secret choices are saved in `%LOCALAPPDATA%\Clicky\preferences.json`. The application accepts only its allowlisted preference keys.
+
+## GitHub Copilot
+
+Use **Tray → Model → Sign in to GitHub Copilot**. The device code is shown transiently and is not written to the login log. The resulting OAuth token is stored at:
+
+~~~text
+%LOCALAPPDATA%\Clicky\github_token.dpapi
+~~~
+
+The token is encrypted with Windows DPAPI for the current user. A legacy plaintext `github_token.json` is migrated only after the encrypted value is verified, then removal is attempted. DPAPI-protected files do not work under another Windows user.
+
+## Local Ollama models
+
+Clicky never downloads, installs, starts, or pulls Ollama or a model. If local Ollama is required:
+
+1. Obtain Ollama separately from its official Windows distribution. Verify its Authenticode signature before installation.
+2. Start Ollama yourself.
+3. Provision the chosen text and vision models yourself. A manual `ollama pull <model>` is outside Clicky.
+4. Inspect the installed tags and full digests:
+
+~~~powershell
+uv run --frozen --no-sync --python "3.12.10" python -m ai.ollama_bootstrap status
+~~~
+
+5. Select the exact installed model tags in the tray.
+6. Set both expected 64-hex digests in the launch process:
+
+~~~powershell
+$env:OLLAMA_TEXT_MODEL_DIGEST = "<64 hexadecimal characters>"
+$env:OLLAMA_VISION_MODEL_DIGEST = "<64 hexadecimal characters>"
+~~~
+
+The Ollama provider refuses a mutable tag whose current digest does not match. Re-check and review a model before accepting a changed digest.
+
+## Local speech models
+
+Speech models must be provisioned separately. Clicky does not contact a model hub to acquire them.
+
+For whisper.cpp, point to one reviewed GGML or GGUF file and configure its hash:
+
+~~~powershell
+$env:WHISPERCPP_MODEL = "C:\Models\whisper\ggml-base.bin"
+$env:WHISPERCPP_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 $env:WHISPERCPP_MODEL).Hash.ToLowerInvariant()
+~~~
+
+For faster-whisper, the configured directory must contain `config.json`, `model.bin`, and `tokenizer.json`. Configure the reviewed `model.bin` hash:
+
+~~~powershell
+$env:WHISPER_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 "C:\Models\faster-whisper-base\model.bin").Hash.ToLowerInvariant()
+~~~
+
+The model directory or reviewed cache snapshot must match the selected `whisper_model` preference.
+
+Wake-word recognition is optional. Push-to-talk still works when it is unavailable. To enable it, provide a complete local faster-whisper model directory and its `model.bin` hash:
+
+~~~powershell
+$env:CLICKY_WAKE_MODEL = "C:\Models\faster-whisper-tiny-en"
+$env:CLICKY_WAKE_MODEL_SHA256 = (Get-FileHash -Algorithm SHA256 "$env:CLICKY_WAKE_MODEL\model.bin").Hash.ToLowerInvariant()
+~~~
+
+A missing or mismatched digest disables that local model instead of downloading a replacement.
+
+## Privacy defaults
+
+Web search and journal logging start off. Enable either feature explicitly from the tray only after reviewing its data flow. The choice is then stored as a non-secret preference.
+
+- Web search sends the search text to DuckDuckGo or Tavily and fetches public result pages.
+- Journal logging stores question, answer, active application, and window-title context in `%LOCALAPPDATA%\Clicky\journal.db`.
+
+Cloud AI and speech providers receive request data needed for their feature. Use test content until provider behavior and account settings have been reviewed.
+
+## Run from source
+
+~~~powershell
+uv run --frozen --no-sync --python "3.12.10" python main.py
+~~~
+
+Clicky does not start Ollama or download a missing model. A failed model-integrity check is a setup error, not a prompt to disable verification.
+
+## Unsupported optional features
+
+The locked environment excludes `pynput` and `langdetect` because their dependency chains do not meet the wheel-only policy. Workflow capture is unavailable. Non-Latin Unicode script detection remains, but Latin-language auto-detection is unavailable.
+
+Do not add these packages manually. Any addition requires a reviewed exact pin, a new lock, wheel evidence, and the project’s 72-hour publication-age rule.

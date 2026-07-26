@@ -45,7 +45,7 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer at **shashanksingh2338@gmail.com**.
+reported privately through the contact options on the [repository owner’s GitHub profile](https://github.com/th3nolo).
 
 All complaints will be reviewed and investigated promptly and fairly.
 
