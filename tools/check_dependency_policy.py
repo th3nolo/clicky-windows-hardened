@@ -75,7 +75,9 @@ CONSERVATIVE_PINS = {
 }
 EXPECTED_ACTIONS = {
     "actions/checkout": "08c6903cd8c0fde910a37f88322edcfb5dd907a8",
+    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "actions/setup-python": "e797f83bcb11b83ae66e0230d6156d7c80228e7c",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "astral-sh/setup-uv": "08807647e7069bb48b6ef5acd8ec9567f424441b",
 }
 
