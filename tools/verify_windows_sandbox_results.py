@@ -52,7 +52,7 @@ _INPUT_LIMITS = {
 _EDGE_TTS_HOST = "speech.platform.bing.com"
 _EXPECTED_LOGON_COMMAND = (
     r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
-    r"-NoLogo -NoProfile -NonInteractive -Command \""
+    r'-NoLogo -NoProfile -NonInteractive -Command "'
     r"& 'C:\ClickyInput\windows-sandbox-validate.cmd'; "
     r"$validationExit = $LASTEXITCODE; "
     r"$shutdown = [IO.Path]::Combine($env:SystemRoot, 'System32', 'shutdown.exe'); "
@@ -61,7 +61,7 @@ _EXPECTED_LOGON_COMMAND = (
     r"if ($validationExit -ne 0) { exit $validationExit }; "
     r"Move-Item -LiteralPath 'C:\ValidationOutput\PASS.pending' "
     r"-Destination 'C:\ValidationOutput\PASS.txt' -Force -ErrorAction Stop; "
-    r"exit 0\""
+    r'exit 0"'
 )
 
 

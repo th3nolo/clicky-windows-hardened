@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import html
 import json
+import re
 import tempfile
 import unittest
 import zipfile
@@ -232,6 +234,18 @@ class WindowsSandboxResultTests(unittest.TestCase):
 
 
 class SandboxBootstrapSafetyTests(unittest.TestCase):
+    def test_preparer_logon_command_matches_verifier_expectation(self) -> None:
+        preparer = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "prepare-windows-sandbox.ps1"
+        ).read_text(encoding="utf-8")
+        command = re.search(r"<Command>(.*?)</Command>", preparer)
+        self.assertIsNotNone(command)
+        generated = html.unescape(command.group(1)).replace("`$", "$")
+        self.assertEqual(generated, verifier._EXPECTED_LOGON_COMMAND)
+        self.assertNotIn(r'\"', verifier._EXPECTED_LOGON_COMMAND)
+
     def test_host_launchable_validator_never_requests_shutdown(self) -> None:
         script = (
             Path(__file__).resolve().parents[1]
