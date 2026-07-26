@@ -121,8 +121,19 @@ def _powershell_literal(value: Path | str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _windows_powershell_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name.casefold() == "psmodulepath":
+            del environment[name]
+    return environment
+
+
 def _security_descriptor_sddl(path: Path) -> str:
-    command = f"(Get-Acl -LiteralPath {_powershell_literal(path)}).Sddl"
+    command = (
+        "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
+        f"(Get-Acl -LiteralPath {_powershell_literal(path)}).Sddl"
+    )
     result = subprocess.run(
         [
             str(_powershell_executable()),
@@ -136,6 +147,7 @@ def _security_descriptor_sddl(path: Path) -> str:
         capture_output=True,
         text=True,
         timeout=30,
+        env=_windows_powershell_environment(),
     )
     _require(result.returncode == 0, f"could not inspect ACL for {path}: {result.stderr}")
     sddl = result.stdout.strip().upper()
