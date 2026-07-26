@@ -10,10 +10,13 @@ import os
 import re
 import stat
 import subprocess
+import struct
 import tempfile
 import xml.etree.ElementTree as ET
+import unicodedata
 import zipfile
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -32,6 +35,8 @@ _EXPECTED_INPUTS = {
     "windows-sandbox-validate.cmd",
 }
 _RESULT_LIMITS = {
+    "Clicky-unsigned.exe": 128 * 1024 * 1024,
+    "clicky-unsigned-onedir.zip": 2 * 1024 * 1024 * 1024,
     "PASS.txt": 32,
     "clicky-exe-sha256.txt": 4096,
     "runtime-validation.json": 2 * 1024 * 1024,
@@ -49,6 +54,11 @@ _INPUT_LIMITS = {
     "uv.exe": 80 * 1024 * 1024,
     "windows-sandbox-validate.cmd": 1024 * 1024,
 }
+_DIST_MAX_FILES = 20_000
+_DIST_MAX_MEMBER_BYTES = 1024 * 1024 * 1024
+_DIST_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+_DIST_MAX_COMPRESSION_RATIO = 1000
+_DIST_MAX_CENTRAL_DIRECTORY_BYTES = 64 * 1024 * 1024
 _EDGE_TTS_HOST = "speech.platform.bing.com"
 _EXPECTED_LOGON_COMMAND = (
     r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
@@ -77,16 +87,89 @@ def _is_reparse(path: Path) -> bool:
     return path.is_symlink() or bool(attributes & reparse_flag)
 
 
+@lru_cache(maxsize=1)
+def _windows_stream_api() -> tuple[object, object, object, object, object]:
+    import ctypes
+    from ctypes import wintypes
+
+    class Win32FindStreamData(ctypes.Structure):
+        _fields_ = [
+            ("stream_size", ctypes.c_longlong),
+            ("stream_name", ctypes.c_wchar * 296),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    find_first = kernel32.FindFirstStreamW
+    find_first.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(Win32FindStreamData),
+        wintypes.DWORD,
+    ]
+    find_first.restype = wintypes.HANDLE
+    find_next = kernel32.FindNextStreamW
+    find_next.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(Win32FindStreamData),
+    ]
+    find_next.restype = wintypes.BOOL
+    find_close = kernel32.FindClose
+    find_close.argtypes = [wintypes.HANDLE]
+    find_close.restype = wintypes.BOOL
+
+    return ctypes, Win32FindStreamData, find_first, find_next, find_close
+
+
+def _alternate_stream_names(path: Path) -> tuple[str, ...]:
+    if os.name != "nt":
+        return ()
+    from ctypes import wintypes
+
+    ctypes, data_type, find_first, find_next, find_close = _windows_stream_api()
+    details = data_type()
+    handle = find_first(str(path), 0, ctypes.byref(details), 0)
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        _require(error == 38, f"alternate-stream enumeration failed for {path}: {error}")
+        return ()
+
+    names: list[str] = []
+    try:
+        names.append(details.stream_name)
+        while find_next(handle, ctypes.byref(details)):
+            names.append(details.stream_name)
+        error = ctypes.get_last_error()
+        _require(error == 38, f"alternate-stream enumeration failed for {path}: {error}")
+    finally:
+        _require(bool(find_close(handle)), f"alternate-stream handle close failed: {path}")
+    return tuple(names)
+
+
+def _require_no_alternate_streams(path: Path) -> None:
+    unexpected = [
+        name for name in _alternate_stream_names(path) if name.casefold() != "::$data"
+    ]
+    _require(
+        not unexpected,
+        f"alternate data stream is forbidden: {path.name}",
+    )
+
+
 def _require_regular_file(path: Path, maximum_bytes: int) -> None:
     _require(path.exists(), f"required file is missing: {path.name}")
     _require(not _is_reparse(path), f"reparse-point evidence is forbidden: {path.name}")
     _require(path.is_file(), f"evidence is not a regular file: {path.name}")
-    _require(path.stat().st_size <= maximum_bytes, f"evidence exceeds size limit: {path.name}")
+    details = path.stat()
+    _require(details.st_nlink == 1, f"hard-linked evidence is forbidden: {path.name}")
+    _require_no_alternate_streams(path)
+    _require(details.st_size <= maximum_bytes, f"evidence exceeds size limit: {path.name}")
 
 
 def _require_plain_directory(path: Path, label: str) -> None:
     _require(path.exists() and path.is_dir(), f"{label} directory is missing")
     _require(not _is_reparse(path), f"{label} directory is a reparse point")
+    _require_no_alternate_streams(path)
 
 
 def _sha256(path: Path) -> str:
@@ -111,6 +194,202 @@ def _certutil_sha256(path: Path) -> str:
     ]
     _require(len(matches) == 1, "executable hash evidence is ambiguous")
     return matches[0]
+
+
+def _require_safe_archive_name(name: str) -> None:
+    _require(bool(name), "distribution archive contains an empty path")
+    _require("\\" not in name, f"distribution archive contains a backslash path: {name}")
+    _require(":" not in name, f"distribution archive contains an ADS or drive path: {name}")
+    _require(
+        not any(ord(character) < 32 or ord(character) == 127 for character in name),
+        f"distribution archive contains a control character: {name!r}",
+    )
+    raw_parts = name.split("/")
+    _require(
+        all(part not in {"", ".", ".."} for part in raw_parts),
+        f"distribution archive path is unsafe: {name}",
+    )
+    parsed = PurePosixPath(name)
+    _require(not parsed.is_absolute(), f"distribution archive path is absolute: {name}")
+    _require(
+        unicodedata.normalize("NFC", name) == name,
+        f"distribution archive path is not Unicode-normalized: {name}",
+    )
+    reserved = {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+    for part in parsed.parts:
+        _require(
+            not part.endswith((" ", ".")),
+            f"distribution archive path has a trailing dot or space: {name}",
+        )
+        stem = part.split(".", 1)[0].casefold()
+        _require(stem not in reserved, f"distribution archive uses a reserved name: {name}")
+
+
+def _preflight_distribution_archive(path: Path) -> None:
+    file_size = path.stat().st_size
+    _require(file_size >= 22, "distribution archive is shorter than its end record")
+    with path.open("rb") as handle:
+        handle.seek(-22, os.SEEK_END)
+        end_record = handle.read(22)
+    (
+        signature,
+        disk_number,
+        central_directory_disk,
+        disk_entries,
+        total_entries,
+        central_directory_size,
+        central_directory_offset,
+        comment_length,
+    ) = struct.unpack("<4s4H2LH", end_record)
+    _require(signature == b"PK\x05\x06", "distribution archive end record is missing")
+    _require(comment_length == 0, "distribution archive comment is forbidden")
+    _require(
+        disk_number == 0
+        and central_directory_disk == 0
+        and disk_entries == total_entries,
+        "multidisk distribution archives are forbidden",
+    )
+    _require(total_entries > 0, "distribution archive is empty")
+    _require(
+        total_entries <= _DIST_MAX_FILES,
+        "distribution archive exceeds the file-count limit",
+    )
+    _require(
+        central_directory_size <= _DIST_MAX_CENTRAL_DIRECTORY_BYTES,
+        "distribution archive central directory exceeds its size limit",
+    )
+    _require(
+        central_directory_offset + central_directory_size == file_size - 22,
+        "distribution archive central-directory bounds are invalid",
+    )
+    actual_entries = 0
+    remaining = central_directory_size
+    with path.open("rb") as handle:
+        handle.seek(central_directory_offset)
+        while remaining:
+            _require(
+                remaining >= 46,
+                "distribution archive central-directory header is truncated",
+            )
+            fixed_header = handle.read(46)
+            _require(
+                len(fixed_header) == 46
+                and fixed_header[:4] == b"PK\x01\x02",
+                "distribution archive central-directory header is invalid",
+            )
+            fields = struct.unpack("<4s6H3L5H2L", fixed_header)
+            variable_size = fields[10] + fields[11] + fields[12]
+            _require(
+                variable_size <= remaining - 46,
+                "distribution archive central-directory entry exceeds its bounds",
+            )
+            handle.seek(variable_size, os.SEEK_CUR)
+            remaining -= 46 + variable_size
+            actual_entries += 1
+            _require(
+                actual_entries <= _DIST_MAX_FILES,
+                "distribution archive exceeds the file-count limit",
+            )
+    _require(
+        actual_entries == total_entries,
+        "distribution archive entry count differs from its end record",
+    )
+
+
+def _validate_distribution_archive(path: Path) -> dict[str, object]:
+    tree = hashlib.sha256()
+    tree.update(b"clicky-dist-tree-v1\0")
+    total_bytes = 0
+    executable_hash = hashlib.sha256()
+    executable_seen = False
+    _preflight_distribution_archive(path)
+    with zipfile.ZipFile(path) as archive:
+        _require(not archive.comment, "distribution archive comment is forbidden")
+        entries = archive.infolist()
+        _require(bool(entries), "distribution archive is empty")
+        _require(
+            len(entries) <= _DIST_MAX_FILES,
+            "distribution archive exceeds the file-count limit",
+        )
+        names = [entry.filename for entry in entries]
+        _require(names == sorted(names), "distribution archive entries are not sorted")
+        normalized: set[str] = set()
+        for entry in entries:
+            _require_safe_archive_name(entry.filename)
+            folded = unicodedata.normalize("NFC", entry.filename).casefold()
+            _require(
+                folded not in normalized,
+                f"distribution archive contains a case-insensitive duplicate: {entry.filename}",
+            )
+            normalized.add(folded)
+            _require(not entry.is_dir(), "distribution archive directory entries are forbidden")
+            _require(
+                entry.date_time == (1980, 1, 1, 0, 0, 0),
+                "distribution member timestamp is not deterministic",
+            )
+            _require(
+                entry.flag_bits & ~0x800 == 0,
+                "distribution member uses unexpected ZIP flags",
+            )
+            _require(entry.internal_attr == 0, "distribution member has internal attributes")
+            _require(not (entry.flag_bits & 0x1), "encrypted distribution members are forbidden")
+            _require(not entry.comment, "distribution member comments are forbidden")
+            _require(not entry.extra, "distribution member extra metadata is forbidden")
+            _require(
+                entry.compress_type == zipfile.ZIP_DEFLATED,
+                "distribution member uses an unexpected compression method",
+            )
+            mode = entry.external_attr >> 16
+            _require(
+                entry.create_system == 3 and mode == (stat.S_IFREG | 0o644),
+                f"distribution member is not a regular Unix-mode file: {entry.filename}",
+            )
+            _require(
+                entry.file_size <= _DIST_MAX_MEMBER_BYTES,
+                f"distribution member exceeds its size limit: {entry.filename}",
+            )
+            if entry.file_size:
+                _require(
+                    entry.compress_size > 0
+                    and entry.file_size / entry.compress_size <= _DIST_MAX_COMPRESSION_RATIO,
+                    f"distribution member exceeds compression-ratio limit: {entry.filename}",
+                )
+            total_bytes += entry.file_size
+            _require(
+                total_bytes <= _DIST_MAX_TOTAL_BYTES,
+                "distribution archive exceeds the total expansion limit",
+            )
+            relative = entry.filename.encode("utf-8")
+            tree.update(b"F")
+            tree.update(len(relative).to_bytes(8, "big"))
+            tree.update(relative)
+            tree.update(entry.file_size.to_bytes(8, "big"))
+            copied = 0
+            with archive.open(entry, "r") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    copied += len(chunk)
+                    tree.update(chunk)
+                    if entry.filename == "Clicky.exe":
+                        executable_hash.update(chunk)
+            _require(copied == entry.file_size, "distribution member size changed while reading")
+            if entry.filename == "Clicky.exe":
+                _require(not executable_seen, "distribution contains duplicate Clicky.exe")
+                executable_seen = True
+    _require(executable_seen, "distribution archive is missing Clicky.exe")
+    return {
+        "scheme": "clicky-dist-tree-v1",
+        "tree_sha256": tree.hexdigest(),
+        "file_count": len(entries),
+        "total_bytes": total_bytes,
+        "clicky_exe_sha256": executable_hash.hexdigest(),
+    }
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -290,16 +569,6 @@ def _validate_cloud_tts(cloud: dict[str, object], label: str) -> None:
     _require(int(cloud["audio_bytes"]) > 0, f"{label} returned no audio")
 
 
-def _validate_scan(scan: dict[str, object], expected_digest: str, label: str) -> None:
-    _require(scan["disable_remediation"] is True, f"{label} remediation was enabled")
-    _require(scan["scan_exit_code"] == 0, f"{label} did not return clean")
-    _require(
-        scan["distribution_sha256_before"] == expected_digest
-        and scan["distribution_sha256_after"] == expected_digest,
-        f"distribution changed during {label}",
-    )
-
-
 def verify(
     run_root: Path, expected_commit: str, expected_archive_sha256: str
 ) -> dict[str, object]:
@@ -396,28 +665,60 @@ def verify(
     )
     _validate_cloud_tts(packaged["cloud_tts"], "packaged cloud TTS")
 
-    defender = report["defender"]
-    pristine = defender["pristine_distribution_sha256"]
-    _require(_SHA256_RE.fullmatch(pristine) is not None, "invalid pristine tree digest")
-    _validate_scan(defender["pre_execution"], pristine, "pre-execution Defender scan")
+    integrity = report["distribution_integrity"]
     _require(
-        defender["post_execution_tree_sha256"] == pristine,
+        integrity["scheme"] == "clicky-dist-tree-v1",
+        "unexpected distribution tree scheme",
+    )
+    pristine = integrity["pristine_tree_sha256"]
+    _require(_SHA256_RE.fullmatch(pristine) is not None, "invalid pristine tree digest")
+    _require(
+        integrity["unchanged"] is True
+        and integrity["post_execution_tree_sha256"] == pristine,
         "packaged execution changed the distribution",
     )
-    _validate_scan(defender["post_execution"], pristine, "post-execution Defender scan")
 
+    distribution_archive = results / "clicky-unsigned-onedir.zip"
+    archive_hash = _sha256(distribution_archive)
+    _require(
+        archive_hash == integrity["archive_sha256"],
+        "distribution archive hash differs from runtime evidence",
+    )
+    _require(
+        distribution_archive.stat().st_size == integrity["archive_bytes"],
+        "distribution archive size differs from runtime evidence",
+    )
+    archive_identity = _validate_distribution_archive(distribution_archive)
+    _require(
+        archive_identity["tree_sha256"] == pristine,
+        "exported distribution tree differs from runtime evidence",
+    )
+    _require(
+        archive_identity["file_count"] == integrity["file_count"]
+        and archive_identity["total_bytes"] == integrity["total_bytes"],
+        "exported distribution size/count differs from runtime evidence",
+    )
     executable_hash = _certutil_sha256(results / "clicky-exe-sha256.txt")
     _require(
-        executable_hash == application["sha256"],
+        executable_hash == _sha256(results / "Clicky-unsigned.exe"),
+        "executable hash record differs from the exported executable",
+    )
+    _require(
+        executable_hash == application["sha256"]
+        and executable_hash == integrity["clicky_exe_sha256"]
+        and executable_hash == archive_identity["clicky_exe_sha256"],
         "executable identity differs between runtime and host evidence",
     )
     return {
         "commit": source_commit,
         "source_archive_sha256": prepared["source_archive_sha256"],
         "clicky_exe_sha256": executable_hash,
+        "distribution_archive_sha256": archive_hash,
+        "distribution_tree_sha256": pristine,
+        "distribution_file_count": archive_identity["file_count"],
+        "distribution_total_bytes": archive_identity["total_bytes"],
         "cloud_tts_hosts": packaged["cloud_tts"]["resolved_hosts"],
         "cloud_tts_public_addresses": packaged["cloud_tts"]["resolved_public_addresses"],
-        "defender_signature_version": defender["pre_execution"]["status"]["AntivirusSignatureVersion"],
     }
 
 

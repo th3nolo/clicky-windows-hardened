@@ -90,7 +90,7 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             } <= called
         )
 
-    def test_defender_scans_bracket_all_packaged_execution(self) -> None:
+    def test_distribution_hashes_bracket_all_packaged_execution(self) -> None:
         tree = ast.parse(
             (ROOT / "tools" / "windows_runtime_validation.py").read_text(
                 encoding="utf-8"
@@ -110,15 +110,15 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id
-            in {"_validate_defender_scan", "_validate_unsigned_application", "_tree_sha256"}
+            in {"_tree_identity", "_validate_unsigned_application", "_export_distribution"}
         )
-        defender = [line for line, name in calls if name == "_validate_defender_scan"]
+        identities = [line for line, name in calls if name == "_tree_identity"]
         application = next(line for line, name in calls if name == "_validate_unsigned_application")
-        post_tree = next(line for line, name in calls if name == "_tree_sha256")
-        self.assertEqual(len(defender), 2)
-        self.assertLess(defender[0], application)
-        self.assertLess(application, post_tree)
-        self.assertLess(post_tree, defender[1])
+        export = next(line for line, name in calls if name == "_export_distribution")
+        self.assertEqual(len(identities), 2)
+        self.assertLess(identities[0], application)
+        self.assertLess(application, identities[1])
+        self.assertLess(identities[1], export)
 
     def test_distribution_digest_detects_self_deleting_component(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,6 +129,69 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             component.unlink()
             after = runtime_validation._tree_sha256(root)
             self.assertNotEqual(before, after)
+
+    def test_distribution_export_is_deterministic_and_hash_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            distribution = root / "Clicky"
+            distribution.mkdir()
+            (distribution / "Clicky.exe").write_bytes(b"MZ reviewed executable")
+            (distribution / "component.dll").write_bytes(b"reviewed component")
+            first_archive = root / "first.zip"
+            second_archive = root / "second.zip"
+            first_executable = root / "first.exe"
+            second_executable = root / "second.exe"
+            first = runtime_validation._export_distribution(
+                distribution, first_archive, first_executable
+            )
+            second = runtime_validation._export_distribution(
+                distribution, second_archive, second_executable
+            )
+            self.assertEqual(first_archive.read_bytes(), second_archive.read_bytes())
+            self.assertEqual(first["tree_sha256"], second["tree_sha256"])
+            self.assertEqual(first["file_count"], 2)
+            self.assertEqual(first_executable.read_bytes(), b"MZ reviewed executable")
+
+    def test_distribution_export_refuses_output_inside_distribution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            distribution = Path(tmp) / "Clicky"
+            distribution.mkdir()
+            (distribution / "Clicky.exe").write_bytes(b"MZ reviewed executable")
+            with self.assertRaisesRegex(
+                AssertionError, "outside the distribution tree"
+            ):
+                runtime_validation._export_distribution(
+                    distribution,
+                    distribution / "export.zip",
+                    Path(tmp) / "Clicky-unsigned.exe",
+                )
+
+
+    def test_distribution_digest_rejects_hard_linked_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Clicky"
+            root.mkdir()
+            executable = root / "Clicky.exe"
+            executable.write_bytes(b"MZ reviewed executable")
+            os.link(executable, Path(tmp) / "outside-hardlink.exe")
+            with self.assertRaisesRegex(AssertionError, "hard-linked"):
+                runtime_validation._tree_identity(root)
+
+    @unittest.skipUnless(os.name == "nt", "NTFS alternate streams require Windows")
+    def test_distribution_digest_rejects_alternate_data_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Clicky"
+            root.mkdir()
+            executable = root / "Clicky.exe"
+            executable.write_bytes(b"MZ reviewed executable")
+            stream = Path(f"{executable}:payload")
+            try:
+                stream.write_bytes(b"hidden bytes")
+            except OSError as exc:
+                self.skipTest(f"alternate data streams are unavailable: {exc}")
+            with self.assertRaisesRegex(AssertionError, "alternate data stream"):
+                runtime_validation._tree_identity(root)
+
 
 if __name__ == "__main__":
     unittest.main()

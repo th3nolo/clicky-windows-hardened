@@ -109,7 +109,11 @@ The Privacy Guard uses window-title matching. It can miss sensitive content and 
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.
 
-A future release requires Authenticode signing, timestamping, verification of the application and installer signatures, final SHA-256 values, an SBOM, and a source-commit reference. Never ask a user to bypass SmartScreen, disable antivirus, or add an exclusion.
+A future release requires Authenticode signing, timestamping, verification of the application and installer signatures, final SHA-256 values, an SBOM, and a source-commit reference. It also requires a completed Windows Sandbox runtime gate, a passing post-run host verification, and exact-hash static scans of the commit-bound source archive, exported full distribution, and exported executable with Malwarebytes and VirusTotal. Any malicious or suspicious verdict blocks release; unsupported engines and scan failures must be recorded as non-votes rather than hidden by repackaging the artifact.
+
+Consumer Malwarebytes scanning is a manual review gate, not a cryptographically authenticated automated attestation. Record the artifact SHA-256, scanner/product version, scan time, result, and exported report or screenshot. VirusTotal reports are supplementary multi-engine evidence and may share uploaded samples with security partners; look up the hash first and upload only artifacts that are safe to disclose.
+
+Never ask a user to bypass SmartScreen, disable antivirus, or add an exclusion.
 
 ## License
 

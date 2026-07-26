@@ -174,14 +174,14 @@ call build.bat >> "%LOG%" 2>&1
 if errorlevel 1 goto :finish
 
 >> "%LOG%" echo [6/7] Running Windows runtime controls
-"%UV%" run --frozen --no-sync --python "%PYTHON%" python tools\windows_runtime_validation.py --output "%OUTPUT%\runtime-validation.json" >> "%LOG%" 2>&1
+"%UV%" run --frozen --no-sync --python "%PYTHON%" python tools\windows_runtime_validation.py --output "%OUTPUT%\runtime-validation.json" --distribution-archive "%OUTPUT%\clicky-unsigned-onedir.zip" --executable-copy "%OUTPUT%\Clicky-unsigned.exe" >> "%LOG%" 2>&1
 if errorlevel 1 goto :finish
 
 >> "%LOG%" echo [7/7] Recording source and artifact identity
 copy /y "%INPUT%\source-commit.txt" "%OUTPUT%\source-commit.txt" >nul
 if errorlevel 1 goto :finish
 > "%OUTPUT%\source-archive-sha256.txt" echo !ACTUAL_SOURCE_SHA256!
-certutil.exe -hashfile "dist\Clicky\Clicky.exe" SHA256 > "%OUTPUT%\clicky-exe-sha256.txt" 2>> "%LOG%"
+certutil.exe -hashfile "%OUTPUT%\Clicky-unsigned.exe" SHA256 > "%OUTPUT%\clicky-exe-sha256.txt" 2>> "%LOG%"
 if errorlevel 1 goto :finish
 
 set "RESULT=0"

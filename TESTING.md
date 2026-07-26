@@ -111,11 +111,11 @@ python .\tools\verify_windows_sandbox_results.py <run-directory> `
   --git-exe "C:\Program Files\Git\cmd\git.exe"
 ~~~
 
-Launching the generated configuration disables vGPU, host microphone and camera input, clipboard and printer redirection, and enables Protected Client mode. Networking is a controlled exception because live PyPI provenance, current Defender signatures, and an actual post-consent Edge TTS destination test require internet access. Microsoft documents that network-enabled Windows Sandbox can also reach networks available to the host. Run this gate only on a trusted or isolated network. The TTS test sends only the fixed text `Clicky synthetic privacy validation.` to `speech.platform.bing.com`; no API key or personal content is used.
+Launching the generated configuration disables vGPU, host microphone and camera input, clipboard and printer redirection, and enables Protected Client mode. Networking is a controlled exception because live PyPI provenance and an actual post-consent Edge TTS destination test require internet access. Microsoft documents that network-enabled Windows Sandbox can also reach networks available to the host. Run this gate only on a trusted or isolated network. The TTS test sends only the fixed text `Clicky synthetic privacy validation.` to `speech.platform.bing.com`; no API key or personal content is used.
 
 The fresh results directory is the only writable host mapping. The bootstrap and host verifier enforce an exact bounded result-file allowlist and reject reparse points and oversized evidence. Windows Sandbox mapped folders do not provide a per-folder disk quota, so a compromised process could still attempt to consume free space before shutdown. Ensure adequate free space and monitor the disposable run; this is a documented residual containment limitation.
 
-Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. The runtime harness verifies:
+Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. After the runtime controls pass, the harness exports a deterministic archive of the complete distribution and an exact copy of the executable for separate host-side static scanning. The runtime harness verifies:
 
 - source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
 - denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled
@@ -123,9 +123,21 @@ Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv
 - denied cloud TTS before consent and packaged/source destination evidence after consent, restricted to the pinned Microsoft hostname with DNS-to-TCP peer correlation
 - crash-abandoned WAV cleanup, a hard 24-hour privacy TTL resistant to PID reuse, and locale-independent directory/file ACL evidence
 - native packaged startup, first-run privacy dialog before manager/skill construction, no external pre-consent TCP destination, embedded bundled-skill trust anchoring, and unsigned Authenticode status
-- a current-signature, no-remediation Defender scan of the pristine distribution before any packaged execution; an unchanged whole-tree digest after execution; and a second clean scan
+- a domain-separated whole-tree digest before and after packaged execution, followed by a hash-bound deterministic export of that unchanged tree
 
-Only `sandbox-validation.log`, `runtime-validation.json`, the source/archive/executable identity files, and one `PASS.txt` or `FAIL.txt` marker are expected in the fresh results directory. Treat extra, oversized, non-regular, or reparse-point output as a failed containment check. The sandbox automatically shuts down after the run. After shutdown, rerun the host verifier without `--prepared-only`; only that post-run result is authoritative.
+Only `sandbox-validation.log`, `runtime-validation.json`, `Clicky-unsigned.exe`, `clicky-unsigned-onedir.zip`, the source/archive/executable identity files, and one `PASS.txt` or `FAIL.txt` marker are expected in the fresh results directory. Treat extra, oversized, non-regular, or reparse-point output as a failed containment check. The sandbox automatically shuts down after the run. After shutdown, rerun the host verifier without `--prepared-only`; it streams and validates the distribution archive without extracting or executing it. Only that post-run result is authoritative for the runtime gate.
+
+### Post-sandbox static scan gate
+
+The Sandbox `PASS.txt` is runtime and containment evidence, not an antivirus verdict. After the post-run host verifier succeeds:
+
+1. Record the SHA-256 values reported for the commit-bound source archive, `clicky-unsigned-onedir.zip`, and `Clicky-unsigned.exe`.
+2. In Malwarebytes, keep **Scan within archives** enabled and manually scan the full distribution archive or the fresh results directory. Save the report or a screenshot with the scanner version and time.
+3. Query VirusTotal by SHA-256 first. Upload only an unknown artifact that is safe to disclose; public VirusTotal uploads may be shared with security partners.
+4. Scan the standalone executable so engines that do not support ZIP archives can inspect the PE file directly. Do not repackage the source archive merely to turn unsupported-engine results into votes: repackaging changes its commit-bound hash and creates a different artifact.
+5. Require zero malicious and zero suspicious verdicts. Record unsupported engines and engine failures explicitly as non-votes.
+
+A clean static scan is additional evidence, not proof that the software is malware-free. The executable and full distribution must remain unsigned and undistributed until the release policy in `SECURITY.md` is satisfied.
 
 ## Manual security checks
 

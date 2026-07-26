@@ -6,7 +6,9 @@ import contextlib
 import hashlib
 import html
 import json
+import os
 import re
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -47,10 +49,10 @@ class WindowsSandboxResultTests(unittest.TestCase):
         with zipfile.ZipFile(source_archive, "w") as archive:
             archive.writestr("tools/windows-sandbox-validate.cmd", validator)
             archive.writestr("pyproject.toml", b"[project]\nname = 'fixture'\n")
-        archive_hash = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+        source_archive_hash = hashlib.sha256(source_archive.read_bytes()).hexdigest()
         (input_directory / "source-commit.txt").write_text(commit + "\n", encoding="ascii")
         (input_directory / "source-archive-sha256.txt").write_text(
-            archive_hash + "\n", encoding="ascii"
+            source_archive_hash + "\n", encoding="ascii"
         )
 
         wsb = rf"""<Configuration>
@@ -87,14 +89,32 @@ class WindowsSandboxResultTests(unittest.TestCase):
             "correlated_tcp_addresses": ["8.8.8.8"],
             "audio_bytes": 100,
         }
-        executable_hash = "a" * 64
-        scan = {
-            "disable_remediation": True,
-            "scan_exit_code": 0,
-            "distribution_sha256_before": "b" * 64,
-            "distribution_sha256_after": "b" * 64,
-            "status": {"AntivirusSignatureVersion": "1.2.3.4"},
+        members = {
+            "Clicky.exe": b"MZ fixture executable",
+            "component.dll": b"fixture component",
         }
+        executable_hash = hashlib.sha256(members["Clicky.exe"]).hexdigest()
+        tree = hashlib.sha256()
+        tree.update(b"clicky-dist-tree-v1\0")
+        for name, content in sorted(members.items()):
+            encoded = name.encode("utf-8")
+            tree.update(b"F")
+            tree.update(len(encoded).to_bytes(8, "big"))
+            tree.update(encoded)
+            tree.update(len(content).to_bytes(8, "big"))
+            tree.update(content)
+        tree_hash = tree.hexdigest()
+        distribution_archive = results / "clicky-unsigned-onedir.zip"
+        with zipfile.ZipFile(distribution_archive, "w") as archive:
+            for name, content in sorted(members.items()):
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = (0o100644) << 16
+                archive.writestr(info, content)
+        distribution_archive_hash = hashlib.sha256(
+            distribution_archive.read_bytes()
+        ).hexdigest()
         report = {
             "audio_crash_cleanup": {"leftover_removed": True},
             "privacy_controls": {
@@ -134,11 +154,16 @@ class WindowsSandboxResultTests(unittest.TestCase):
                     "cloud_tts": dict(cloud),
                 },
             },
-            "defender": {
-                "pristine_distribution_sha256": "b" * 64,
-                "pre_execution": dict(scan),
-                "post_execution_tree_sha256": "b" * 64,
-                "post_execution": dict(scan),
+            "distribution_integrity": {
+                "scheme": "clicky-dist-tree-v1",
+                "pristine_tree_sha256": tree_hash,
+                "post_execution_tree_sha256": tree_hash,
+                "unchanged": True,
+                "file_count": len(members),
+                "total_bytes": sum(len(content) for content in members.values()),
+                "archive_sha256": distribution_archive_hash,
+                "archive_bytes": distribution_archive.stat().st_size,
+                "clicky_exe_sha256": executable_hash,
             },
         }
         (results / "runtime-validation.json").write_text(json.dumps(report), encoding="utf-8")
@@ -148,12 +173,13 @@ class WindowsSandboxResultTests(unittest.TestCase):
         (results / "PASS.txt").write_text("PASS\n", encoding="ascii")
         (results / "source-commit.txt").write_text(commit + "\n", encoding="ascii")
         (results / "source-archive-sha256.txt").write_text(
-            archive_hash + "\n", encoding="ascii"
+            source_archive_hash + "\n", encoding="ascii"
         )
+        (results / "Clicky-unsigned.exe").write_bytes(members["Clicky.exe"])
         (results / "clicky-exe-sha256.txt").write_text(
             f"SHA256 hash of Clicky.exe:\n{executable_hash}\n", encoding="utf-8"
         )
-        return root, commit, archive_hash, uv_hash + ":" + python_hash
+        return root, commit, source_archive_hash, uv_hash + ":" + python_hash
 
     @contextlib.contextmanager
     def _reviewed_hashes(self, combined: str):
@@ -169,7 +195,37 @@ class WindowsSandboxResultTests(unittest.TestCase):
             with self._reviewed_hashes(hashes):
                 summary = verifier.verify(run_root, commit, archive_hash)
             self.assertEqual(summary["commit"], commit)
-            self.assertEqual(summary["clicky_exe_sha256"], "a" * 64)
+            self.assertEqual(
+                summary["clicky_exe_sha256"],
+                hashlib.sha256(b"MZ fixture executable").hexdigest(),
+            )
+
+    def test_rejects_hard_linked_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            marker = run_root / "results" / "PASS.txt"
+            outside = run_root / "outside-marker.txt"
+            outside.write_text("PASS\n", encoding="ascii")
+            marker.unlink()
+            os.link(outside, marker)
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "hard-linked evidence"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    @unittest.skipUnless(os.name == "nt", "NTFS alternate streams require Windows")
+    def test_rejects_result_alternate_data_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            marker = run_root / "results" / "PASS.txt"
+            try:
+                Path(f"{marker}:payload").write_bytes(b"hidden bytes")
+            except OSError as exc:
+                self.skipTest(f"alternate data streams are unavailable: {exc}")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "alternate data stream"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
 
     def test_rejects_any_unexpected_host_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +285,165 @@ class WindowsSandboxResultTests(unittest.TestCase):
             )
             with self._reviewed_hashes(hashes), self.assertRaisesRegex(
                 AssertionError, "exceeds size limit"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    def test_rejects_exported_executable_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            with (run_root / "results" / "Clicky-unsigned.exe").open("ab") as handle:
+                handle.write(b"tampered")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "exported executable"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    def test_rejects_unsafe_distribution_archive_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            results = run_root / "results"
+            distribution_archive = results / "clicky-unsigned-onedir.zip"
+            with zipfile.ZipFile(distribution_archive, "w") as archive:
+                info = zipfile.ZipInfo("../Clicky.exe", date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = (0o100644) << 16
+                archive.writestr(info, b"MZ fixture executable")
+            report_path = results / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["distribution_integrity"]["archive_sha256"] = hashlib.sha256(
+                distribution_archive.read_bytes()
+            ).hexdigest()
+            report["distribution_integrity"]["archive_bytes"] = (
+                distribution_archive.stat().st_size
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "unsafe"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    def test_rejects_archive_path_normalized_by_pure_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            results = run_root / "results"
+            distribution_archive = results / "clicky-unsigned-onedir.zip"
+            with zipfile.ZipFile(distribution_archive, "w") as archive:
+                for name in ("Clicky.exe", "directory//component.dll"):
+                    info = zipfile.ZipInfo(
+                        name, date_time=(1980, 1, 1, 0, 0, 0)
+                    )
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = (0o100644) << 16
+                    archive.writestr(info, b"MZ fixture executable")
+            report_path = results / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["distribution_integrity"]["archive_sha256"] = hashlib.sha256(
+                distribution_archive.read_bytes()
+            ).hexdigest()
+            report["distribution_integrity"]["archive_bytes"] = (
+                distribution_archive.stat().st_size
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "unsafe"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    def test_rejects_excessive_entry_count_before_zipfile_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, _commit, _archive_hash, _hashes = self._fixture(Path(tmp))
+            distribution_archive = (
+                run_root / "results" / "clicky-unsigned-onedir.zip"
+            )
+            payload = bytearray(distribution_archive.read_bytes())
+            end_record = len(payload) - 22
+            struct.pack_into("<H", payload, end_record + 8, verifier._DIST_MAX_FILES + 1)
+            struct.pack_into("<H", payload, end_record + 10, verifier._DIST_MAX_FILES + 1)
+            distribution_archive.write_bytes(payload)
+            with mock.patch.object(
+                verifier.zipfile,
+                "ZipFile",
+                side_effect=AssertionError("ZIP parser must not run"),
+            ), self.assertRaisesRegex(AssertionError, "file-count limit"):
+                verifier._validate_distribution_archive(distribution_archive)
+
+    def test_rejects_eocd_entry_undercount_before_zipfile_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, _commit, _archive_hash, _hashes = self._fixture(Path(tmp))
+            distribution_archive = (
+                run_root / "results" / "clicky-unsigned-onedir.zip"
+            )
+            payload = bytearray(distribution_archive.read_bytes())
+            end_record = len(payload) - 22
+            struct.pack_into("<H", payload, end_record + 8, 1)
+            struct.pack_into("<H", payload, end_record + 10, 1)
+            distribution_archive.write_bytes(payload)
+            with mock.patch.object(
+                verifier.zipfile,
+                "ZipFile",
+                side_effect=AssertionError("ZIP parser must not run"),
+            ), self.assertRaisesRegex(AssertionError, "entry count differs"):
+                verifier._validate_distribution_archive(distribution_archive)
+
+    def test_rejects_case_insensitive_distribution_archive_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            results = run_root / "results"
+            distribution_archive = results / "clicky-unsigned-onedir.zip"
+            with zipfile.ZipFile(distribution_archive, "w") as archive:
+                for name in ("Clicky.exe", "clicky.EXE"):
+                    info = zipfile.ZipInfo(
+                        name, date_time=(1980, 1, 1, 0, 0, 0)
+                    )
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = (0o100644) << 16
+                    archive.writestr(info, b"MZ fixture executable")
+            report_path = results / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["distribution_integrity"]["archive_sha256"] = hashlib.sha256(
+                distribution_archive.read_bytes()
+            ).hexdigest()
+            report["distribution_integrity"]["archive_bytes"] = (
+                distribution_archive.stat().st_size
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "case-insensitive duplicate"
+            ):
+                verifier.verify(run_root, commit, archive_hash)
+
+    def test_rejects_distribution_archive_tree_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            results = run_root / "results"
+            distribution_archive = results / "clicky-unsigned-onedir.zip"
+            members = {
+                "Clicky.exe": b"MZ fixture executable",
+                "component.dll": b"tampered after runtime",
+            }
+            with zipfile.ZipFile(distribution_archive, "w") as archive:
+                for name, content in sorted(members.items()):
+                    info = zipfile.ZipInfo(
+                        name, date_time=(1980, 1, 1, 0, 0, 0)
+                    )
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = (0o100644) << 16
+                    archive.writestr(info, content)
+            report_path = results / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["distribution_integrity"]["archive_sha256"] = hashlib.sha256(
+                distribution_archive.read_bytes()
+            ).hexdigest()
+            report["distribution_integrity"]["archive_bytes"] = (
+                distribution_archive.stat().st_size
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "tree differs"
             ):
                 verifier.verify(run_root, commit, archive_hash)
 

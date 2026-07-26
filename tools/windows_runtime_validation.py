@@ -17,12 +17,16 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zipfile
+from functools import lru_cache
 from pathlib import Path
 from unittest import mock
 
@@ -724,141 +728,233 @@ def _validate_unsigned_application(root: Path) -> dict[str, object]:
     }
 
 
-def _defender_executable() -> Path:
-    platform = Path(
-        os.environ.get("ProgramData", r"C:\ProgramData")
-    ) / "Microsoft" / "Windows Defender" / "Platform"
-    candidates = (
-        sorted(platform.glob("*/MpCmdRun.exe"), reverse=True)
-        if platform.is_dir()
-        else []
-    )
-    candidates.append(
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-        / "Windows Defender"
-        / "MpCmdRun.exe"
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise AssertionError("Microsoft Defender command-line scanner is unavailable")
+@lru_cache(maxsize=1)
+def _windows_stream_api() -> tuple[object, object, object, object, object]:
+    import ctypes
+    from ctypes import wintypes
+
+    class Win32FindStreamData(ctypes.Structure):
+        _fields_ = [
+            ("stream_size", ctypes.c_longlong),
+            ("stream_name", ctypes.c_wchar * 296),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    find_first = kernel32.FindFirstStreamW
+    find_first.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(Win32FindStreamData),
+        wintypes.DWORD,
+    ]
+    find_first.restype = wintypes.HANDLE
+    find_next = kernel32.FindNextStreamW
+    find_next.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(Win32FindStreamData),
+    ]
+    find_next.restype = wintypes.BOOL
+    find_close = kernel32.FindClose
+    find_close.argtypes = [wintypes.HANDLE]
+    find_close.restype = wintypes.BOOL
+
+    return ctypes, Win32FindStreamData, find_first, find_next, find_close
 
 
-def _tree_sha256(directory: Path) -> str:
-    """Hash the complete regular-file tree and reject reparse indirection."""
-    digest = hashlib.sha256()
-    candidates = sorted(
-        directory.rglob("*"),
-        key=lambda candidate: candidate.relative_to(directory).as_posix(),
+def _alternate_stream_names(path: Path) -> tuple[str, ...]:
+    if os.name != "nt":
+        return ()
+    from ctypes import wintypes
+
+    ctypes, data_type, find_first, find_next, find_close = _windows_stream_api()
+    details = data_type()
+    handle = find_first(str(path), 0, ctypes.byref(details), 0)
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        _require(error == 38, f"alternate-stream enumeration failed for {path}: {error}")
+        return ()
+
+    names: list[str] = []
+    try:
+        names.append(details.stream_name)
+        while find_next(handle, ctypes.byref(details)):
+            names.append(details.stream_name)
+        error = ctypes.get_last_error()
+        _require(error == 38, f"alternate-stream enumeration failed for {path}: {error}")
+    finally:
+        _require(bool(find_close(handle)), f"alternate-stream handle close failed: {path}")
+    return tuple(names)
+
+
+def _require_no_alternate_streams(path: Path) -> None:
+    unexpected = [
+        name for name in _alternate_stream_names(path) if name.casefold() != "::$data"
+    ]
+    _require(
+        not unexpected,
+        f"distribution contains an alternate data stream: {path}",
     )
-    for path in candidates:
-        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+
+
+def _validate_distribution_entry(path: Path, *, directory: bool) -> os.stat_result:
+    details = path.lstat()
+    attributes = getattr(details, "st_file_attributes", 0)
+    _require(
+        not path.is_symlink() and not (attributes & 0x400),
+        f"distribution contains a reparse point: {path}",
+    )
+    _require_no_alternate_streams(path)
+    if directory:
         _require(
-            not path.is_symlink() and not (attributes & 0x400),
-            f"distribution contains a reparse point: {path}",
+            stat.S_ISDIR(details.st_mode),
+            f"distribution contains a non-directory entry: {path}",
         )
-        if path.is_dir():
-            continue
-        _require(path.is_file(), f"distribution contains a non-regular entry: {path}")
+    else:
+        _require(
+            stat.S_ISREG(details.st_mode),
+            f"distribution contains a non-regular entry: {path}",
+        )
+        _require(
+            details.st_nlink == 1,
+            f"distribution contains a hard-linked file: {path}",
+        )
+    return details
+
+
+def _validated_distribution_files(directory: Path) -> tuple[Path, ...]:
+    _validate_distribution_entry(directory, directory=True)
+    files: list[Path] = []
+
+    def raise_walk_error(error: OSError) -> None:
+        raise AssertionError(f"distribution traversal failed: {error}") from error
+
+    for current_name, directory_names, file_names in os.walk(
+        directory,
+        topdown=True,
+        onerror=raise_walk_error,
+        followlinks=False,
+    ):
+        current = Path(current_name)
+        _validate_distribution_entry(current, directory=True)
+        directory_names.sort()
+        file_names.sort()
+        for name in directory_names:
+            _validate_distribution_entry(current / name, directory=True)
+        for name in file_names:
+            path = current / name
+            _validate_distribution_entry(path, directory=False)
+            files.append(path)
+    return tuple(
+        sorted(files, key=lambda path: path.relative_to(directory).as_posix())
+    )
+
+
+def _tree_identity_from_files(
+    directory: Path, candidates: tuple[Path, ...]
+) -> dict[str, object]:
+    digest = hashlib.sha256()
+    digest.update(b"clicky-dist-tree-v1\0")
+    total_bytes = 0
+    for path in candidates:
+        details = _validate_distribution_entry(path, directory=False)
         relative = path.relative_to(directory).as_posix().encode("utf-8")
+        total_bytes += details.st_size
         digest.update(b"F")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(details.st_size.to_bytes(8, "big"))
+        copied = 0
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                copied += len(chunk)
                 digest.update(chunk)
-    return digest.hexdigest()
-def _defender_status() -> dict[str, object]:
-    command = (
-        "Get-MpComputerStatus | Select-Object AntivirusEnabled, "
-        "RealTimeProtectionEnabled, AMProductVersion, AntivirusSignatureVersion, "
-        "AntivirusSignatureLastUpdated | ConvertTo-Json -Compress"
-    )
-    result = subprocess.run(
-        [
-            str(_powershell_executable()),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    _require(result.returncode == 0, f"Defender status failed: {result.stderr}")
-    status = json.loads(result.stdout)
-    _require(status.get("AntivirusEnabled") is True, f"Defender is disabled: {status}")
-    _require(status.get("AntivirusSignatureVersion"), f"Defender signatures unavailable: {status}")
-    return status
-
-
-def _validate_defender_scan(
-    *,
-    expected_distribution_sha256: str | None = None,
-    update_signatures: bool,
-) -> dict[str, object]:
-    scanner = _defender_executable()
-    signature_update = None
-    if update_signatures:
-        signature_update = subprocess.run(
-            [str(scanner), "-SignatureUpdate"],
-            check=False, capture_output=True, text=True, timeout=15 * 60,
-        )
-        _require(
-            signature_update.returncode == 0,
-            "Microsoft Defender signature update failed: "
-            f"exit={signature_update.returncode}\n"
-            f"{signature_update.stdout}\n{signature_update.stderr}",
-        )
-    status = _defender_status()
-    target = ROOT / "dist" / "Clicky"
-    before = _tree_sha256(target)
-    if expected_distribution_sha256 is not None:
-        _require(
-            before == expected_distribution_sha256,
-            "distribution changed before a Defender scan",
-        )
-    scan = subprocess.run(
-        [
-            str(scanner), "-Scan", "-ScanType", "3", "-File", str(target),
-            "-DisableRemediation",
-        ],
-        check=False, capture_output=True, text=True, timeout=15 * 60,
-    )
-    after = _tree_sha256(target)
-    _require(before == after, "Defender changed the no-remediation scan target")
-    _require(
-        scan.returncode == 0,
-        "Microsoft Defender found a threat or the scan failed: "
-        f"exit={scan.returncode}\n{scan.stdout}\n{scan.stderr}",
-    )
+        _require(copied == details.st_size, f"distribution file changed while hashing: {path}")
     return {
-        "scanner": str(scanner),
-        "signature_update_requested": update_signatures,
-        "signature_update_exit_code": (
-            signature_update.returncode if signature_update is not None else None
-        ),
-        "signature_update_stdout": (
-            signature_update.stdout.strip()[-16000:] if signature_update is not None else ""
-        ),
-        "signature_update_stderr": (
-            signature_update.stderr.strip()[-16000:] if signature_update is not None else ""
-        ),
-        "status": status,
-        "scan_exit_code": scan.returncode,
-        "disable_remediation": True,
-        "distribution_sha256_before": before,
-        "distribution_sha256_after": after,
-        "stdout": scan.stdout.strip()[-16000:],
-        "stderr": scan.stderr.strip()[-16000:],
+        "scheme": "clicky-dist-tree-v1",
+        "tree_sha256": digest.hexdigest(),
+        "file_count": len(candidates),
+        "total_bytes": total_bytes,
     }
 
 
-def run(output: Path) -> None:
+def _distribution_snapshot(
+    directory: Path,
+) -> tuple[dict[str, object], tuple[Path, ...]]:
+    candidates = _validated_distribution_files(directory)
+    return _tree_identity_from_files(directory, candidates), candidates
+
+
+def _tree_identity(directory: Path) -> dict[str, object]:
+    """Hash the complete regular-file tree and reject hidden indirection."""
+    return _distribution_snapshot(directory)[0]
+
+
+def _tree_sha256(directory: Path) -> str:
+    return str(_tree_identity(directory)["tree_sha256"])
+
+
+def _export_distribution(
+    directory: Path, archive_output: Path, executable_output: Path
+) -> dict[str, object]:
+    _require(not archive_output.exists(), "distribution archive output already exists")
+    _require(not executable_output.exists(), "executable copy output already exists")
+    _require(archive_output.parent.is_dir(), "distribution archive parent is missing")
+    _require(executable_output.parent.is_dir(), "executable copy parent is missing")
+    resolved_directory = directory.resolve()
+    for output in (archive_output, executable_output):
+        resolved_output = output.resolve()
+        _require(
+            resolved_directory != resolved_output
+            and resolved_directory not in resolved_output.parents,
+            "distribution export must be outside the distribution tree",
+        )
+
+    identity, candidates = _distribution_snapshot(directory)
+    with zipfile.ZipFile(
+        archive_output,
+        mode="x",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+        allowZip64=True,
+        strict_timestamps=True,
+    ) as archive:
+        for path in candidates:
+            details = _validate_distribution_entry(path, directory=False)
+            relative = path.relative_to(directory).as_posix()
+            info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            with path.open("rb") as source, archive.open(info, "w") as target:
+                copied = 0
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    copied += len(chunk)
+                    target.write(chunk)
+            _require(
+                copied == details.st_size,
+                f"distribution file changed while exporting: {path}",
+            )
+
+    executable = directory / "Clicky.exe"
+    _require(executable in candidates, "Clicky.exe is missing from the distribution")
+    executable_details = _validate_distribution_entry(executable, directory=False)
+    with executable.open("rb") as source, executable_output.open("xb") as target:
+        shutil.copyfileobj(source, target, length=1024 * 1024)
+    _require(
+        executable_output.stat().st_size == executable_details.st_size
+        and _sha256(executable_output) == _sha256(executable),
+        "exported executable differs from the packaged executable",
+    )
+    return {
+        **identity,
+        "archive_sha256": _sha256(archive_output),
+        "archive_bytes": archive_output.stat().st_size,
+        "executable_sha256": _sha256(executable_output),
+    }
+
+
+def run(output: Path, archive_output: Path, executable_output: Path) -> None:
     _require(os.name == "nt", "Windows runtime validation requires Windows")
     _require(
         os.environ.get("CLICKY_WINDOWS_SANDBOX") == "1",
@@ -867,20 +963,29 @@ def run(output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clicky-runtime-validation-") as tmp:
         root = Path(tmp)
-        pre_execution_scan = _validate_defender_scan(update_signatures=True)
-        pristine = pre_execution_scan["distribution_sha256_before"]
+        distribution = ROOT / "dist" / "Clicky"
+        pristine = _tree_identity(distribution)
         audio_crash_cleanup = _validate_crash_cleanup(root)
         privacy_controls = _validate_privacy_controls(root)
         dpapi = _validate_dpapi()
         unsigned_application = _validate_unsigned_application(root)
-        post_execution_tree = _tree_sha256(ROOT / "dist" / "Clicky")
+        post_execution = _tree_identity(distribution)
         _require(
-            post_execution_tree == pristine,
+            post_execution == pristine,
             "packaged execution changed or deleted distribution content",
         )
-        post_execution_scan = _validate_defender_scan(
-            expected_distribution_sha256=pristine,
-            update_signatures=False,
+        exported = _export_distribution(
+            distribution, archive_output, executable_output
+        )
+        _require(
+            exported["tree_sha256"] == pristine["tree_sha256"]
+            and exported["file_count"] == pristine["file_count"]
+            and exported["total_bytes"] == pristine["total_bytes"],
+            "exported distribution identity differs from the validated tree",
+        )
+        _require(
+            exported["executable_sha256"] == unsigned_application["sha256"],
+            "exported executable identity differs from packaged execution",
         )
         report = {
             "python": sys.version,
@@ -889,11 +994,16 @@ def run(output: Path) -> None:
             "privacy_controls": privacy_controls,
             "dpapi": dpapi,
             "unsigned_application": unsigned_application,
-            "defender": {
-                "pristine_distribution_sha256": pristine,
-                "pre_execution": pre_execution_scan,
-                "post_execution_tree_sha256": post_execution_tree,
-                "post_execution": post_execution_scan,
+            "distribution_integrity": {
+                "scheme": pristine["scheme"],
+                "pristine_tree_sha256": pristine["tree_sha256"],
+                "post_execution_tree_sha256": post_execution["tree_sha256"],
+                "unchanged": True,
+                "file_count": pristine["file_count"],
+                "total_bytes": pristine["total_bytes"],
+                "archive_sha256": exported["archive_sha256"],
+                "archive_bytes": exported["archive_bytes"],
+                "clicky_exe_sha256": exported["executable_sha256"],
             },
         }
     output.write_text(
@@ -905,6 +1015,8 @@ def run(output: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--distribution-archive", type=Path)
+    parser.add_argument("--executable-copy", type=Path)
     parser.add_argument("--crash-child", nargs=2, metavar=("DATA_DIR", "MARKER"))
     parser.add_argument("--cleanup-child", metavar="DATA_DIR")
     args = parser.parse_args()
@@ -916,7 +1028,11 @@ def main() -> int:
         return 0
     if args.output is None:
         parser.error("--output is required")
-    run(args.output)
+    if args.distribution_archive is None:
+        parser.error("--distribution-archive is required")
+    if args.executable_copy is None:
+        parser.error("--executable-copy is required")
+    run(args.output, args.distribution_archive, args.executable_copy)
     return 0
 
 
