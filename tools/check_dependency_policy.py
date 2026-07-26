@@ -48,8 +48,8 @@ CONSERVATIVE_PINS = {
     "pillow": "12.3.0",
 }
 EXPECTED_ACTIONS = {
-    "actions/checkout": "11bd71901bbe5b1630ceea73d27597364c9af683",
-    "actions/setup-python": "a26af69be951a213d495a4c3e4e4022e16d87065",
+    "actions/checkout": "08c6903cd8c0fde910a37f88322edcfb5dd907a8",
+    "actions/setup-python": "e797f83bcb11b83ae66e0230d6156d7c80228e7c",
     "astral-sh/setup-uv": "08807647e7069bb48b6ef5acd8ec9567f424441b",
 }
 
