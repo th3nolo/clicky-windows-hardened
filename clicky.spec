@@ -16,6 +16,11 @@ SECURITY STATUS:
 We use --onedir (not --onefile) because faster-whisper and ctranslate2 ship
 large native DLLs. A one-file build extracts those files to a temporary
 directory at every launch, increasing startup time and transient-file surface.
+
+Python modules are also collected as external bytecode instead of an embedded
+PYZ archive. This keeps the executable payload inspectable and avoids presenting
+antivirus engines with a large compressed-code overlay. The exact distribution
+tree and its future signed installer must protect these external files.
 """
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -52,14 +57,19 @@ hidden = [
     "audio.tts.openai_tts_provider",
     "audio.tts.elevenlabs_provider",
 
-    # Indirect deps
-    "tiktoken_ext",
-    "tiktoken_ext.openai_public",
 ]
 
 # ── Heavy packages that ship non-Python assets (DLLs, JSON, voices).
 #    collect_all grabs submodules + data files + binaries + metadata.
 datas, binaries, hiddenimports = [], [], []
+# Dynamically loaded bundled skills stay as source so their reviewed bytes can
+# be verified against the shipped manifest before execution.
+datas += [
+    ("skills/example_self_mode.py", "skills"),
+    ("skills/manifest.json", "skills"),
+]
+# Every package below is a pinned runtime dependency. Collection failures are
+# fatal so a green build cannot silently omit an installed feature.
 for pkg in (
     "faster_whisper",
     "ctranslate2",
@@ -82,13 +92,10 @@ for pkg in (
     "docx",
     "pywhispercpp",
 ):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception:
-        pass  # package not installed — that path is optional anyway
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
 
 hiddenimports += hidden
 hiddenimports += collect_submodules("PyQt6")
@@ -109,7 +116,7 @@ a = Analysis(
         "notebook", "jupyter", "IPython",
         "torch.distributions", "torch.onnx",
     ],
-    noarchive=False,
+    noarchive=True,              # external bytecode; avoid an opaque PYZ payload
 )
 
 pyz = PYZ(a.pure)

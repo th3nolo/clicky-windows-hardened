@@ -2,7 +2,7 @@
 
 Testing establishes behavior under stated conditions. It does not prove the absence of malicious code, unknown vulnerabilities, provider-side failures, or unsafe model behavior.
 
-Use Windows x86-64, Python `3.12.10`, uv `0.11.19`, and the checked-in lock. Tests must not install packages, contact public services, access real secrets, or run the desktop application unless the manual test explicitly requires it.
+Use Windows x86-64, Python `3.12.10`, uv `0.11.19`, and the checked-in lock. Unit tests and static checks must not install packages, contact public services, access real secrets, or run the desktop application. The isolated Windows Sandbox gate is the explicit dynamic exception described below.
 
 ## Prepare the locked environment
 
@@ -25,13 +25,21 @@ uv run --frozen --no-sync --python "3.12.10" python tools/check_dependency_polic
 
 This check validates exact dependency pins, the publication cutoff, the sole index, Windows wheel coverage, artifact hashes, the SBOM, non-installable legacy requirement files, hardened build flags, and commit-pinned GitHub Actions.
 
+Live PyPI validation must use the reviewed CA bundle explicitly:
+
+~~~powershell
+uv run --frozen --no-sync --python "3.12.10" python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
+~~~
+
+The bundle is `certifi/cacert.pem` extracted without execution from the already locked `certifi==2026.6.17` wheel. The wheel SHA-256 is `2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db`; the tracked PEM SHA-256 is `bbc7e9c01d7551bb8a159b5dedd989b8ee3ce105aff522b68eb1b01bf854cab0`. Its upstream license is retained beside it. The policy binds that exact wheel version, filename, size, and SHA-256 to `uv.lock`, and rejects a missing, reparse-point, oversized, altered, or invalid bundle and passes the resulting certificate-verifying, hostname-checking SSL context directly to every PyPI request. Ambient Windows roots and TLS override variables are not trusted for this gate. A network that requires a private inspection CA therefore fails closed unless that trust decision receives a separate explicit review.
+
 ### Standard-library test suite
 
 ~~~powershell
 uv run --frozen --no-sync --python "3.12.10" python -m unittest discover -s tests -p "test_*.py" -v
 ~~~
 
-The suite covers dependency policy, URL and IP rejection, redirect handling, connected-peer verification, bounded response reads, skill approvals, DPAPI token storage and migration, privacy defaults, local model resolution, model hashes, and Ollama model identity.
+The suite covers live dependency provenance logic, URL and IP rejection, redirect handling, connected-peer verification, bounded response reads, bundled and user skill integrity, DPAPI token storage and migration, explicit privacy permissions, private audio cleanup, complete local-model hashing, and Ollama model identity.
 
 Network behavior is tested with fakes. A unit test must not make a live external request. Use generated dummy tokens and temporary files only.
 
@@ -71,6 +79,66 @@ CI has two paths:
 
 The CI artifact is not a release and is not retained for distribution.
 
+## Isolated Windows Sandbox validation
+
+The runtime gate uses a commit-exact archive rather than mapping the Git checkout. Candidate Python and uv tools are never executed on the host. `tools/prepare-windows-sandbox.ps1` authenticates these exact inputs before use:
+
+- CPython `3.12.10` Windows x86-64 embeddable archive from `https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip`, SHA-256 `4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3`
+- uv `0.11.19` Windows x86-64 executable, SHA-256 `cd628b46729d01ad110146a647a633a6e5de0e091d73db46afaeee6fcb4ba648`
+- the reviewed Git for Windows executable and Authenticode signer pinned in the preparer
+
+The Python archive may be downloaded to an untrusted staging path, but do not extract or execute it on the host. Do not substitute a Microsoft Store App Execution Alias, a different tool version, or a self-calculated replacement digest.
+
+~~~powershell
+$pythonArchive = "$env:TEMP\python-3.12.10-embed-amd64.zip"
+$uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
+$gitExe = "C:\Program Files\Git\cmd\git.exe"
+.\tools\prepare-windows-sandbox.ps1 `
+  -PythonRuntimeArchive $pythonArchive `
+  -UvExe $uvExe `
+  -GitExe $gitExe
+~~~
+
+The preparer refuses inherited `GIT_*` variables, executable FSMonitor configuration, replace refs, grafts, object alternates, a dirty tree, or any hook path other than the repository-local `NUL`. It verifies Git objects, runs replacement-disabled commands through the authenticated absolute Git path, archives the exact HEAD commit, and extracts the bootstrap bytes from that archive. Preparation occurs in a temporary directory and is atomically published only after every check passes.
+
+The generated `.wsb` has exactly two mappings: a read-only input directory and a fresh writable results directory. The complete hash-pinned Python archive and uv executable are inside the input mapping; no host toolchain directory is exposed. Before launch, run the host verifier in prepared-only mode with a separately trusted Python interpreter. It independently regenerates the exact commit archive with the authenticated Git executable and rejects duplicate/overlapping mappings, reparse points, unexpected inputs, oversized files, malformed archives, or a nonempty results directory.
+
+~~~powershell
+python .\tools\verify_windows_sandbox_results.py <run-directory> `
+  --prepared-only `
+  --expected-commit <40-character-commit> `
+  --repo-root . `
+  --git-exe "C:\Program Files\Git\cmd\git.exe"
+~~~
+
+Launching the generated configuration disables vGPU, host microphone and camera input, clipboard and printer redirection, and enables Protected Client mode. Networking is a controlled exception because live PyPI provenance and an actual post-consent Edge TTS destination test require internet access. Microsoft documents that network-enabled Windows Sandbox can also reach networks available to the host. Run this gate only on a trusted or isolated network. The TTS test sends only the fixed text `Clicky synthetic privacy validation.` to `speech.platform.bing.com`; no API key or personal content is used.
+
+The fresh results directory is the only writable host mapping. The bootstrap and host verifier enforce an exact bounded result-file allowlist and reject reparse points and oversized evidence. Windows Sandbox mapped folders do not provide a per-folder disk quota, so a compromised process could still attempt to consume free space before shutdown. Ensure adequate free space and monitor the disposable run; this is a documented residual containment limitation.
+
+Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. After the runtime controls pass, the harness exports a deterministic archive of the complete distribution and an exact copy of the executable for separate host-side static scanning. The runtime harness verifies:
+
+- source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
+- denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled
+- denied and granted manager-controlled screen capture against a known synthetic window, plus the same capture path inside `Clicky.exe`
+- denied cloud TTS before consent and packaged/source destination evidence after consent, restricted to the pinned Microsoft hostname with DNS-to-TCP peer correlation
+- crash-abandoned WAV cleanup, a hard 24-hour privacy TTL resistant to PID reuse, and locale-independent directory/file ACL evidence
+- native packaged startup, first-run privacy dialog before manager/skill construction, no external pre-consent TCP destination, embedded bundled-skill trust anchoring, and unsigned Authenticode status
+- a domain-separated whole-tree digest before and after packaged execution, followed by a hash-bound deterministic export of that unchanged tree
+
+Only `sandbox-validation.log`, `runtime-validation.json`, `Clicky-unsigned.exe`, `clicky-unsigned-onedir.zip`, the source/archive/executable identity files, and one `PASS.txt` or `FAIL.txt` marker are expected in the fresh results directory. Treat extra, oversized, non-regular, or reparse-point output as a failed containment check. The sandbox automatically shuts down after the run. After shutdown, rerun the host verifier without `--prepared-only`; it streams and validates the distribution archive without extracting or executing it. Only that post-run result is authoritative for the runtime gate.
+
+### Post-sandbox static scan gate
+
+The Sandbox `PASS.txt` is runtime and containment evidence, not an antivirus verdict. After the post-run host verifier succeeds:
+
+1. Record the SHA-256 values reported for the commit-bound source archive, `clicky-unsigned-onedir.zip`, and `Clicky-unsigned.exe`.
+2. In Malwarebytes, keep **Scan within archives** enabled and manually scan the full distribution archive or the fresh results directory. Save the report or a screenshot with the scanner version and time.
+3. Query VirusTotal by SHA-256 first. Upload only an unknown artifact that is safe to disclose; public VirusTotal uploads may be shared with security partners.
+4. Scan the standalone executable so engines that do not support ZIP archives can inspect the PE file directly. Do not repackage the source archive merely to turn unsupported-engine results into votes: repackaging changes its commit-bound hash and creates a different artifact.
+5. Require zero malicious and zero suspicious verdicts. Record unsupported engines and engine failures explicitly as non-votes.
+
+A clean static scan is additional evidence, not proof that the software is malware-free. The executable and full distribution must remain unsigned and undistributed until the release policy in `SECURITY.md` is satisfied.
+
 ## Manual security checks
 
 Use synthetic screen content, test accounts, and temporary process-scoped keys. Do not expose a real password manager, private document, production account, or personal conversation during testing.
@@ -78,13 +146,15 @@ Use synthetic screen content, test accounts, and temporary process-scoped keys. 
 ### Privacy defaults
 
 1. Start with no existing `%LOCALAPPDATA%\Clicky\preferences.json`.
-2. Launch Clicky.
-3. Confirm **Web Search** is off in the tray.
-4. Confirm **Journal Logging** is off in the tray.
-5. Ask a local question.
-6. Confirm no `journal.db` is created and no search request occurs.
-7. Enable one toggle, restart, and confirm only that explicit choice persists.
-8. Disable it again and confirm the stored preference changes.
+2. Launch Clicky and confirm the privacy dialog appears before microphone or hotkey capture starts.
+3. Close the dialog and confirm the microphone is unopened, speech is silent, and no screenshot is taken. Restart and confirm the dialog returns.
+4. Choose **Keep all disabled** and confirm all three denials persist.
+5. Grant only microphone permission. Confirm microphone capture works while cloud TTS remains silent and screen capture remains blocked.
+6. Grant cloud TTS using synthetic text and verify only the selected provider destination.
+7. Grant screen capture while displaying synthetic content on every monitor; verify local providers keep images local and the selected cloud provider receives them only after permission.
+8. Confirm **Web Search** and **Journal Logging** are off in the tray and no `journal.db` or search request appears.
+9. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
+10. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
 
 ### Provider keys and preferences
 
@@ -131,11 +201,12 @@ Do not test with code that launches a process, changes system state, or accesses
 Use small generated fixture files for unit tests. For an approved real-model smoke test:
 
 1. Provision the model separately.
-2. Calculate the expected SHA-256.
-3. Confirm the configured file or `model.bin` loads only with the matching digest.
-4. Change the expected digest and confirm loading fails.
-5. Remove or duplicate the cached candidate and confirm resolution fails closed.
-6. Monitor network activity and confirm Clicky does not download a replacement.
+2. For whisper.cpp, hash the selected file. For faster-whisper, compute the whole-directory digest with `python -m audio.stt.local_models <directory>`.
+3. Confirm the configured model loads only with the matching digest.
+4. Change each required faster-whisper file in turn, then add an extra file, and confirm every change invalidates the digest.
+5. Change the expected digest and confirm loading fails.
+6. Remove or duplicate the cached candidate and confirm resolution fails closed.
+7. Monitor network activity and confirm Clicky does not download a replacement.
 
 ### Ollama identity and process behavior
 

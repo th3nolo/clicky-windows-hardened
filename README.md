@@ -35,7 +35,7 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
 - Optional web search and a local learning journal. Both are off by default.
 
-The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Edge TTS and web search also require network access. Review the provider and privacy settings before using real screen content.
+The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Edge TTS and web search also require network access. Microphone, cloud text-to-speech, and screen capture each remain disabled until the first-run privacy dialog records an explicit choice.
 
 ## Hardened defaults
 
@@ -44,9 +44,9 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 - Runtime and build dependencies use exact versions in `pyproject.toml`.
 - `uv.lock` records SHA-256 artifact hashes.
 - Resolution is restricted to 64-bit Windows and the official PyPI index.
-- The dependency cutoff is `2026-07-22T00:00:00Z`, enforcing the 72-hour publication-age policy for this audit date.
+- The dependency cutoff is `2026-07-22T00:00:00Z`; CI also reconciles every locked artifact with live PyPI metadata and rejects missing, yanked, mismatched, future-dated, or under-72-hour artifacts.
 - GitHub Actions are pinned to full commit hashes.
-- CI validates the dependency policy, runs standard-library security tests, parses every Python file, and performs an unsigned smoke build that is deleted afterward.
+- CI validates live dependency provenance, runs standard-library security tests, parses every Python file, and performs an unsigned smoke build that is deleted afterward.
 
 ### Secrets and local state
 
@@ -54,6 +54,7 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 - Provider API keys are read from the current process environment only.
 - GitHub Copilot OAuth tokens are encrypted for the current Windows user with DPAPI.
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
+- Microphone access, cloud text-to-speech, and screen capture require independent persisted permission.
 - Journal logging and web search are disabled until the user enables them in the tray.
 
 ### Network requests
@@ -62,8 +63,8 @@ Web search accepts HTTPS destinations only. It rejects local, private, link-loca
 
 ### Local code and models
 
-- Bundled skills load normally. Python skills under `~/.clicky/skills` run only when `allowlist.json` approves the exact filename and SHA-256 digest.
-- Local speech models must already exist and match a configured SHA-256 digest.
+- Bundled skill source must match the checked-in SHA-256 manifest before execution. Python skills under `~/.clicky/skills` run only when `allowlist.json` approves the exact filename and SHA-256 digest.
+- Local speech models must already exist. Faster-whisper uses a deterministic digest covering every regular file in the model directory; whisper.cpp verifies the selected model file.
 - Ollama models must match both the configured tag and the immutable digest reported by the local Ollama API.
 - Clicky does not download, install, start, or pull Ollama, speech models, or other executables.
 

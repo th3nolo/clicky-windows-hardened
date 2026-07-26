@@ -54,10 +54,16 @@ class GeminiProvider(BaseLLMProvider):
             "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.7},
         }
 
-        url = f"{STREAM_URL.format(model=model)}?alt=sse&key={self._api_key}"
+        url = STREAM_URL.format(model=model)
 
         async with httpx.AsyncClient(timeout=120) as client:
-            async with client.stream("POST", url, json=body) as resp:
+            async with client.stream(
+                "POST",
+                url,
+                params={"alt": "sse"},
+                headers={"x-goog-api-key": self._api_key},
+                json=body,
+            ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
@@ -79,7 +85,8 @@ class GeminiProvider(BaseLLMProvider):
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={self._api_key}"
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": self._api_key},
                 )
                 return r.status_code == 200
         except Exception:

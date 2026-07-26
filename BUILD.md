@@ -59,7 +59,7 @@ The marker file states that the portable output is unsigned, local-test-only, an
 
 ## Why the build is wheel-only
 
-`pyproject.toml` uses exact dependency versions, a single PyPI index, `no-build = true`, `no-sources = true`, and a 64-bit Windows required environment. The lock contains SHA-256 artifact hashes. The dependency-policy test rejects dependencies without locked wheels and rejects Git, path, editable, and unreviewed index sources.
+`pyproject.toml` uses exact dependency versions, a single PyPI index, `no-build = true`, `no-sources = true`, and a 64-bit Windows required environment. The lock contains SHA-256 artifact hashes. The dependency-policy test rejects dependencies without locked wheels and rejects Git, path, editable, and unreviewed index sources. CI additionally matches every locked artifact to bounded live PyPI metadata and enforces the 72-hour age, yank state, filename, size, URL, and SHA-256 requirements.
 
 `langdetect` and `pynput` are intentionally absent because their resolved dependency chains do not satisfy this policy. Do not add them to a local build environment.
 

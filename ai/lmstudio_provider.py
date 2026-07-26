@@ -67,7 +67,11 @@ class LMStudioProvider(BaseLLMProvider):
             "stream": True,
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(
+            timeout=120,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
             try:
                 async with client.stream(
                     "POST",
@@ -102,7 +106,11 @@ class LMStudioProvider(BaseLLMProvider):
 
     async def health_check(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(
+                timeout=5,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
                 r = await client.get(f"{self._base}/models")
                 return r.status_code == 200
         except Exception:
@@ -111,7 +119,11 @@ class LMStudioProvider(BaseLLMProvider):
     async def list_models(self) -> List[str]:
         """Return model ids LM Studio currently reports via /v1/models."""
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(
+                timeout=5,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
                 r = await client.get(f"{self._base}/models")
                 data = r.json()
                 return [m["id"] for m in data.get("data", [])]

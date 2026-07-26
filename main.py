@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
 from config import cfg
+from audio.secure_temp import initialize_secure_audio_temp
+from privacy_controls import microphone_allowed
 from ui.tray import TrayManager
 from ui.panel import CompanionPanel, AppState
 from ui.overlay import (
@@ -97,11 +99,38 @@ def main():
     app.setApplicationName("Clicky")
     app.setApplicationDisplayName("Clicky - AI Companion")
 
+    # Consent is the first application-controlled capability boundary. In
+    # particular, CompanionManager construction loads approved Python skills
+    # and starts a worker thread, so it must not happen before this modal.
+    privacy_permission_error = None
+    try:
+        from ui.privacy_consent import request_privacy_permissions
+
+        request_privacy_permissions()
+    except Exception as exc:
+        privacy_permission_error = exc
+
+    secure_audio_error = None
+    try:
+        initialize_secure_audio_temp()
+    except Exception as exc:
+        secure_audio_error = exc
+
     # ── Core components ───────────────────────────────────────────────────────
     manager = CompanionManager()
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    if privacy_permission_error is not None:
+        tray.show_notification(
+            "Privacy permissions unavailable",
+            f"Sensitive capabilities remain disabled: {privacy_permission_error}",
+        )
+    if secure_audio_error is not None:
+        tray.show_notification(
+            "Private audio storage unavailable",
+            f"Local speech transcription will fail closed: {secure_audio_error}",
+        )
 
     # ── Wire signals ──────────────────────────────────────────────────────────
 
@@ -292,6 +321,14 @@ def main():
         _setup_keepalive[0] = wiz
     tray.on_run_setup.connect(_run_setup_again)
 
+    def _run_privacy_permissions():
+        from ui.privacy_consent import request_privacy_permissions
+
+        request_privacy_permissions(force=True)
+        manager.refresh_privacy_permissions()
+
+    tray.on_privacy_permissions.connect(_run_privacy_permissions)
+
     def _save_diagnostics():
         import datetime, json, platform, traceback
         from ai import ollama_bootstrap as ob
@@ -357,9 +394,14 @@ def main():
     manager.start()        # begin ambient mic + wake-word scanning
 
     providers = cfg.describe()
+    input_status = (
+        f"Say 'Clicky' or hold {cfg.hotkey}"
+        if microphone_allowed(cfg)
+        else "Microphone disabled in Privacy permissions"
+    )
     tray.show_notification(
         "Clicky is running",
-        f"Say 'Clicky' or hold {cfg.hotkey}  |  LLM: {providers['llm']}",
+        f"{input_status}  |  LLM: {providers['llm']}",
     )
 
     # ── First-run setup wizard ────────────────────────────────────────────────
@@ -389,4 +431,14 @@ _setup_keepalive: list = [None]
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--security-self-test-read-dpapi":
+        from packaged_self_test import read_dpapi_child
+
+        raise SystemExit(read_dpapi_child())
+    if len(sys.argv) == 3 and sys.argv[1] == "--security-self-test":
+        from packaged_self_test import run as run_packaged_self_test
+
+        raise SystemExit(run_packaged_self_test(Path(sys.argv[2])))
+    if any(argument.startswith("--security-self-test") for argument in sys.argv[1:]):
+        raise SystemExit(2)
     main()

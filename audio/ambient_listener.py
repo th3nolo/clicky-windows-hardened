@@ -18,6 +18,7 @@ import numpy as np
 import sounddevice as sd
 
 from audio.capture import pcm16_to_wav, resample_pcm, SAMPLE_RATE
+from audio.secure_temp import secure_wav_file
 from config import cfg
 
 
@@ -143,6 +144,12 @@ class AmbientListener:
         self._reset_segment()
         return pcm
 
+    def cancel_recording(self) -> None:
+        """Discard buffered speech and return to standby without exposing it."""
+        self._rec_buffer = []
+        self._mode = Mode.STANDBY
+        self._reset_segment()
+
     def set_wake_word_enabled(self, enabled: bool):
         self._wake_word_enabled = enabled
 
@@ -251,17 +258,13 @@ class AmbientListener:
 
     def _transcribe_tiny(self, pcm: bytes) -> str:
         """Pad PCM with silence (whisper accuracy degrades on ultra-short clips)."""
-        import tempfile, os
         model = self._get_model()
         pad = bytes(int(SAMPLE_RATE * 0.4) * 2)    # 400ms silence each side
         padded = pad + pcm + pad
         wav = pcm16_to_wav(padded)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(wav)
-            path = f.name
-        try:
+        with secure_wav_file(wav) as path:
             segments, _ = model.transcribe(
-                path,
+                str(path),
                 beam_size=5,
                 language="en",
                 condition_on_previous_text=False,
@@ -270,8 +273,6 @@ class AmbientListener:
                 initial_prompt="Clicky is a helpful AI assistant.",
             )
             return " ".join(s.text for s in segments)
-        finally:
-            os.unlink(path)
 
     def _get_model(self):
         with self._wake_lock:
@@ -282,6 +283,8 @@ class AmbientListener:
 
                 wake_model = os.getenv("CLICKY_WAKE_MODEL", "").strip() or "tiny.en"
                 self._wake_model = load_local_faster_whisper_model(
-                    wake_model, cfg.clicky_wake_model_sha256
+                    wake_model,
+                    cfg.clicky_wake_model_sha256,
+                    digest_variable="CLICKY_WAKE_MODEL_SHA256",
                 )
             return self._wake_model

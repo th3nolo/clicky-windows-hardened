@@ -31,10 +31,11 @@ in LOGICAL screen pixels, ready to feed directly into the overlay pointer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Any, Coroutine, Optional, List, Tuple
 
 log = logging.getLogger("clicky.pointer")
 
@@ -266,24 +267,64 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
 #  TIER 3 — Vision LLM grid fallback (delegated to existing element_locator)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
-    """Last-resort: use the grid-locator path (element_locator.py)."""
+
+class _ActiveEventLoopError(RuntimeError):
+    """Raised when the synchronous Tier 3 API would block an event loop."""
+
+
+def _run_locator(coroutine: Coroutine[Any, Any, Any]) -> Any:
+    """Run the async locator while preserving this module's synchronous API.
+
+    find_target normally runs outside an asyncio loop. A synchronous call from
+    a running event loop cannot wait for Tier 3 without freezing that loop, so
+    fail immediately instead of hiding the block in a helper thread.
+    """
     try:
-        from ai.element_locator import locate_element  # v1 module
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+
+    # The coroutine has already been constructed by the caller. Close it
+    # before rejecting the unsupported boundary so Python does not later emit
+    # an "unawaited coroutine" warning.
+    coroutine.close()
+    raise _ActiveEventLoopError(
+        "Tier 3's synchronous locator cannot run inside an active asyncio "
+        "event loop; use a non-loop worker or keep skip_vision=True"
+    )
+
+
+def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
+    """Last-resort: use the Anthropic Computer Use element locator."""
+    try:
+        from ai.element_locator import detect_element
     except ImportError:
         log.warning("element_locator not available — Tier 3 (vision) disabled")
         return None
 
     try:
-        coord = locate_element(query, screenshot, llm_provider)
-        if not coord:
+        detected = _run_locator(detect_element(
+            screenshot_jpeg_b64=screenshot.base64_jpeg,
+            original_width=screenshot.width,
+            original_height=screenshot.height,
+            physical_width=screenshot.physical_width,
+            physical_height=screenshot.physical_height,
+            physical_left=screenshot.physical_left,
+            physical_top=screenshot.physical_top,
+            dpi_scale=screenshot.dpi_scale,
+            screen_index=screenshot.index,
+            user_question=query,
+        ))
+        if not detected:
             return None
-        x, y = coord
+        x, y = detected.x, detected.y
         return Target(
             x=x, y=y, bbox=(x - 20, y - 20, x + 20, y + 20),
             label=query, source="vision",
             confidence=0.5,   # vision is least trustworthy
         )
+    except _ActiveEventLoopError:
+        raise
     except Exception as e:
         log.warning("Vision tier failed: %s", e)
         return None

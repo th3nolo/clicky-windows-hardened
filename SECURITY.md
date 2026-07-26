@@ -47,7 +47,8 @@ Third-party provider services, Ollama, LM Studio, model publishers, Python, uv, 
 - Direct dependencies use exact versions.
 - `uv.lock` contains SHA-256 hashes and is restricted to the official PyPI index and 64-bit Windows wheels.
 - Source builds, Git dependencies, path dependencies, managed Python downloads, package upgrades, and unreviewed package indexes are refused by the supported build.
-- The publication cutoff is `2026-07-22T00:00:00Z`.
+- The publication cutoff is `2026-07-22T00:00:00Z`. CI additionally matches every locked artifact URL, filename, size, and SHA-256 against live PyPI version metadata and rejects yanked, future-dated, or under-72-hour artifacts.
+- Live PyPI TLS is bound to the reviewed `certifi==2026.6.17` CA bundle tracked with its upstream license; ambient host roots and TLS bypass variables are not accepted by the supported gate.
 - GitHub Actions use reviewed full commit hashes and do not persist checkout credentials.
 
 These controls reduce dependency substitution and fresh-package risk. They do not prove that a locked dependency is free from malicious or vulnerable code.
@@ -82,31 +83,37 @@ These checks reduce server-side request forgery and unbounded-download risk. The
 
 ### Local executable code
 
-Bundled skills are part of the reviewed application. User skills are arbitrary Python code and are disabled by default. A user skill runs only when its exact filename and SHA-256 digest appear in `~/.clicky/skills/allowlist.json`. A matching digest identifies reviewed bytes; it does not establish that those bytes are safe.
+Bundled skills are part of the reviewed application and execute only when every bundled source file matches the checked-in SHA-256 manifest. CI verifies that the manifest covers exactly the packaged bundled skills. User skills are arbitrary Python code and are disabled by default. A user skill runs only when its exact filename and SHA-256 digest appear in `~/.clicky/skills/allowlist.json`. A matching digest identifies reviewed bytes; it does not establish that those bytes are safe.
 
 ### Models and external programs
 
 Clicky does not download, install, start, or pull Ollama or local speech models.
 
-- A local speech model must match its configured SHA-256 before loading.
+- A faster-whisper directory must match a deterministic SHA-256 covering every regular file, relative path, and size; symlinks, junctions, and linked descendants are refused. A whisper.cpp model file must match its configured SHA-256.
 - An Ollama model must match its configured model tag and the exact digest returned by the local Ollama API.
 - Missing, ambiguous, changed, or unverifiable models fail closed.
 
-Model hashes establish file or artifact identity. They do not establish model quality, license compliance, training-data provenance, or resistance to malicious prompts.
+Model hashes establish file or artifact identity. They do not establish model quality, license compliance, training-data provenance, or resistance to malicious prompts. Digest verification does not lock the model directory: another process with the same user's write access could replace files between verification and the native runtime's load. Keep reviewed model directories write-protected from other same-user processes when that local threat is in scope.
 
 ### Privacy defaults
 
-Web search and journal logging are off by default. After explicit activation, the setting persists in the non-secret preferences file.
+Microphone access, cloud text-to-speech, and screen capture are independently off until the current first-run privacy notice records an explicit choice. Closing the dialog grants nothing. Screen permission covers capture of every monitor and disclosure that cloud LLM providers receive those images; cloud TTS permission covers response text sent to Microsoft Edge TTS, OpenAI, or ElevenLabs.
 
-The journal can contain questions, answers, provider and model names, active-application identifiers, and window titles. It is a local plaintext SQLite database. Do not enable it for sensitive work unless that storage is acceptable.
+Temporary local-transcription WAV files are created in a protected per-user directory, removed after use, and swept after a terminated-process crash. Deletion cannot guarantee forensic erasure from SSDs, backups, snapshots, or other same-user processes that read a file while it existed.
 
-The privacy guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Screen capture, document context, recordings, and cloud-provider requests require separate judgment.
+Web search and journal logging are also off by default. After explicit activation, the setting persists in the non-secret preferences file. The journal can contain questions, answers, provider and model names, active-application identifiers, and window titles. It is a local plaintext SQLite database.
+
+The Privacy Guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Explicit screen permission is still required, but permission does not make the title heuristic comprehensive.
 
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.
 
-A future release requires Authenticode signing, timestamping, verification of the application and installer signatures, final SHA-256 values, an SBOM, and a source-commit reference. Never ask a user to bypass SmartScreen, disable antivirus, or add an exclusion.
+A future release requires Authenticode signing, timestamping, verification of the application and installer signatures, final SHA-256 values, an SBOM, and a source-commit reference. It also requires a completed Windows Sandbox runtime gate, a passing post-run host verification, and exact-hash static scans of the commit-bound source archive, exported full distribution, and exported executable with Malwarebytes and VirusTotal. Any malicious or suspicious verdict blocks release; unsupported engines and scan failures must be recorded as non-votes rather than hidden by repackaging the artifact.
+
+Consumer Malwarebytes scanning is a manual review gate, not a cryptographically authenticated automated attestation. Record the artifact SHA-256, scanner/product version, scan time, result, and exported report or screenshot. VirusTotal reports are supplementary multi-engine evidence and may share uploaded samples with security partners; look up the hash first and upload only artifacts that are safe to disclose.
+
+Never ask a user to bypass SmartScreen, disable antivirus, or add an exclusion.
 
 ## License
 
