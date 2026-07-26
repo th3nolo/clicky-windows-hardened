@@ -90,6 +90,7 @@ $inheritedGitVariables = @(Get-ChildItem Env: | Where-Object { $_.Name -like "GI
 if ($inheritedGitVariables.Count -ne 0) {
     throw "Refusing inherited Git environment variables: $($inheritedGitVariables.Name -join ", ")"
 }
+try {
 $env:GIT_CONFIG_NOSYSTEM = "1"
 $env:GIT_CONFIG_GLOBAL = "NUL"
 $env:GIT_NO_REPLACE_OBJECTS = "1"
@@ -222,3 +223,8 @@ Write-Output "uv SHA-256: $ExpectedUvSha256"
 Write-Output "Python runtime SHA-256: $ExpectedPythonRuntimeSha256"
 Write-Output "Results directory: $(Join-Path $finalRunRoot "results")"
 Write-Output "Sandbox configuration: $(Join-Path $finalRunRoot "clicky-hardened-validation.wsb")"
+} finally {
+    Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue
+    Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue
+    Remove-Item Env:GIT_NO_REPLACE_OBJECTS -ErrorAction SilentlyContinue
+}

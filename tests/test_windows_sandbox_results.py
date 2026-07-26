@@ -262,6 +262,23 @@ class SandboxBootstrapSafetyTests(unittest.TestCase):
         self.assertIn(publish, command)
         self.assertLess(command.index(shutdown), command.index(publish))
 
+    def test_preparer_restores_git_environment_in_finally(self) -> None:
+        preparer = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "prepare-windows-sandbox.ps1"
+        ).read_text(encoding="utf-8")
+        set_index = preparer.index('$env:GIT_CONFIG_NOSYSTEM = "1"')
+        finally_index = preparer.rindex("} finally {")
+        self.assertLess(set_index, finally_index)
+        cleanup = preparer[finally_index:]
+        for variable in (
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_NO_REPLACE_OBJECTS",
+        ):
+            self.assertIn(f"Remove-Item Env:{variable}", cleanup)
+
 
 if __name__ == "__main__":
     unittest.main()
