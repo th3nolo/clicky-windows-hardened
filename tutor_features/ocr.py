@@ -9,8 +9,8 @@ Cheap heuristic: trigger when the user's question mentions exact text like
 'what does the error say', 'read the line', 'what's in the cell', etc.
 
 Setup:
-    pip install pytesseract pillow
-    + install Tesseract OCR binary:
+    Python packages come from the reviewed uv.lock environment. Provision and
+    verify a Tesseract OCR binary separately; Clicky never installs it:
       https://github.com/UB-Mannheim/tesseract/wiki
 """
 

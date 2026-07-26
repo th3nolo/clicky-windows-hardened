@@ -3,11 +3,12 @@ Always-on ambient audio listener.
 Handles:
   - Continuous mic stream (single sounddevice input)
   - Energy-based VAD to detect speech segments
-  - Wake-word detection via faster-whisper tiny model (triggers on "clicky" / "hey clicky")
+  - Wake-word detection via an already-provisioned local faster-whisper model
   - Push-to-talk buffering when hotkey is held
   - Streams RMS level to UI (cursor waveform + panel)
 """
 
+import os
 import threading
 import time
 from enum import Enum, auto
@@ -17,6 +18,7 @@ import numpy as np
 import sounddevice as sd
 
 from audio.capture import pcm16_to_wav, resample_pcm, SAMPLE_RATE
+from config import cfg
 
 
 class Mode(Enum):
@@ -55,10 +57,12 @@ class AmbientListener:
         on_level: Callable[[float], None],
         on_wake: Callable[[], None],
         device: Optional[int] = None,
+        on_error: Optional[Callable[[str], None]] = None,
     ):
         self._on_level = on_level
         self._on_wake = on_wake
         self._device = device       # None = system default input device
+        self._on_error = on_error
         self._stream_rate = SAMPLE_RATE   # actual rate the stream opens at
 
         self._mode: Mode = Mode.STANDBY
@@ -229,8 +233,19 @@ class AmbientListener:
                 return
             if any(w in text for w in WAKE_WORDS):
                 self._on_wake()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._wake_word_enabled = False
+            message = (
+                "Wake-word detection was disabled because its local model could "
+                f"not be loaded: {exc}. Provision tiny.en separately or set "
+                "CLICKY_WAKE_MODEL to a verified local model directory."
+            )
+            if self._on_error is not None:
+                self._on_error(message)
+            else:
+                import warnings
+
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
         finally:
             self._wake_inflight = False
 
@@ -261,8 +276,12 @@ class AmbientListener:
     def _get_model(self):
         with self._wake_lock:
             if self._wake_model is None:
-                from faster_whisper import WhisperModel
-                self._wake_model = WhisperModel(
-                    "tiny.en", device="cpu", compute_type="int8"
+                from audio.stt.faster_whisper_stt import (
+                    load_local_faster_whisper_model,
+                )
+
+                wake_model = os.getenv("CLICKY_WAKE_MODEL", "").strip() or "tiny.en"
+                self._wake_model = load_local_faster_whisper_model(
+                    wake_model, cfg.clicky_wake_model_sha256
                 )
             return self._wake_model

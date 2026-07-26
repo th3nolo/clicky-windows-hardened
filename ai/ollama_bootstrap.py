@@ -1,258 +1,258 @@
-"""
-Ollama bootstrap utilities.
+"""Read-only Ollama detection and immutable model identity checks.
 
-Most users who hit "Clicky listens but won't answer" don't have Ollama
-installed (or installed it without pulling a model). This module:
-
-  • Detects whether Ollama is running     → is_ollama_running()
-  • Lists installed models                → list_installed_models()
-  • Detects whether a model is pulled     → is_model_installed(name)
-  • Streams a pull with a progress cb    → pull_model(name, on_progress)
-  • Downloads the official Ollama setup   → download_ollama_installer(dest)
-  • Launches the official Ollama setup    → run_ollama_installer(path)
-
-Everything is sync httpx so it's safe to call from any thread.
+The hardened Windows build never downloads, launches, or pulls anything. Ollama
+and each configured model must already be running locally, and every model must
+match a caller-configured SHA-256 digest before the provider is usable.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
-import os
+import re
 import shutil
-import subprocess
 import sys
-import time
-from pathlib import Path
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 import httpx
 
 from config import cfg
 
 
-OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_DOWNLOAD_PAGE = "https://ollama.com/download/windows"
+DEFAULT_TEXT_MODEL = "llama3.2:3b"
+DEFAULT_VISION_MODEL = "qwen2.5vl:3b"
+_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_MAX_TAGS_RESPONSE_BYTES = 1024 * 1024
 
-# Default models we recommend for the free tier. Kept small so the
-# download finishes in a reasonable time on a typical home connection.
-DEFAULT_TEXT_MODEL = "llama3.2:3b"          # ~2 GB
-DEFAULT_VISION_MODEL = "qwen2.5vl:3b"        # ~3 GB
+
+class OllamaIdentityError(RuntimeError):
+    """Raised when local Ollama state lacks an immutable configured identity."""
 
 
-# ─── Detection ────────────────────────────────────────────────────────────────
+def _tags_response(timeout: float = 3.0) -> dict:
+    """Read bounded JSON metadata directly from loopback without env proxies."""
+    base = cfg.ollama_host.rstrip("/")
+    chunks: list[bytes] = []
+    total = 0
+    with httpx.Client(
+        timeout=timeout,
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
+        with client.stream("GET", f"{base}/api/tags") as response:
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("application/json"):
+                raise OllamaIdentityError(
+                    "Ollama returned a non-JSON model metadata response."
+                )
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > _MAX_TAGS_RESPONSE_BYTES:
+                    raise OllamaIdentityError(
+                        "Ollama model metadata exceeded the safe response limit."
+                    )
+                chunks.append(chunk)
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OllamaIdentityError("Ollama returned invalid JSON metadata.") from exc
+    if not isinstance(data, dict):
+        raise OllamaIdentityError("Ollama returned invalid model metadata.")
+    return data
+
 
 def is_ollama_running(timeout: float = 1.5) -> bool:
-    """Return True if the Ollama HTTP server is reachable."""
-    base = cfg.ollama_host.rstrip("/")
+    """Return True if the fixed local Ollama HTTP server is reachable."""
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=timeout)
-        return r.status_code == 200
+        _tags_response(timeout)
+        return True
     except Exception:
         return False
 
 
 def is_ollama_installed() -> bool:
-    """Return True if the `ollama` binary is on PATH (server may still be off)."""
+    """Return True if an ollama executable is already present on PATH."""
     return shutil.which("ollama") is not None
 
 
-def list_installed_models() -> List[str]:
-    """Return the list of model tags installed locally. Empty list if Ollama is off."""
-    base = cfg.ollama_host.rstrip("/")
+def list_installed_model_metadata() -> List[dict[str, str]]:
+    """Return local model names and immutable digests from Ollama /api/tags."""
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=3.0)
-        r.raise_for_status()
-        data = r.json()
-        return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+        raw_models = _tags_response().get("models", [])
     except Exception:
         return []
+    if not isinstance(raw_models, list):
+        return []
+    models: List[dict[str, str]] = []
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model")
+        digest = item.get("digest")
+        if isinstance(name, str) and isinstance(digest, str):
+            models.append({"name": name, "digest": digest})
+    return models
 
 
-def is_model_installed(name: str) -> bool:
-    """Check whether a specific Ollama model tag (e.g. 'llama3.2:3b') is pulled."""
-    if not name:
-        return False
-    installed = list_installed_models()
-    # Ollama returns tags like 'llama3.2:3b'. Match by exact tag *or* base name
-    # so callers can pass either 'llama3.2' or 'llama3.2:3b'.
-    if name in installed:
-        return True
-    base = name.split(":", 1)[0]
-    return any(m.split(":", 1)[0] == base for m in installed)
+def list_installed_models() -> List[str]:
+    """Return names for locally present models; retained for model pickers."""
+    return [item["name"] for item in list_installed_model_metadata()]
 
 
-# ─── Pull a model with progress ───────────────────────────────────────────────
+def _canonical_model_tag(name: str) -> str:
+    return name if ":" in name else f"{name}:latest"
 
-def pull_model(
+
+def _configured_digest(value: str, variable_name: str) -> str:
+    digest = (value or "").strip()
+    if not digest:
+        raise OllamaIdentityError(
+            f"{variable_name} is required. Inspect exact local digests with "
+            "'python -m ai.ollama_bootstrap status', then set the 64-character "
+            "SHA-256 value in the process environment."
+        )
+    if not _SHA256.fullmatch(digest):
+        raise OllamaIdentityError(
+            f"{variable_name} must contain exactly 64 hexadecimal characters."
+        )
+    return digest.lower()
+
+
+def _metadata_digest(value: str) -> Optional[str]:
+    digest = (value or "").strip()
+    if digest.lower().startswith("sha256:"):
+        digest = digest[7:]
+    if not _SHA256.fullmatch(digest):
+        return None
+    return digest.lower()
+
+
+def require_model_identity(
     name: str,
-    on_progress: Optional[Callable[[str, float], None]] = None,
-    timeout: float = 1800.0,
-) -> bool:
-    """
-    Pull an Ollama model, streaming progress.
+    expected_digest: str,
+    *,
+    variable_name: str,
+    metadata: Optional[List[dict[str, str]]] = None,
+) -> None:
+    """Require an exact local tag and digest using constant-time comparison."""
+    expected = _configured_digest(expected_digest, variable_name)
+    canonical_name = _canonical_model_tag((name or "").strip())
+    if not name:
+        raise OllamaIdentityError("An Ollama model name must be configured.")
+    available = metadata if metadata is not None else list_installed_model_metadata()
+    for item in available:
+        if _canonical_model_tag(item.get("name", "")) != canonical_name:
+            continue
+        actual = _metadata_digest(item.get("digest", ""))
+        if actual is not None and hmac.compare_digest(actual, expected):
+            return
+        raise OllamaIdentityError(
+            f"Digest mismatch for local Ollama model {name!r}. Refusing to use "
+            f"it because it does not match {variable_name}."
+        )
+    raise OllamaIdentityError(
+        f"Ollama model {name!r} with the configured immutable digest is not "
+        "present on the local server."
+    )
 
-    on_progress(status, percent) is called as the pull progresses.
-        status:  human-readable string (e.g. "downloading manifest")
-        percent: 0.0–100.0 (or 0.0 if unknown)
 
-    Returns True when the pull finishes successfully.
-    """
-    base = cfg.ollama_host.rstrip("/")
-    payload = {"name": name, "stream": True}
-
+def is_model_installed(name: str, expected_digest: str, variable_name: str) -> bool:
+    """Return True only when both the exact local tag and digest match."""
     try:
-        with httpx.stream(
-            "POST", f"{base}/api/pull", json=payload, timeout=timeout
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-
-                status = msg.get("status", "")
-                total = msg.get("total")
-                done = msg.get("completed")
-                pct = 0.0
-                if total and done:
-                    try:
-                        pct = (float(done) / float(total)) * 100.0
-                    except Exception:
-                        pct = 0.0
-
-                if on_progress:
-                    try:
-                        on_progress(status, pct)
-                    except Exception:
-                        pass
-
-                if status == "success":
-                    return True
+        require_model_identity(
+            name, expected_digest, variable_name=variable_name
+        )
         return True
-    except Exception as e:
-        if on_progress:
-            on_progress(f"error: {e}", 0.0)
+    except OllamaIdentityError:
         return False
 
 
-# ─── Installer download / run ─────────────────────────────────────────────────
-
-def _default_installer_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    d = Path(base) / "Clicky" / "downloads"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / "OllamaSetup.exe"
-
-
-def download_ollama_installer(
-    dest: Optional[Path] = None,
-    on_progress: Optional[Callable[[float], None]] = None,
-) -> Path:
-    """Download the official Ollama installer. Returns the local path on success."""
-    target = Path(dest) if dest else _default_installer_path()
-    tmp = target.with_suffix(target.suffix + ".part")
-
-    with httpx.stream("GET", OLLAMA_DOWNLOAD_URL, timeout=120.0, follow_redirects=True) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", "0"))
-        downloaded = 0
-        with open(tmp, "wb") as f:
-            for chunk in r.iter_bytes(chunk_size=64 * 1024):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if on_progress and total:
-                    try:
-                        on_progress((downloaded / total) * 100.0)
-                    except Exception:
-                        pass
-
-    tmp.replace(target)
-    return target
+def require_configured_model_identities() -> None:
+    """Require both configured Ollama models before enabling the provider."""
+    metadata = list_installed_model_metadata()
+    require_model_identity(
+        cfg.ollama_text_model,
+        cfg.ollama_text_model_digest,
+        variable_name="OLLAMA_TEXT_MODEL_DIGEST",
+        metadata=metadata,
+    )
+    require_model_identity(
+        cfg.ollama_vision_model,
+        cfg.ollama_vision_model_digest,
+        variable_name="OLLAMA_VISION_MODEL_DIGEST",
+        metadata=metadata,
+    )
 
 
-def run_ollama_installer(path: Path, silent: bool = False) -> int:
-    """
-    Launch the Ollama installer. Returns the process exit code.
-
-    If silent=True we use Ollama's silent install flag (/SILENT). The official
-    Ollama installer is an Inno Setup wizard so it accepts the standard flags.
-    """
-    args: List[str] = [str(path)]
-    if silent:
-        args.append("/SILENT")
-    proc = subprocess.run(args, shell=False)
-    return proc.returncode
+def installation_guidance() -> str:
+    return (
+        "Clicky does not download or execute Ollama. Download Ollama yourself "
+        f"from {OLLAMA_DOWNLOAD_PAGE}, verify the Windows installer publisher, "
+        "install it, start Ollama, and then re-run this check."
+    )
 
 
-def wait_for_ollama_server(timeout: float = 60.0, poll_interval: float = 1.0) -> bool:
-    """Block until the Ollama server is reachable, or timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if is_ollama_running():
-            return True
-        time.sleep(poll_interval)
-    return False
+def model_guidance(name: str, digest: str, variable_name: str) -> str:
+    try:
+        _configured_digest(digest, variable_name)
+    except OllamaIdentityError as exc:
+        return str(exc)
+    return (
+        f"No local {name!r} model matches {variable_name}. Clicky will not "
+        "download or accept a mutable tag alone. Provision and review the model "
+        "separately, inspect its full digest with 'python -m "
+        "ai.ollama_bootstrap status', and update the expected digest."
+    )
 
 
-# ─── CLI usage: `python -m ai.ollama_bootstrap status|install|pull <model>` ───
-
-def _cli():
+def _cli() -> None:
     args = sys.argv[1:]
     if not args:
-        print("Usage: python -m ai.ollama_bootstrap [status|install|pull <model>|diag]")
+        print("Usage: python -m ai.ollama_bootstrap [status|guide [model]|diag]")
         return
 
     cmd = args[0].lower()
-
     if cmd == "status":
         print(f"Ollama binary on PATH:  {is_ollama_installed()}")
         print(f"Ollama server running:  {is_ollama_running()}")
         if is_ollama_running():
-            models = list_installed_models()
+            models = list_installed_model_metadata()
             print(f"Installed models ({len(models)}):")
-            for m in models:
-                print(f"  • {m}")
+            for model in models:
+                print(f"  - {model['name']}  digest={model['digest']}")
         return
 
-    if cmd == "install":
-        print("Downloading Ollama installer…")
-        p = download_ollama_installer(on_progress=lambda pct: print(f"  {pct:.0f}%", end="\r"))
-        print(f"\nDownloaded to {p}")
-        print("Launching installer (you'll see a UAC prompt)…")
-        rc = run_ollama_installer(p)
-        print(f"Installer exited with code {rc}")
-        print("Waiting for Ollama to come online…")
-        if wait_for_ollama_server(timeout=60):
-            print("Ollama is running.")
+    if cmd == "guide":
+        if len(args) > 1:
+            print(
+                "Provision the model separately, inspect its exact digest with "
+                "the status command, and configure that 64-hex digest."
+            )
         else:
-            print("Timed out waiting for Ollama. Reboot or start it from the Start menu.")
-        return
-
-    if cmd == "pull":
-        if len(args) < 2:
-            print("pull needs a model name, e.g.:  python -m ai.ollama_bootstrap pull llama3.2:3b")
-            return
-        name = args[1]
-        print(f"Pulling {name}…")
-        ok = pull_model(name, on_progress=lambda s, p: print(f"  {s} {p:.0f}%", end="\r"))
-        print()
-        print("Done." if ok else "Pull failed.")
+            print(installation_guidance())
         return
 
     if cmd == "diag":
-        print("─── Clicky Ollama diagnostics ───")
+        print("--- Clicky Ollama diagnostics ---")
         print(f"Configured host:          {cfg.ollama_host}")
         print(f"Configured text model:    {cfg.ollama_text_model}")
         print(f"Configured vision model:  {cfg.ollama_vision_model}")
         print(f"Binary on PATH:           {is_ollama_installed()}")
         print(f"Server reachable:         {is_ollama_running()}")
         if is_ollama_running():
-            models = list_installed_models()
-            print(f"Installed models:         {models or '(none)'}")
-            print(f"Text model present:       {is_model_installed(cfg.ollama_text_model)}")
-            print(f"Vision model present:     {is_model_installed(cfg.ollama_vision_model)}")
+            models = list_installed_model_metadata()
+            for model in models:
+                print(f"Installed: {model['name']}  digest={model['digest']}")
+            print(
+                "Text identity verified:   "
+                f"{is_model_installed(cfg.ollama_text_model, cfg.ollama_text_model_digest, 'OLLAMA_TEXT_MODEL_DIGEST')}"
+            )
+            print(
+                "Vision identity verified: "
+                f"{is_model_installed(cfg.ollama_vision_model, cfg.ollama_vision_model_digest, 'OLLAMA_VISION_MODEL_DIGEST')}"
+            )
         return
 
     print(f"Unknown command: {cmd}")

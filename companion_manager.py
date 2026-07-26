@@ -38,51 +38,38 @@ import skills as skills_pkg
 _log = logging.getLogger("clicky.manager")
 
 
-def _ensure_ollama_running():
-    """Start Ollama if it isn't already running. Waits up to 8 s for it to be ready."""
-    import subprocess
-    import urllib.request
+def _require_local_ollama(timeout: float = 2.0) -> None:
+    """Require an already-running loopback Ollama server; never start a process."""
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
 
-    url = "http://localhost:11434/api/tags"
-    for _ in range(2):
-        try:
-            urllib.request.urlopen(url, timeout=2)
-            return  # already up
-        except Exception:
-            pass
-
-    # API down. If an ollama process already exists, don't spawn a second
-    # `ollama serve` — duplicate instances fight over the port and wedge the
-    # API entirely. Just wait for the existing one below.
-    already_running = False
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-        already_running = "ollama.exe" in out.lower()
-    except Exception:
-        pass
-
-    if not already_running:
+        parsed = urlsplit(cfg.ollama_host.rstrip("/"))
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("the Ollama endpoint is not a plain HTTP loopback URL")
+        port = parsed.port or 11434
+        path = (parsed.path.rstrip("/") or "") + "/api/tags"
+        host = "127.0.0.1" if parsed.hostname == "localhost" else parsed.hostname
+        connection = HTTPConnection(host, port, timeout=timeout)
         try:
-            subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
-        except FileNotFoundError:
-            return  # ollama not installed, provider will fail gracefully
-
-    # Wait up to 8 s for the server to come up
-    for _ in range(16):
-        time.sleep(0.5)
-        try:
-            urllib.request.urlopen(url, timeout=1)
-            return
-        except Exception:
-            pass
+            connection.request("GET", path)
+            response = connection.getresponse()
+            response.read(1)
+            if response.status != 200:
+                raise OSError(f"health endpoint returned HTTP {response.status}")
+        finally:
+            connection.close()
+    except Exception as exc:
+        raise RuntimeError(
+            "Local Ollama is unavailable. The hardened build never starts "
+            "external executables; install and start Ollama yourself, then "
+            "retry after its local server is ready."
+        ) from exc
 
 
 def _build_system_prompt(
@@ -260,7 +247,6 @@ class CompanionManager(QObject):
     sig_copilot_models_done = pyqtSignal(int)             # arg = model count
     sig_models_refreshed    = pyqtSignal(str, int)        # (provider, count)
     sig_ollama_models       = pyqtSignal(dict)            # {"vision": [...], "text": [...]}
-    sig_ollama_pull_status  = pyqtSignal(str, str)        # (model_name, status_msg)
     sig_arrow               = pyqtSignal(float, float, float, float)
     sig_circle              = pyqtSignal(float, float, float)
     sig_underline           = pyqtSignal(float, float, float)
@@ -274,7 +260,7 @@ class CompanionManager(QObject):
         self._state: AppState = AppState.IDLE
         self._history: List[Message] = []
         self._current_model: Optional[str] = None
-        self._web_search_enabled = True
+        self._web_search_enabled = bool(cfg.web_search_enabled)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
@@ -303,7 +289,7 @@ class CompanionManager(QObject):
         self._privacy_guard = True
         self._code_mode_auto = True       # auto-detect IDE windows
         self._multilang = True             # auto-reply in user's language
-        self._journal_enabled = True       # log every Q&A to SQLite
+        self._journal_enabled = bool(cfg.journal_enabled)  # opt-in Q&A storage
         self._ocr_enabled = True           # use Tesseract for fine print
         self._last_response = ""           # for "say it again" voice command
         self._attached_docs: list[tuple[str, str]] = []   # (filename, text)
@@ -313,7 +299,7 @@ class CompanionManager(QObject):
         self._collab: Optional[collab.CollabSession] = None
         self._workflow: Optional[workflow_capture.WorkflowCapture] = None
 
-        # Load user-created skills from skills/ + ~/.clicky/skills/
+        # Load bundled skills plus hash-approved user extensions.
         try:
             skills_pkg.load_all()
         except Exception:
@@ -324,6 +310,7 @@ class CompanionManager(QObject):
             on_level=self._handle_level,
             on_wake=self._handle_wake,
             device=cfg.mic_device_index,
+            on_error=self.sig_error.emit,
         )
 
         # Background asyncio loop
@@ -453,7 +440,9 @@ class CompanionManager(QObject):
                 from ai.lmstudio_provider import LMStudioProvider
                 self._llm = LMStudioProvider()
             else:
-                _ensure_ollama_running()
+                _require_local_ollama()
+                from ai import ollama_bootstrap
+                ollama_bootstrap.require_configured_model_identities()
                 from ai.ollama_provider import OllamaProvider
                 self._llm = OllamaProvider()
         return self._llm
@@ -468,13 +457,8 @@ class CompanionManager(QObject):
                 from audio.stt.openai_stt import OpenAISTT
                 self._stt = OpenAISTT()
             elif provider == "whisper_cpp":
-                try:
-                    from audio.stt.whisper_cpp_stt import WhisperCppSTT
-                    self._stt = WhisperCppSTT()
-                except ImportError:
-                    # pywhispercpp missing → fall back silently
-                    from audio.stt.faster_whisper_stt import FasterWhisperSTT
-                    self._stt = FasterWhisperSTT()
+                from audio.stt.whisper_cpp_stt import WhisperCppSTT
+                self._stt = WhisperCppSTT()
             else:
                 from audio.stt.faster_whisper_stt import FasterWhisperSTT
                 self._stt = FasterWhisperSTT()
@@ -561,7 +545,7 @@ class CompanionManager(QObject):
         pointing_held = False  # track whether we told overlay to hold dwell
 
         try:
-            # 1. Transcribe — bounded so a hung/downloading STT model can
+            # 1. Transcribe — bounded so a hung/loading local STT model can
             # never freeze the UI on "Thinking..." forever
             transcript = await asyncio.wait_for(
                 self._get_stt().transcribe(pcm), timeout=90,
@@ -874,6 +858,7 @@ class CompanionManager(QObject):
                         app_key=ak, window_title=title,
                         provider=cfg.llm_provider(),
                         model=self._current_model or "",
+                        enabled=self._journal_enabled,
                     )
                 except Exception:
                     pass
@@ -1298,6 +1283,9 @@ class CompanionManager(QObject):
 
     async def _refresh_ollama_models(self):
         try:
+            _require_local_ollama()
+            from ai import ollama_bootstrap
+            ollama_bootstrap.require_configured_model_identities()
             from ai.ollama_provider import OllamaProvider
             classified = await OllamaProvider().list_models_classified()
             self.sig_ollama_models.emit(classified)
@@ -1312,34 +1300,25 @@ class CompanionManager(QObject):
             self._llm = None
 
     def set_custom_instructions(self, text: str):
-        """Tray callback — restrict/steer what Clicky helps with. Persists
-        to .env so it survives a restart, not just this session."""
-        cfg.custom_instructions = text.strip()
+        """Persist non-secret instructions in the LocalAppData preferences."""
         try:
-            from dotenv import set_key
-            env_path = Path(__file__).parent / ".env"
-            if not env_path.exists():
-                env_path.touch()
-            escaped = text.strip().replace("\n", "\\n")
-            set_key(str(env_path), "CUSTOM_INSTRUCTIONS", escaped)
-        except Exception as e:
-            self.sig_error.emit(f"Could not save instructions: {e}")
+            cfg.set_custom_instructions(text)
+        except Exception as exc:
+            self.sig_error.emit(f"Could not save instructions: {exc}")
 
     def set_response_language(self, code: str):
-        """Tray callback — pin Clicky's reply language ('' = auto-detect)."""
-        cfg.response_language = code
+        """Pin Clicky's reply language (empty means auto-detect)."""
         try:
-            from dotenv import set_key
-            env_path = Path(__file__).parent / ".env"
-            if not env_path.exists():
-                env_path.touch()
-            set_key(str(env_path), "RESPONSE_LANGUAGE", code)
-        except Exception as e:
-            self.sig_error.emit(f"Could not save language setting: {e}")
+            cfg.set_response_language(code)
+        except Exception as exc:
+            self.sig_error.emit(f"Could not save language setting: {exc}")
 
     def set_mic_device(self, device_index: int):
         """Tray callback — switch input device without restarting the app."""
-        cfg.mic_device_index = device_index if device_index >= 0 else None
+        try:
+            cfg.set_mic_device_index(device_index if device_index >= 0 else None)
+        except Exception as exc:
+            self.sig_error.emit(f"Could not save microphone setting: {exc}")
         try:
             self._listener.stop()
         except Exception:
@@ -1349,34 +1328,19 @@ class CompanionManager(QObject):
             on_level=self._handle_level,
             on_wake=self._handle_wake,
             device=cfg.mic_device_index,
+            on_error=self.sig_error.emit,
         )
         try:
             self._listener.start()
         except Exception as e:
             self.sig_error.emit(f"Could not start mic: {e}")
 
-    def pull_ollama_model(self, name: str):
-        """Trigger `ollama pull <name>` in the background. Status via sig_ollama_pull_status."""
-        self._submit(self._pull_ollama_model(name))
-
-    async def _pull_ollama_model(self, name: str):
-        from ai.ollama_models_registry import pull_model
-        self.sig_ollama_pull_status.emit(name, f"Pulling {name}…")
-
-        def _progress(msg: str):
-            if msg:
-                self.sig_ollama_pull_status.emit(name, msg)
-
-        ok = await pull_model(name, cfg.ollama_host, on_progress=_progress)
-        if ok:
-            self.sig_ollama_pull_status.emit(name, f"✓ {name} ready")
-            # Refresh the installed list so the tray menu picks it up
-            await self._refresh_ollama_models()
-        else:
-            self.sig_ollama_pull_status.emit(name, f"✗ Pull failed for {name}")
-
     def set_web_search(self, enabled: bool):
-        self._web_search_enabled = enabled
+        self._web_search_enabled = bool(enabled)
+        try:
+            cfg.set_web_search_enabled(self._web_search_enabled)
+        except Exception as exc:
+            self.sig_error.emit(f"Could not save web search setting: {exc}")
 
     def set_wake_word(self, enabled: bool):
         self._listener.set_wake_word_enabled(enabled)
@@ -1532,7 +1496,11 @@ class CompanionManager(QObject):
         self._multilang = enabled
 
     def set_journal(self, enabled: bool):
-        self._journal_enabled = enabled
+        self._journal_enabled = bool(enabled)
+        try:
+            cfg.set_journal_enabled(self._journal_enabled)
+        except Exception as exc:
+            self.sig_error.emit(f"Could not save journal setting: {exc}")
 
     def set_ocr_enabled(self, enabled: bool):
         self._ocr_enabled = enabled

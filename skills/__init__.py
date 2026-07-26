@@ -1,95 +1,140 @@
 """
-Skill system — user-defined voice triggers + custom behaviours.
+Skill system for bundled and explicitly approved user extensions.
 
-Drop a .py file into this folder. Each file exposes a SKILL dict at module
-level:
+Bundled skills ship with Clicky. User Python files under ~/.clicky/skills are
+disabled unless their filename and SHA-256 digest appear in allowlist.json:
 
-    SKILL = {
-        "name":        "Self Mode",
-        "trigger":     r"(self ?mode|allow ?clicks|enable ?clicking)",
-        "description": "Lets Clicky click for you instead of pointing.",
-        "handler":     handle_self_mode,   # async fn(manager, transcript) -> str
-    }
+    {"version": 1, "approved": {"my_skill.py": "<64 lowercase hex chars>"}}
 
-Loading happens at startup via load_all().  Triggers are tested *before*
-the LLM runs — same priority as built-in 'next' / 'stop' commands.
-
-Status: loader + interface stable; ship your own skills here.
+Changing a user skill changes its digest and disables it until re-approved.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Optional
 
-# Skill dict shape (for type hints — using TypedDict would be stricter)
-# {
-#     "name":        str,
-#     "trigger":     str,           # regex
-#     "description": str,
-#     "handler":     Callable[[manager, transcript], Awaitable[str]],
-# }
 
 _loaded: list[dict] = []
+_MAX_USER_SKILL_BYTES = 256 * 1024
+_MAX_ALLOWLIST_BYTES = 64 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _user_skills_dir() -> Path:
-    """User-level skills dir at ~/.clicky/skills/ — survives reinstall."""
+    """User-level skills directory. Files here are not trusted by default."""
     return Path.home() / ".clicky" / "skills"
 
 
+def _user_skill_allowlist_path() -> Path:
+    return _user_skills_dir() / "allowlist.json"
+
+
+def _approved_user_skills() -> dict[str, str]:
+    """Load a strict filename-to-SHA-256 approval map; malformed means none."""
+    path = _user_skill_allowlist_path()
+    try:
+        if path.is_symlink() or path.stat().st_size > _MAX_ALLOWLIST_BYTES:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return {}
+        approved = payload.get("approved")
+        if not isinstance(approved, dict):
+            return {}
+        result: dict[str, str] = {}
+        for filename, digest in approved.items():
+            if (
+                isinstance(filename, str)
+                and Path(filename).name == filename
+                and filename.endswith(".py")
+                and isinstance(digest, str)
+                and _SHA256_RE.fullmatch(digest.lower())
+            ):
+                result[filename] = digest.lower()
+        return result
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+
+
 def load_all() -> list[dict]:
-    """Discover + import every skill module in this package and ~/.clicky/skills."""
+    """Load bundled skills and hash-approved user skills."""
     global _loaded
     _loaded = []
 
-    # Bundled skills (shipped with Clicky)
     here = Path(__file__).parent
-    for f in here.glob("*.py"):
-        if f.name.startswith("_"):
-            continue
-        _try_import(f)
+    for skill_path in sorted(here.glob("*.py")):
+        if not skill_path.name.startswith("_"):
+            _try_import(skill_path)
 
-    # User skills
     user_dir = _user_skills_dir()
-    user_dir.mkdir(parents=True, exist_ok=True)
-    for f in user_dir.glob("*.py"):
-        _try_import(f)
+    approvals = _approved_user_skills()
+    if user_dir.is_dir() and approvals:
+        for skill_path in sorted(user_dir.glob("*.py")):
+            expected = approvals.get(skill_path.name)
+            if not expected or skill_path.is_symlink():
+                continue
+            try:
+                if skill_path.stat().st_size > _MAX_USER_SKILL_BYTES:
+                    continue
+                source = skill_path.read_bytes()
+            except OSError:
+                continue
+            if len(source) > _MAX_USER_SKILL_BYTES:
+                continue
+            actual = hashlib.sha256(source).hexdigest()
+            if not hmac.compare_digest(actual, expected):
+                continue
+            # Execute the exact bytes that were hashed, avoiding a second read.
+            _try_import(skill_path, source=source, digest=actual)
 
     return _loaded
 
 
-def _try_import(path: Path) -> None:
+def _try_import(path: Path, *, source: bytes | None = None, digest: str = "") -> None:
+    module_name = f"clicky_skill_{path.stem}_{digest[:12] or 'bundled'}"
     try:
-        spec = importlib.util.spec_from_file_location(
-            f"clicky_skill_{path.stem}", str(path)
-        )
-        if not spec or not spec.loader:
+        if source is None:
+            source = path.read_bytes()
+        spec = importlib.util.spec_from_file_location(module_name, str(path))
+        if not spec:
             return
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
-        skill = getattr(mod, "SKILL", None)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        code = compile(source, str(path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+        skill = getattr(module, "SKILL", None)
         if not isinstance(skill, dict):
+            sys.modules.pop(module_name, None)
             return
-        if not all(k in skill for k in ("name", "trigger", "handler")):
+        if not all(key in skill for key in ("name", "trigger", "handler")):
+            sys.modules.pop(module_name, None)
+            return
+        if not isinstance(skill["name"], str) or not isinstance(skill["trigger"], str):
+            sys.modules.pop(module_name, None)
+            return
+        if not callable(skill["handler"]):
+            sys.modules.pop(module_name, None)
             return
         skill.setdefault("description", "")
         skill["_compiled"] = re.compile(skill["trigger"], re.IGNORECASE)
         _loaded.append(skill)
-    except Exception as e:
-        # Don't let one bad skill kill startup. Log and skip.
-        print(f"[skills] failed to load {path}: {e}")
+    except Exception as exc:
+        sys.modules.pop(module_name, None)
+        print(f"[skills] failed to load {path.name}: {exc}")
 
 
 def match(transcript: str) -> Optional[dict]:
     """Return the first skill whose trigger matches the user's utterance."""
-    for s in _loaded:
-        if s["_compiled"].search(transcript):
-            return s
+    for skill in _loaded:
+        if skill["_compiled"].search(transcript):
+            return skill
     return None
 
 

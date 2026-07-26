@@ -171,7 +171,7 @@ def main():
         tray.show_notification(
             "Lesson Recording",
             f"Recording to:\n{out}" if out else
-            "Failed — install imageio[ffmpeg]: pip install imageio imageio-ffmpeg"
+            "Recording is unavailable in this reviewed build. Recreate the frozen environment from uv.lock."
         )
     def _record_stop():
         out = manager.stop_recording()
@@ -189,7 +189,7 @@ def main():
         tray.show_notification(
             "Workflow Capture",
             "Recording your clicks + keys. Stop from tray when done."
-            if ok else "Install pynput: pip install pynput"
+            if ok else "Workflow capture is unavailable in the hardened locked build."
         )
     def _wf_stop():
         summary = manager.workflow_stop()
@@ -271,7 +271,6 @@ def main():
 
     # ── Ollama multi-model wiring ─────────────────────────────────────────
     tray.on_ollama_set_model.connect(manager.set_ollama_model)
-    tray.on_ollama_pull.connect(manager.pull_ollama_model)
     tray.on_ollama_refresh.connect(manager.refresh_ollama_models)
     tray.on_set_mic_device.connect(manager.set_mic_device)
     tray.on_set_response_language.connect(manager.set_response_language)
@@ -279,11 +278,6 @@ def main():
 
     # When the installed-model list arrives, push it into the tray submenu
     manager.sig_ollama_models.connect(tray.set_ollama_models)
-
-    # Surface pull progress as tray toasts so students see download status
-    def _on_ollama_pull_status(name: str, status: str):
-        tray.show_notification("Ollama", status)
-    manager.sig_ollama_pull_status.connect(_on_ollama_pull_status)
 
     # First-run: poll Ollama if it's the active provider so the menu
     # actually shows installed models from the start.
@@ -369,7 +363,7 @@ def main():
     )
 
     # ── First-run setup wizard ────────────────────────────────────────────────
-    # Show the Ollama install / model pull walkthrough on the first launch.
+    # Show read-only local model provisioning guidance on the first launch.
     # If everything is already wired up, the helper is a no-op.
     try:
         from ui.setup_wizard import maybe_show_setup_wizard, SetupWizard

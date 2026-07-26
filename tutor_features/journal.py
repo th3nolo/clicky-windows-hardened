@@ -1,7 +1,7 @@
 """
 Knowledge Journal + Spaced Repetition.
 
-Every Q&A Clicky has gets logged to a SQLite db at:
+When journal logging is explicitly enabled, Q&A is stored in a SQLite db at:
     %LOCALAPPDATA%\\Clicky\\journal.db
 
 Voice queries that surface this:
@@ -22,9 +22,10 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 
 _INTERVALS_DAYS = (1, 3, 7, 14, 30, 60, 120)
@@ -37,7 +38,8 @@ def _db_path() -> Path:
     return d / "journal.db"
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(_db_path())
     conn.execute("""
         CREATE TABLE IF NOT EXISTS entries (
@@ -62,7 +64,14 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS ix_entries_due "
         "ON entries (next_review_at) WHERE next_review_at IS NOT NULL"
     )
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -76,7 +85,11 @@ def log_qa(
     provider: str = "",
     model: str = "",
     tags: str = "",
+    enabled: bool = False,
 ) -> int:
+    # Privacy boundary: callers must explicitly opt in for every write.
+    if not enabled:
+        return -1
     if not question.strip() or not answer.strip():
         return -1
     now = time.time()

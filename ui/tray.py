@@ -37,7 +37,6 @@ class TrayManager(QObject):
     on_copilot_login      = pyqtSignal()
     on_copilot_refresh    = pyqtSignal()
     on_ollama_set_model   = pyqtSignal(str, str)   # (kind, name): kind = "vision" | "text"
-    on_ollama_pull        = pyqtSignal(str)        # model name
     on_ollama_refresh     = pyqtSignal()
     on_stop               = pyqtSignal()
     on_toggle_code_mode   = pyqtSignal(bool)
@@ -74,7 +73,7 @@ class TrayManager(QObject):
         self._tray.setToolTip(
             f"Clicky - AI Companion\nHold {cfg.hotkey} to speak"
         )
-        self._search_enabled = True
+        self._search_enabled = bool(cfg.web_search_enabled)
         self._wake_enabled = True
         self._response_language = ""
         try:
@@ -87,7 +86,7 @@ class TrayManager(QObject):
         self._privacy_enabled = True
         self._code_enabled = True
         self._multilang_enabled = True
-        self._journal_enabled = True
+        self._journal_enabled = bool(cfg.journal_enabled)
         self._ocr_enabled = True
         self._is_recording = False
 
@@ -395,7 +394,7 @@ class TrayManager(QObject):
             act.triggered.connect(lambda checked, i=idx: self.on_set_mic_device.emit(i))
 
     def _build_ollama_submenu(self, parent_menu: QMenu, providers: dict):
-        """Vision/Text model pickers + 'Pull recommended' for Ollama."""
+        """Installed-model pickers plus manual Ollama setup guidance."""
         from ai.ollama_models_registry import (
             RECOMMENDED_VISION, RECOMMENDED_TEXT,
         )
@@ -434,28 +433,29 @@ class TrayManager(QObject):
 
         ol_menu.addSeparator()
 
-        # ─ Pull recommended ─
-        pull_menu = ol_menu.addMenu("Pull recommended…")
+        # ─ Manual provisioning guidance ─
+        setup_menu = ol_menu.addMenu("Model setup (manual)…")
+        notice = setup_menu.addAction("Clicky never downloads or installs models")
+        notice.setEnabled(False)
         already = set(installed_vision) | set(installed_text)
 
         def _add_recs(rec_list, header):
-            hdr = pull_menu.addAction(header)
-            hdr.setEnabled(False)
+            section = setup_menu.addAction(header)
+            section.setEnabled(False)
             for rec in rec_list:
-                # Mark already-installed entries (matching by tag prefix)
-                installed = any(n == rec.name or n.startswith(rec.name.split(":")[0] + ":") for n in already)
-                tag = "✓ " if installed else "  "
-                label = f"{tag}{rec.label}  ·  {rec.size}  —  {rec.blurb}"
-                act = pull_menu.addAction(label)
-                if installed:
-                    act.setEnabled(False)
-                else:
-                    act.triggered.connect(
-                        lambda _=False, n=rec.name: self.on_ollama_pull.emit(n)
-                    )
+                installed = any(
+                    name == rec.name
+                    or name.startswith(rec.name.split(":")[0] + ":")
+                    for name in already
+                )
+                status = "installed" if installed else f"manual: ollama pull {rec.name}"
+                action = setup_menu.addAction(
+                    f"{rec.label}  ·  {rec.size}  —  {status}"
+                )
+                action.setEnabled(False)
 
         _add_recs(RECOMMENDED_VISION, "── Vision ──")
-        pull_menu.addSeparator()
+        setup_menu.addSeparator()
         _add_recs(RECOMMENDED_TEXT, "── Text ──")
 
         ol_menu.addSeparator()

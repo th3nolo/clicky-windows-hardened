@@ -9,7 +9,7 @@ Auth flow (one-time, ~30 seconds):
     python -m ai.github_copilot_provider login
     → prints a 9-char user code + opens https://github.com/login/device
     → you paste the code, click "Authorize"
-    → token cached to %LOCALAPPDATA%\\Clicky\\github_token.json
+    → token encrypted with Windows DPAPI under %LOCALAPPDATA%\\Clicky\\
 
 Chat flow (every call):
     GitHub token  → exchange for short-lived Copilot token (cached to ~25 min)
@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import time
 import webbrowser
 from pathlib import Path
@@ -66,12 +67,184 @@ def _data_dir() -> Path:
     return d
 
 
+_TOKEN_FILE_MAGIC = b"CLICKY-DPAPI\x00\x01"
+_DPAPI_ENTROPY = b"Clicky GitHub Copilot token v1"
+_MAX_LEGACY_TOKEN_FILE_BYTES = 64 * 1024
+
+
 def _token_path() -> Path:
+    """Encrypted, current-user-bound GitHub token file."""
+    return _data_dir() / "github_token.dpapi"
+
+
+def _legacy_token_path() -> Path:
     return _data_dir() / "github_token.json"
 
 
 def _models_cache_path() -> Path:
     return _data_dir() / "copilot_models.json"
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _dpapi_transform(data: bytes, *, protect: bool) -> bytes:
+    """Protect or unprotect bytes for the current Windows user."""
+    if not _is_windows():
+        raise RuntimeError("GitHub token storage requires Windows DPAPI")
+
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+
+    def make_blob(value: bytes):
+        buffer = (ctypes.c_ubyte * len(value)).from_buffer_copy(value)
+        blob = DATA_BLOB(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+        return blob, buffer
+
+    input_blob, input_buffer = make_blob(data)
+    entropy_blob, entropy_buffer = make_blob(_DPAPI_ENTROPY)
+    output_blob = DATA_BLOB()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+    flags = 0x1  # CRYPTPROTECT_UI_FORBIDDEN
+
+    if protect:
+        operation = crypt32.CryptProtectData
+        operation.argtypes = [
+            ctypes.POINTER(DATA_BLOB), wintypes.LPCWSTR,
+            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.POINTER(DATA_BLOB),
+        ]
+        operation.restype = wintypes.BOOL
+        arguments = (
+            ctypes.byref(input_blob),
+            "Clicky GitHub Copilot token",
+            ctypes.byref(entropy_blob),
+            None,
+            None,
+            flags,
+            ctypes.byref(output_blob),
+        )
+    else:
+        operation = crypt32.CryptUnprotectData
+        operation.argtypes = [
+            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p,
+            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.POINTER(DATA_BLOB),
+        ]
+        operation.restype = wintypes.BOOL
+        arguments = (
+            ctypes.byref(input_blob),
+            None,
+            ctypes.byref(entropy_blob),
+            None,
+            None,
+            flags,
+            ctypes.byref(output_blob),
+        )
+
+    # Keep backing buffers alive through the native call.
+    _ = input_buffer, entropy_buffer
+    if not operation(*arguments):
+        error = ctypes.get_last_error()
+        raise OSError(error, "Windows DPAPI operation failed")
+    try:
+        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    finally:
+        if output_blob.pbData:
+            kernel32.LocalFree(ctypes.cast(output_blob.pbData, ctypes.c_void_p))
+
+
+def _dpapi_protect(data: bytes) -> bytes:
+    return _dpapi_transform(data, protect=True)
+
+
+def _dpapi_unprotect(data: bytes) -> bytes:
+    return _dpapi_transform(data, protect=False)
+
+
+def _delete_plaintext_token(path: Path) -> None:
+    """Best-effort overwrite, then remove a legacy plaintext token file."""
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink():
+        path.unlink()
+        return
+    size = path.stat().st_size
+    with open(path, "r+b", buffering=0) as handle:
+        remaining = size
+        zeros = b"\x00" * min(64 * 1024, max(1, size))
+        while remaining:
+            chunk = zeros[: min(len(zeros), remaining)]
+            handle.write(chunk)
+            remaining -= len(chunk)
+        handle.flush()
+        os.fsync(handle.fileno())
+    path.unlink()
+
+
+def _read_encrypted_token() -> Optional[str]:
+    path = _token_path()
+    try:
+        if path.is_symlink() or path.stat().st_size > 128 * 1024:
+            return None
+        blob = path.read_bytes()
+        if not blob.startswith(_TOKEN_FILE_MAGIC):
+            return None
+        token = _dpapi_unprotect(blob[len(_TOKEN_FILE_MAGIC):]).decode("utf-8", "strict")
+        return token if token.strip() and len(token) <= 8192 else None
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        return None
+
+
+def _store_github_token(token: str) -> None:
+    """Atomically store a token with DPAPI and remove plaintext predecessors."""
+    if not isinstance(token, str) or not token.strip() or len(token) > 8192:
+        raise ValueError("GitHub token is empty or unexpectedly large")
+    protected = _dpapi_protect(token.encode("utf-8"))
+    path = _token_path()
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix="github_token.dpapi.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(_TOKEN_FILE_MAGIC)
+            handle.write(protected)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if _read_encrypted_token() != token:
+        raise RuntimeError("encrypted token verification failed")
+    _delete_plaintext_token(_legacy_token_path())
+
+
+def _read_legacy_token() -> Optional[str]:
+    path = _legacy_token_path()
+    try:
+        if path.is_symlink() or path.stat().st_size > _MAX_LEGACY_TOKEN_FILE_BYTES:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        token = payload.get("access_token") if isinstance(payload, dict) else None
+        if isinstance(token, str) and token.strip() and len(token) <= 8192:
+            return token
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    return None
 
 
 # ─── Device-flow login ────────────────────────────────────────────────────────
@@ -114,7 +287,7 @@ async def device_login(open_browser: bool = True,
     device_code = d["device_code"]
     interval = max(5, int(d.get("interval", 5)))
     expires_in = int(d.get("expires_in", 900))
-    _log_login(f"Got device code. user_code={user_code} interval={interval}s expires_in={expires_in}s")
+    _log_login(f"Got device code. interval={interval}s expires_in={expires_in}s")
 
     print("\n" + "─" * 56)
     print("  GITHUB COPILOT LOGIN")
@@ -162,9 +335,9 @@ async def device_login(open_browser: bool = True,
             body = r.json()
             if "access_token" in body:
                 token = body["access_token"]
-                _token_path().write_text(json.dumps({"access_token": token}))
-                _log_login(f"✅ Signed in after {poll_count} polls. Token saved.")
-                print("✅  Signed in. Token saved to", _token_path())
+                _store_github_token(token)
+                _log_login(f"✅ Signed in after {poll_count} polls. Token stored with DPAPI.")
+                print("✅  Signed in. Token protected with Windows DPAPI.")
                 # Eagerly fetch the model list so the panel reflects what
                 # the user actually has access to *right now*.
                 try:
@@ -192,12 +365,25 @@ async def device_login(open_browser: bool = True,
 
 
 def load_github_token() -> Optional[str]:
-    p = _token_path()
-    if not p.exists():
+    token = _read_encrypted_token()
+    if token is not None:
+        try:
+            _delete_plaintext_token(_legacy_token_path())
+        except OSError:
+            return None
+        return token
+
+    # One-time migration. Plaintext tokens are never accepted off Windows and
+    # are returned only after a verified DPAPI write and successful deletion.
+    if not _is_windows():
+        return None
+    legacy = _read_legacy_token()
+    if legacy is None:
         return None
     try:
-        return json.loads(p.read_text()).get("access_token")
-    except Exception:
+        _store_github_token(legacy)
+        return _read_encrypted_token()
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -547,5 +733,11 @@ if __name__ == "__main__":
             if p.exists():
                 p.unlink()
                 print(f"removed {p}")
+        try:
+            if _legacy_token_path().exists() or _legacy_token_path().is_symlink():
+                _delete_plaintext_token(_legacy_token_path())
+                print("removed legacy plaintext token")
+        except OSError:
+            print("could not remove legacy plaintext token", file=sys.stderr)
     else:
         print("Usage: python -m ai.github_copilot_provider [login|status|models|refresh|logout]")

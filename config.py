@@ -1,25 +1,108 @@
+import json
 import os
-import sys
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
 
-# Where the user-editable .env lives. In the PyInstaller build, __file__ is
-# inside the bundle's _internal\ directory but users (and the installer) put
-# .env next to Clicky.exe at the install root — reading _HERE from __file__
-# there meant .env edits were silently ignored (GitHub issue #3).
-if getattr(sys, "frozen", False):
-    _HERE = Path(sys.executable).parent
-else:
-    _HERE = Path(__file__).parent
 
-# Load env files in priority order. .env.local overrides .env (Next.js convention,
-# which is how many users — including this one — keep their real keys).
-for _name in (".env", ".env.local"):
-    _p = _HERE / _name
-    if _p.exists():
-        load_dotenv(_p, override=True)
+_PREFERENCES_VERSION = 1
+_MAX_PREFERENCES_BYTES = 64 * 1024
+_PREFERENCE_STRING_LIMITS = {
+    "active_llm": 32,
+    "openai_default_model": 256,
+    "ollama_model": 256,
+    "ollama_vision_model": 256,
+    "ollama_text_model": 256,
+    "lmstudio_model": 256,
+    "whisper_model": 256,
+    "whisper_language": 16,
+    "response_language": 16,
+    "custom_instructions": 32 * 1024,
+    "elevenlabs_voice_id": 256,
+    "hotkey": 128,
+    "stt_provider": 32,
+}
+_PREFERENCE_BOOL_KEYS = {"journal_enabled", "web_search_enabled"}
+_PREFERENCES_LOCK = threading.Lock()
+
+
+def _preferences_dir() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    directory = base / "Clicky"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _preferences_path() -> Path:
+    return _preferences_dir() / "preferences.json"
+
+
+def _sanitize_preferences(values) -> dict:
+    if not isinstance(values, dict):
+        return {}
+    clean = {}
+    for key, limit in _PREFERENCE_STRING_LIMITS.items():
+        value = values.get(key)
+        if isinstance(value, str) and len(value) <= limit:
+            clean[key] = value
+    for key in _PREFERENCE_BOOL_KEYS:
+        value = values.get(key)
+        if isinstance(value, bool):
+            clean[key] = value
+    mic = values.get("mic_device_index")
+    if mic is None or (isinstance(mic, int) and not isinstance(mic, bool) and 0 <= mic <= 4096):
+        clean["mic_device_index"] = mic
+    return clean
+
+
+def _load_preferences() -> dict:
+    path = _preferences_path()
+    try:
+        if path.is_symlink() or path.stat().st_size > _MAX_PREFERENCES_BYTES:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != _PREFERENCES_VERSION:
+            return {}
+        return _sanitize_preferences(payload.get("preferences"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+
+
+def _save_preferences(**updates) -> None:
+    """Atomically persist allowlisted non-secret settings only."""
+    global _PREFERENCES
+    with _PREFERENCES_LOCK:
+        candidate = dict(_PREFERENCES)
+        candidate.update(updates)
+        clean = _sanitize_preferences(candidate)
+        path = _preferences_path()
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="preferences.", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            payload = {"version": _PREFERENCES_VERSION, "preferences": clean}
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            _PREFERENCES = clean
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _preference(name: str, default):
+    return _PREFERENCES.get(name, default)
+
+
+_PREFERENCES = _load_preferences()
 
 
 DEFAULT_SYSTEM_PROMPT = """You are Clicky, a VISUAL AI tutor running on Windows. You live
@@ -99,67 +182,105 @@ sentence), never dump all tags at the start or end."""
 
 @dataclass
 class Config:
-    # LLM
-    anthropic_api_key: Optional[str] = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY") or None)
-    openai_api_key: Optional[str] = field(default_factory=lambda: os.getenv("OPENAI_API_KEY") or None)
-    # Point the OpenAI provider at any OpenAI-compatible server (DeepSeek,
-    # Alibaba DashScope/Qwen, SiliconFlow, OpenRouter...). Empty = real OpenAI.
-    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "").strip())
-    openai_default_model: str = field(default_factory=lambda: os.getenv("OPENAI_DEFAULT_MODEL", "").strip())
-    google_api_key: Optional[str] = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or None)
-    ollama_host: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
-    # Legacy single-model knob — still respected as a fallback for both slots
-    # below. New users should prefer OLLAMA_VISION_MODEL / OLLAMA_TEXT_MODEL.
-    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.2-vision"))
-    # Two-slot model selection: vision = screen-aware queries, text = Code Mode
-    # / journal Q&A / no-screenshot replies. Either can be overridden at runtime
-    # via cfg.set_ollama_model("vision"|"text", name).
-    ollama_vision_model: str = field(default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "") or os.getenv("OLLAMA_MODEL", "llama3.2-vision"))
-    ollama_text_model:   str = field(default_factory=lambda: os.getenv("OLLAMA_TEXT_MODEL", "") or "llama3.2:3b")
-
-    # LM Studio — local OpenAI-compatible server (Developer tab → Start Server).
-    # No key needed. Leave LMSTUDIO_MODEL empty to use whatever's loaded.
-    lmstudio_host: str = field(default_factory=lambda: os.getenv("LMSTUDIO_HOST", "http://localhost:1234/v1"))
-    lmstudio_model: str = field(default_factory=lambda: os.getenv("LMSTUDIO_MODEL", ""))
-
-    # STT
-    deepgram_api_key: Optional[str] = field(default_factory=lambda: os.getenv("DEEPGRAM_API_KEY") or None)
-    whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "base"))
-    # ISO code (e.g. "de", "en"). Empty = auto-detect language per utterance.
-    whisper_language: str = field(default_factory=lambda: os.getenv("WHISPER_LANGUAGE", ""))
-    # sounddevice input device index. Empty/unset = system default mic.
-    mic_device_index: Optional[int] = field(default_factory=lambda: (
-        int(v) if (v := os.getenv("MIC_DEVICE_INDEX", "").strip()) else None
+    # Secrets are accepted from the process environment only. Clicky never
+    # reads .env files or writes provider credentials to disk.
+    anthropic_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY") or None
+    )
+    openai_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_API_KEY") or None
+    )
+    google_api_key: Optional[str] = field(default_factory=lambda: (
+        os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or None
     ))
-    # Fixed reply language (ISO 639-1, e.g. "de"). Empty = auto-detect per
-    # message (can mix languages if transcription is inconsistent).
-    response_language: str = field(default_factory=lambda: os.getenv("RESPONSE_LANGUAGE", ""))
-    # User-defined scope/rules appended to every system prompt (e.g. "only
-    # help with Excel, refuse anything else"). Empty = no restriction.
-    custom_instructions: str = field(default_factory=lambda: os.getenv(
-        "CUSTOM_INSTRUCTIONS", DEFAULT_SYSTEM_PROMPT
-    ).replace("\\n", "\n"))
+    deepgram_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("DEEPGRAM_API_KEY") or None
+    )
+    elevenlabs_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY") or None
+    )
+    tavily_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("TAVILY_API_KEY") or None
+    )
 
-    # TTS
-    elevenlabs_api_key: Optional[str] = field(default_factory=lambda: os.getenv("ELEVENLABS_API_KEY") or None)
-    elevenlabs_voice_id: str = field(default_factory=lambda: os.getenv("ELEVENLABS_VOICE_ID", ""))
+    # Network endpoints are fixed in the hardened build. In particular, an
+    # editable local file cannot redirect a provider API key to another host.
+    openai_base_url: str = ""
+    ollama_host: str = "http://127.0.0.1:11434"
+    lmstudio_host: str = "http://127.0.0.1:1234/v1"
 
-    # Search
-    tavily_api_key: Optional[str] = field(default_factory=lambda: os.getenv("TAVILY_API_KEY") or None)
-
-    # App
-    # Push-to-talk. Two-key modifier combo — no clash with app shortcuts and
-    # easier to hold than a 3-key chord. Override with CLICKY_HOTKEY in .env.
-    hotkey: str = field(default_factory=lambda: os.getenv("CLICKY_HOTKEY", "ctrl+win"))
+    # Non-secret preferences come only from the allowlisted LocalAppData JSON.
+    active_llm: str = field(default_factory=lambda: _preference("active_llm", ""))
+    openai_default_model: str = field(
+        default_factory=lambda: _preference("openai_default_model", "")
+    )
+    ollama_model: str = field(
+        default_factory=lambda: _preference("ollama_model", "llama3.2-vision")
+    )
+    ollama_vision_model: str = field(
+        default_factory=lambda: _preference("ollama_vision_model", "llama3.2-vision")
+    )
+    ollama_text_model: str = field(
+        default_factory=lambda: _preference("ollama_text_model", "llama3.2:3b")
+    )
+    # Immutable Ollama identities are process-environment security inputs, not
+    # persisted preferences. Values must be exact 64-hex digests from /api/tags.
+    ollama_vision_model_digest: str = field(default_factory=lambda: (
+        os.environ.get("OLLAMA_VISION_MODEL_DIGEST", "").strip()
+    ))
+    ollama_text_model_digest: str = field(default_factory=lambda: (
+        os.environ.get("OLLAMA_TEXT_MODEL_DIGEST", "").strip()
+    ))
+    lmstudio_model: str = field(
+        default_factory=lambda: _preference("lmstudio_model", "")
+    )
+    whisper_model: str = field(
+        default_factory=lambda: _preference("whisper_model", "base")
+    )
+    whisper_model_sha256: str = field(default_factory=lambda: (
+        os.environ.get("WHISPER_MODEL_SHA256", "").strip()
+    ))
+    whispercpp_model_sha256: str = field(default_factory=lambda: (
+        os.environ.get("WHISPERCPP_MODEL_SHA256", "").strip()
+    ))
+    clicky_wake_model_sha256: str = field(default_factory=lambda: (
+        os.environ.get("CLICKY_WAKE_MODEL_SHA256", "").strip()
+    ))
+    whisper_language: str = field(
+        default_factory=lambda: _preference("whisper_language", "")
+    )
+    mic_device_index: Optional[int] = field(
+        default_factory=lambda: _preference("mic_device_index", None)
+    )
+    response_language: str = field(
+        default_factory=lambda: _preference("response_language", "")
+    )
+    custom_instructions: str = field(
+        default_factory=lambda: _preference("custom_instructions", DEFAULT_SYSTEM_PROMPT)
+    )
+    elevenlabs_voice_id: str = field(
+        default_factory=lambda: _preference("elevenlabs_voice_id", "")
+    )
+    hotkey: str = field(default_factory=lambda: _preference("hotkey", "ctrl+win"))
+    journal_enabled: bool = field(
+        default_factory=lambda: bool(_preference("journal_enabled", False))
+    )
+    web_search_enabled: bool = field(
+        default_factory=lambda: bool(_preference("web_search_enabled", False))
+    )
+    stt_provider_preference: str = field(
+        default_factory=lambda: _preference("stt_provider", "")
+    )
 
     def llm_provider(self) -> str:
         """Returns the active LLM provider (runtime override > priority chain).
 
         Priority chain: Claude > OpenAI > GitHub Copilot > Gemini > Ollama.
         """
-        override = os.environ.get("CLICKY_ACTIVE_LLM", "").strip().lower()
-        if override in self.available_llm_providers():
-            return override
+        if self.active_llm in self.available_llm_providers():
+            return self.active_llm
         if self.anthropic_api_key:
             return "claude"
         if self.openai_api_key:
@@ -194,29 +315,15 @@ class Config:
         return out
 
     def set_active_llm(self, name: str) -> None:
-        """Runtime switch — next query uses this provider. Persisted to .env."""
-        name = name.lower()
-        os.environ["CLICKY_ACTIVE_LLM"] = name
-        # Write to .env so the choice survives restarts
-        env_path = _HERE / ".env"
-        try:
-            lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True) if env_path.exists() else []
-            key = "CLICKY_ACTIVE_LLM"
-            found = False
-            for i, line in enumerate(lines):
-                if line.startswith(key + "=") or line.startswith(key + " ="):
-                    lines[i] = f"{key}={name}\n"
-                    found = True
-                    break
-            if not found:
-                lines.append(f"\n{key}={name}\n")
-            env_path.write_text("".join(lines), encoding="utf-8")
-        except Exception:
-            pass  # non-fatal — runtime switch still works via os.environ
+        """Switch providers and persist only the provider name."""
+        normalized = (name or "").strip().lower()
+        if normalized not in {"claude", "openai", "copilot", "gemini", "ollama", "lmstudio"}:
+            return
+        self.active_llm = normalized
+        _save_preferences(active_llm=normalized)
 
     def stt_provider(self) -> str:
-        # Allow explicit override via env (so users can force whisper_cpp etc.)
-        forced = os.getenv("CLICKY_STT", "").strip().lower()
+        forced = self.stt_provider_preference.strip().lower()
         if forced in ("deepgram", "openai", "whisper_cpp", "faster_whisper"):
             return forced
         if self.deepgram_api_key:
@@ -260,29 +367,42 @@ class Config:
     # ── Ollama runtime model selection ───────────────────────────────────
 
     def get_ollama_model(self, kind: str = "vision") -> str:
-        """Return the active model for the given kind ("vision" | "text").
-
-        Reads runtime override from CLICKY_OLLAMA_VISION_MODEL /
-        CLICKY_OLLAMA_TEXT_MODEL first, then the dataclass field, then the
-        legacy single-model knob.
-        """
-        env_key = "CLICKY_OLLAMA_VISION_MODEL" if kind == "vision" else "CLICKY_OLLAMA_TEXT_MODEL"
-        runtime = os.environ.get(env_key, "").strip()
-        if runtime:
-            return runtime
+        """Return the persisted vision or text Ollama model."""
         return self.ollama_vision_model if kind == "vision" else self.ollama_text_model
 
     def set_ollama_model(self, kind: str, name: str) -> None:
-        """Runtime switch for vision/text Ollama model. Persists for the session."""
         if kind not in ("vision", "text"):
             return
-        env_key = "CLICKY_OLLAMA_VISION_MODEL" if kind == "vision" else "CLICKY_OLLAMA_TEXT_MODEL"
-        os.environ[env_key] = (name or "").strip()
-        # Mirror onto the dataclass so describe() picks it up immediately
+        normalized = (name or "").strip()[:256]
         if kind == "vision":
-            self.ollama_vision_model = name
+            self.ollama_vision_model = normalized
+            _save_preferences(ollama_vision_model=normalized)
         else:
-            self.ollama_text_model = name
+            self.ollama_text_model = normalized
+            _save_preferences(ollama_text_model=normalized)
+
+    def set_custom_instructions(self, text: str) -> None:
+        value = (text or "").strip()[: 32 * 1024]
+        self.custom_instructions = value
+        _save_preferences(custom_instructions=value)
+
+    def set_response_language(self, code: str) -> None:
+        value = (code or "").strip()[:16]
+        self.response_language = value
+        _save_preferences(response_language=value)
+
+    def set_mic_device_index(self, device_index: Optional[int]) -> None:
+        value = device_index if isinstance(device_index, int) and 0 <= device_index <= 4096 else None
+        self.mic_device_index = value
+        _save_preferences(mic_device_index=value)
+
+    def set_journal_enabled(self, enabled: bool) -> None:
+        self.journal_enabled = bool(enabled)
+        _save_preferences(journal_enabled=self.journal_enabled)
+
+    def set_web_search_enabled(self, enabled: bool) -> None:
+        self.web_search_enabled = bool(enabled)
+        _save_preferences(web_search_enabled=self.web_search_enabled)
 
 
 # Singleton

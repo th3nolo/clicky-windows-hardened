@@ -1,16 +1,15 @@
 """
 Curated registry of Ollama models recommended for Clicky, plus heuristics
-for classifying installed models as vision-capable or text-only.
+for classifying already-installed models as vision-capable or text-only.
 
 Why curated:
     Ollama's library is huge. Most students don't know which models work
     well for screen-aware AI tutoring. This file is a quality-tested
-    shortlist that gets surfaced in the tray menu under "Pull recommended".
+    shortlist that is shown as manual provisioning guidance in the tray.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 
@@ -116,41 +115,3 @@ def is_vision_capable(model_name: str) -> bool:
     """
     n = (model_name or "").lower()
     return any(kw in n for kw in _VISION_KEYWORDS)
-
-
-# ─── Pull helper ──────────────────────────────────────────────────────────────
-
-async def pull_model(name: str, host: str, on_progress=None) -> bool:
-    """Stream `ollama pull <name>` over the HTTP API.
-
-    Returns True on success. on_progress (optional) is called with status
-    strings as the download advances ("pulling manifest", "verifying", etc.).
-    """
-    import httpx
-
-    url = host.rstrip("/") + "/api/pull"
-    try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST", url, json={"name": name, "stream": True},
-            ) as r:
-                if r.status_code >= 400:
-                    return False
-                import json as _json
-                async for line in r.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        msg = _json.loads(line)
-                    except Exception:
-                        continue
-                    if on_progress:
-                        try:
-                            on_progress(msg.get("status", ""))
-                        except Exception:
-                            pass
-                    if msg.get("error"):
-                        return False
-                return True
-    except Exception:
-        return False
