@@ -88,7 +88,7 @@ Bundled skills are part of the reviewed application and execute only when every 
 
 Clicky does not download, install, start, or pull Ollama or local speech models.
 
-- A faster-whisper directory must match a deterministic SHA-256 covering every regular file, relative path, and size; symlinks are refused. A whisper.cpp model file must match its configured SHA-256.
+- A faster-whisper directory must match a deterministic SHA-256 covering every regular file, relative path, and size; symlinks, junctions, and linked descendants are refused. A whisper.cpp model file must match its configured SHA-256.
 - An Ollama model must match its configured model tag and the exact digest returned by the local Ollama API.
 - Missing, ambiguous, changed, or unverifiable models fail closed.
 

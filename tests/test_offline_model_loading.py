@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import types
@@ -216,6 +217,56 @@ class LocalModelResolverTests(unittest.TestCase):
         (model / "added.json").write_bytes(b"new unreviewed content")
         with self.assertRaisesRegex(local_models.LocalModelUnavailable, "mismatch"):
             local_models.resolve_faster_whisper_model(str(model), expected)
+
+    def test_symlinked_model_subdirectory_fails_closed(self) -> None:
+        model = self._make_faster_model(self.root / "verified-model")
+        outside = self.root / "outside-model-data"
+        outside.mkdir()
+        (outside / "unreviewed.json").write_bytes(b"unreviewed")
+        linked = model / "linked-subdirectory"
+        try:
+            linked.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        with self.assertRaisesRegex(
+            local_models.LocalModelUnavailable, "links or junctions"
+        ):
+            local_models.faster_whisper_directory_sha256(model)
+
+    def test_symlinked_model_root_fails_through_public_resolver(self) -> None:
+        model = self._make_faster_model(self.root / "verified-model")
+        expected = local_models.faster_whisper_directory_sha256(model)
+        linked = self.root / "linked-model-root"
+        try:
+            linked.symlink_to(model, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+        with self.assertRaisesRegex(
+            local_models.LocalModelUnavailable, "root cannot be a link or junction"
+        ):
+            local_models.resolve_faster_whisper_model(str(linked), expected)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction test")
+    def test_junction_model_root_fails_through_public_resolver(self) -> None:
+        model = self._make_faster_model(self.root / "verified-model")
+        expected = local_models.faster_whisper_directory_sha256(model)
+        junction = self.root / "junction-model-root"
+        created = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(model)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if created.returncode != 0:
+            self.skipTest(f"directory junctions are unavailable: {created.stderr}")
+        try:
+            with self.assertRaisesRegex(
+                local_models.LocalModelUnavailable,
+                "root cannot be a link or junction",
+            ):
+                local_models.resolve_faster_whisper_model(str(junction), expected)
+        finally:
+            junction.rmdir()
 
     def test_missing_digest_fails_closed(self) -> None:
         model = self._make_faster_model(self.root / "verified-model")

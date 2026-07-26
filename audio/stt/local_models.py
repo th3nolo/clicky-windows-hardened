@@ -85,18 +85,46 @@ def _valid_faster_directory(path: Path) -> bool:
     )
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
 def faster_whisper_directory_sha256(path: Path) -> str:
     """Hash every regular file in a faster-whisper directory deterministically."""
     try:
-        if path.is_symlink():
+        if _is_link_or_junction(path):
             raise LocalModelUnavailable(
-                f"Faster-whisper model directories cannot be symlinks: {path}"
+                "Faster-whisper model directories cannot be links or "
+                f"junctions: {path}"
             )
         resolved = path.resolve(strict=True)
-        files = sorted(
-            (candidate for candidate in resolved.rglob("*") if candidate.is_file()),
-            key=lambda candidate: candidate.relative_to(resolved).as_posix(),
-        )
+        files: list[Path] = []
+        pending_directories = [resolved]
+        while pending_directories:
+            directory = pending_directories.pop()
+            for candidate in directory.iterdir():
+                if _is_link_or_junction(candidate):
+                    raise LocalModelUnavailable(
+                        "Faster-whisper model entries cannot be links or "
+                        f"junctions: {candidate}"
+                    )
+                if candidate.is_dir():
+                    pending_directories.append(candidate)
+                elif candidate.is_file():
+                    files.append(candidate)
+                    if len(files) > _MAX_FASTER_MODEL_FILES:
+                        raise LocalModelUnavailable(
+                            "Faster-whisper model directory exceeds the "
+                            f"{_MAX_FASTER_MODEL_FILES}-file safety limit: {resolved}"
+                        )
+                else:
+                    raise LocalModelUnavailable(
+                        f"Faster-whisper model entry is not regular: {candidate}"
+                    )
+        files.sort(key=lambda candidate: candidate.relative_to(resolved).as_posix())
     except LocalModelUnavailable:
         raise
     except OSError as exc:
@@ -154,9 +182,18 @@ def faster_whisper_directory_sha256(path: Path) -> str:
 def _verified_faster_directory(
     path: Path, expected_sha256: str, variable_name: str
 ) -> Path:
-    resolved = path.resolve()
+    if _is_link_or_junction(path):
+        raise LocalModelUnavailable(
+            f"Faster-whisper model root cannot be a link or junction: {path}"
+        )
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise LocalModelUnavailable(
+            f"Could not resolve faster-whisper model directory {path}: {exc}"
+        ) from exc
     normalized = validate_sha256(expected_sha256, variable_name)
-    actual = faster_whisper_directory_sha256(resolved)
+    actual = faster_whisper_directory_sha256(path)
     if not hmac.compare_digest(actual, normalized):
         raise LocalModelUnavailable(
             f"SHA-256 mismatch for faster-whisper directory {resolved}. Refusing "
@@ -238,7 +275,20 @@ def resolve_faster_whisper_model(
                 item for item in snapshots.iterdir() if _valid_faster_directory(item)
             )
 
-    unique = sorted({candidate.resolve() for candidate in candidates}, key=str)
+    unique_by_resolved: dict[Path, Path] = {}
+    for candidate in candidates:
+        if _is_link_or_junction(candidate):
+            raise LocalModelUnavailable(
+                f"Faster-whisper model root cannot be a link or junction: {candidate}"
+            )
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise LocalModelUnavailable(
+                f"Could not resolve faster-whisper candidate {candidate}: {exc}"
+            ) from exc
+        unique_by_resolved.setdefault(resolved_candidate, candidate)
+    unique = sorted(unique_by_resolved.values(), key=str)
     if len(unique) == 1:
         return _verified_faster_directory(
             unique[0], expected_sha256, digest_variable
