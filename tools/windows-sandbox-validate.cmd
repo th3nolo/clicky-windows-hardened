@@ -1,6 +1,13 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+REM Safety boundary: this validator is destructive only inside Windows Sandbox.
+REM A normal host invocation must stop before touching inputs or requesting shutdown.
+if /I not "%USERNAME%"=="WDAGUtilityAccount" (
+    echo [FAIL] This validator may run only as the Windows Sandbox account.
+    exit /b 4
+)
+
 set "INPUT=C:\ClickyInput"
 set "WORK=C:\ClickyWork"
 set "OUTPUT=C:\ValidationOutput"
@@ -12,12 +19,12 @@ set "LOG=%OUTPUT%\sandbox-validation.log"
 set "RESULT=1"
 
 if not exist "%OUTPUT%" (
-    shutdown.exe /s /t 5 >nul 2>&1
+    call :shutdown_if_sandbox
     exit /b 2
 )
 for /f "delims=" %%F in ('dir /b /a "%OUTPUT%" 2^>nul') do (
     echo [FAIL] Refusing a non-empty validation output directory.
-    shutdown.exe /s /t 5 >nul 2>&1
+    call :shutdown_if_sandbox
     exit /b 3
 )
 > "%LOG%" echo Clicky Windows Sandbox validation started
@@ -170,5 +177,13 @@ if "%RESULT%"=="0" (
     >> "%LOG%" echo [FAIL] Windows Sandbox validation stopped.
     > "%OUTPUT%\FAIL.txt" echo FAIL
 )
-shutdown.exe /s /t 5 >nul 2>&1
+call :shutdown_if_sandbox
 exit /b %RESULT%
+
+:shutdown_if_sandbox
+if /I "%USERNAME%"=="WDAGUtilityAccount" (
+    shutdown.exe /s /t 5 >nul 2>&1
+) else (
+    echo [WARN] Shutdown skipped outside Windows Sandbox.
+)
+exit /b 0

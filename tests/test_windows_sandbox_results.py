@@ -230,5 +230,26 @@ class WindowsSandboxResultTests(unittest.TestCase):
                 verifier.verify(run_root, commit, archive_hash)
 
 
+class SandboxBootstrapSafetyTests(unittest.TestCase):
+    def test_validator_refuses_host_execution_before_shutdown(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "windows-sandbox-validate.cmd"
+        ).read_text(encoding="utf-8")
+        host_guard = 'if /I not "%USERNAME%"=="WDAGUtilityAccount" ('
+        self.assertIn(host_guard, script)
+        self.assertLess(script.index(host_guard), script.index('set "INPUT='))
+        self.assertEqual(script.count("shutdown.exe /s /t 5"), 1)
+        marker = "\n:shutdown_if_sandbox\n"
+        self.assertIn(marker, script)
+        shutdown_subroutine = script.rpartition(marker)[2]
+        self.assertIn(
+            'if /I "%USERNAME%"=="WDAGUtilityAccount" (',
+            shutdown_subroutine,
+        )
+        self.assertIn("shutdown.exe /s /t 5", shutdown_subroutine)
+
+
 if __name__ == "__main__":
     unittest.main()
