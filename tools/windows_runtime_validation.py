@@ -1,8 +1,9 @@
-"""Windows-only dynamic security validation for a disposable sandbox.
+"""Windows-only dynamic security validation for a disposable boundary.
 
 This script uses synthetic data and never requires real credentials, audio, or
-screen content. Run it only inside Windows Sandbox after the frozen environment
-and unsigned local-test build have been created.
+screen content. Run it only inside the reviewed Windows Sandbox launcher or the
+trusted GitHub-hosted workflow after the frozen environment and unsigned local-
+test build have been created.
 """
 
 from __future__ import annotations
@@ -33,8 +34,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from validation_boundary import require_disposable_windows_boundary
 CRASH_EXIT_CODE = 73
 _EDGE_TTS_HOST = "speech.platform.bing.com"
+_VIRUSTOTAL_MAX_FILE_BYTES = 650_000_000
 
 
 def _require(condition: bool, message: str) -> None:
@@ -936,6 +940,11 @@ def _export_distribution(
                 f"distribution file changed while exporting: {path}",
             )
 
+    _require(
+        archive_output.stat().st_size <= _VIRUSTOTAL_MAX_FILE_BYTES,
+        "distribution archive exceeds VirusTotal exact-file upload limit",
+    )
+
     executable = directory / "Clicky.exe"
     _require(executable in candidates, "Clicky.exe is missing from the distribution")
     executable_details = _validate_distribution_entry(executable, directory=False)
@@ -956,10 +965,7 @@ def _export_distribution(
 
 def run(output: Path, archive_output: Path, executable_output: Path) -> None:
     _require(os.name == "nt", "Windows runtime validation requires Windows")
-    _require(
-        os.environ.get("CLICKY_WINDOWS_SANDBOX") == "1",
-        "runtime validation requires the disposable Windows Sandbox launcher",
-    )
+    boundary = require_disposable_windows_boundary()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clicky-runtime-validation-") as tmp:
         root = Path(tmp)
@@ -990,6 +996,7 @@ def run(output: Path, archive_output: Path, executable_output: Path) -> None:
         report = {
             "python": sys.version,
             "executable": sys.executable,
+            "runtime_boundary": boundary,
             "audio_crash_cleanup": audio_crash_cleanup,
             "privacy_controls": privacy_controls,
             "dpapi": dpapi,

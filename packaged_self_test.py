@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from unittest import mock
 
+from validation_boundary import require_disposable_windows_boundary
+
 
 _SELF_TEST_SENTINEL = "CLICKY_SECURITY_SELF_TEST"
 _EXPECTED_TOKEN_DIGEST = "CLICKY_SELF_TEST_TOKEN_SHA256"
@@ -30,7 +32,7 @@ def _require(condition: bool, message: str) -> None:
 
 def _require_isolated_packaged_runtime() -> None:
     _require(bool(getattr(sys, "frozen", False)), "self-test requires the packaged executable")
-    _require(os.environ.get("CLICKY_WINDOWS_SANDBOX") == "1", "self-test requires Windows Sandbox")
+    require_disposable_windows_boundary()
     _require(os.environ.get(_SELF_TEST_SENTINEL) == "1", "self-test sentinel is missing")
 
 
@@ -287,6 +289,7 @@ def run(output: Path) -> int:
         "runtime_boundary": {
             "frozen": bool(getattr(sys, "frozen", False)),
             "executable": sys.executable,
+            **require_disposable_windows_boundary(),
         },
         "dpapi_token_persistence": _validate_dpapi_persistence(),
         "secure_audio": _validate_secure_audio(),

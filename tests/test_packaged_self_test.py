@@ -1,4 +1,4 @@
-"""Tests for the packaged-only Windows Sandbox security self-test boundary."""
+"""Tests for packaged security self-tests in disposable Windows boundaries."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             {
                 "CLICKY_WINDOWS_SANDBOX": "1",
                 "CLICKY_SECURITY_SELF_TEST": "1",
+                "USERNAME": "WDAGUtilityAccount",
             },
             clear=False,
         ):
@@ -32,18 +33,22 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
 
         with mock.patch.object(sys, "frozen", True, create=True), mock.patch.dict(
             os.environ,
-            {"CLICKY_WINDOWS_SANDBOX": "1"},
+            {
+                "CLICKY_WINDOWS_SANDBOX": "1",
+                "USERNAME": "WDAGUtilityAccount",
+            },
             clear=True,
         ):
             with self.assertRaisesRegex(AssertionError, "sentinel"):
                 packaged_self_test._require_isolated_packaged_runtime()
 
-    def test_accepts_only_the_explicit_packaged_sandbox_boundary(self) -> None:
+    def test_accepts_the_explicit_packaged_sandbox_boundary(self) -> None:
         with mock.patch.object(sys, "frozen", True, create=True), mock.patch.dict(
             os.environ,
             {
                 "CLICKY_WINDOWS_SANDBOX": "1",
                 "CLICKY_SECURITY_SELF_TEST": "1",
+                "USERNAME": "WDAGUtilityAccount",
             },
             clear=True,
         ):
@@ -151,6 +156,9 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             self.assertEqual(first["tree_sha256"], second["tree_sha256"])
             self.assertEqual(first["file_count"], 2)
             self.assertEqual(first_executable.read_bytes(), b"MZ reviewed executable")
+
+    def test_distribution_export_cap_matches_virustotal_limit(self) -> None:
+        self.assertEqual(runtime_validation._VIRUSTOTAL_MAX_FILE_BYTES, 650_000_000)
 
     def test_distribution_export_refuses_output_inside_distribution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

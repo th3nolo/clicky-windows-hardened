@@ -116,6 +116,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
             distribution_archive.read_bytes()
         ).hexdigest()
         report = {
+            "runtime_boundary": {"kind": "windows-sandbox"},
             "audio_crash_cleanup": {"leftover_removed": True},
             "privacy_controls": {
                 "microphone_denied_before_consent": True,
@@ -136,7 +137,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
                 "authenticode": {"Status": "NotSigned"},
                 "sha256": executable_hash,
                 "packaged_security_self_test": {
-                    "runtime_boundary": {"frozen": True, "executable": r"C:\Clicky\Clicky.exe"},
+                    "runtime_boundary": {"kind": "windows-sandbox", "frozen": True, "executable": r"C:\Clicky\Clicky.exe"},
                     "dpapi_token_persistence": {
                         "magic_present": True,
                         "plaintext_absent": True,
@@ -237,12 +238,107 @@ class WindowsSandboxResultTests(unittest.TestCase):
             ):
                 verifier.verify(run_root, commit, archive_hash)
 
+    def test_shared_verifier_rejects_unknown_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(AssertionError, "unsupported runtime boundary"):
+                verifier.verify_runtime_results(
+                    Path(tmp),
+                    "1" * 40,
+                    "2" * 64,
+                    result_limits=verifier._RESULT_LIMITS,
+                    log_name="sandbox-validation.log",
+                    pass_line="[PASS] Windows Sandbox validation completed.",
+                    expected_boundary="typo",
+                )
+
+    def test_shared_verifier_rejects_invalid_workflow_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                AssertionError, "invalid expected trusted workflow commit"
+            ):
+                verifier.verify_runtime_results(
+                    Path(tmp),
+                    "1" * 40,
+                    "2" * 64,
+                    result_limits=verifier._RESULT_LIMITS,
+                    log_name="sandbox-validation.log",
+                    pass_line="[PASS] Windows Sandbox validation completed.",
+                    expected_boundary="github-hosted-windows",
+                    expected_workflow_commit="not-a-commit",
+                )
+
+    def test_shared_verifier_rejects_reparse_result_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_results = root / "real-results"
+            linked_results = root / "linked-results"
+            real_results.mkdir()
+            try:
+                linked_results.symlink_to(real_results, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks are unavailable: {exc}")
+            with self.assertRaisesRegex(AssertionError, "reparse point"):
+                verifier.verify_runtime_results(
+                    linked_results,
+                    "1" * 40,
+                    "2" * 64,
+                    result_limits=verifier._RESULT_LIMITS,
+                    log_name="sandbox-validation.log",
+                    pass_line="[PASS] Windows Sandbox validation completed.",
+                    expected_boundary="windows-sandbox",
+                )
+
+    def test_github_evidence_binds_trusted_workflow_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            report_path = run_root / "results" / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            workflow_commit = "2" * 40
+            boundary = {
+                "kind": "github-hosted-windows",
+                "commit": commit,
+                "workflow_commit": workflow_commit,
+            }
+            report["runtime_boundary"] = dict(boundary)
+            report["unsigned_application"]["packaged_security_self_test"][
+                "runtime_boundary"
+            ].update(boundary)
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes):
+                summary = verifier.verify_runtime_results(
+                    run_root / "results",
+                    commit,
+                    archive_hash,
+                    result_limits=verifier._RESULT_LIMITS,
+                    log_name="sandbox-validation.log",
+                    pass_line="[PASS] Windows Sandbox validation completed.",
+                    expected_boundary="github-hosted-windows",
+                    expected_workflow_commit=workflow_commit,
+                )
+            self.assertEqual(summary["commit"], commit)
+
+            report["runtime_boundary"]["workflow_commit"] = "3" * 40
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes), self.assertRaisesRegex(
+                AssertionError, "trusted workflow commit"
+            ):
+                verifier.verify_runtime_results(
+                    run_root / "results",
+                    commit,
+                    archive_hash,
+                    result_limits=verifier._RESULT_LIMITS,
+                    log_name="sandbox-validation.log",
+                    pass_line="[PASS] Windows Sandbox validation completed.",
+                    expected_boundary="github-hosted-windows",
+                    expected_workflow_commit=workflow_commit,
+                )
+
     def test_rejects_any_unexpected_host_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
             (run_root / "results" / "unexpected.exe").write_bytes(b"no")
             with self._reviewed_hashes(hashes), self.assertRaisesRegex(
-                AssertionError, "unexpected sandbox result"
+                AssertionError, "unexpected validation result"
             ):
                 verifier.verify(run_root, commit, archive_hash)
 

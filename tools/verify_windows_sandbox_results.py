@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_ALLOWED_RUNTIME_BOUNDARIES = frozenset({"windows-sandbox", "github-hosted-windows"})
 _EXPECTED_UV_SHA256 = "cd628b46729d01ad110146a647a633a6e5de0e091d73db46afaeee6fcb4ba648"
 _EXPECTED_PYTHON_RUNTIME_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 _EXPECTED_GIT_SHA256 = "22fead8244ef3a7225fb800099a4e43eca8bcec0466774917669599c2f19a05a"
@@ -36,7 +37,7 @@ _EXPECTED_INPUTS = {
 }
 _RESULT_LIMITS = {
     "Clicky-unsigned.exe": 128 * 1024 * 1024,
-    "clicky-unsigned-onedir.zip": 2 * 1024 * 1024 * 1024,
+    "clicky-unsigned-onedir.zip": 650_000_000,
     "PASS.txt": 32,
     "clicky-exe-sha256.txt": 4096,
     "runtime-validation.json": 2 * 1024 * 1024,
@@ -575,49 +576,76 @@ def _validate_cloud_tts(cloud: dict[str, object], label: str) -> None:
     _require(int(cloud["audio_bytes"]) > 0, f"{label} returned no audio")
 
 
-def verify(
-    run_root: Path, expected_commit: str, expected_archive_sha256: str
+def verify_runtime_results(
+    results: Path,
+    expected_commit: str,
+    expected_source_archive_sha256: str,
+    *,
+    result_limits: dict[str, int],
+    log_name: str,
+    pass_line: str,
+    expected_boundary: str,
+    expected_workflow_commit: str | None = None,
 ) -> dict[str, object]:
-    prepared = verify_prepared(
-        run_root,
-        expected_commit,
-        expected_archive_sha256,
-        require_empty_results=False,
+    """Verify bounded runtime evidence shared by either disposable Windows gate."""
+    _require(
+        expected_boundary in _ALLOWED_RUNTIME_BOUNDARIES,
+        f"unsupported runtime boundary: {expected_boundary}",
     )
-    run_root = run_root.resolve()
-    input_directory = run_root / "input"
-    results = run_root / "results"
+    _require(_COMMIT_RE.fullmatch(expected_commit) is not None, "invalid expected commit")
+    if expected_boundary == "github-hosted-windows":
+        _require(
+            expected_workflow_commit is not None
+            and _COMMIT_RE.fullmatch(expected_workflow_commit) is not None,
+            "invalid expected trusted workflow commit",
+        )
+    else:
+        _require(
+            expected_workflow_commit is None,
+            "trusted workflow commit is forbidden for Windows Sandbox evidence",
+        )
+    _require_plain_directory(results, "validation results")
+    results = results.resolve()
     actual_results = {path.name for path in results.iterdir()}
-    expected_results = set(_RESULT_LIMITS)
+    expected_results = set(result_limits)
     _require(
         actual_results == expected_results,
-        f"unexpected sandbox result files: {sorted(actual_results ^ expected_results)}",
+        f"unexpected validation result files: {sorted(actual_results ^ expected_results)}",
     )
-    for name, maximum in _RESULT_LIMITS.items():
+    for name, maximum in result_limits.items():
         _require_regular_file(results / name, maximum)
     _require(
         (results / "PASS.txt").read_text(encoding="ascii").strip() == "PASS",
-        "sandbox did not emit its exact PASS marker",
+        "validation did not emit its exact PASS marker",
     )
     source_commit = _read_single_line(results / "source-commit.txt", _COMMIT_RE)
-    _require(source_commit == expected_commit, "sandbox source commit does not match HEAD")
+    _require(source_commit == expected_commit, "validation source commit does not match the target")
     result_archive_hash = _read_single_line(
         results / "source-archive-sha256.txt", _SHA256_RE
     )
     _require(
-        result_archive_hash == prepared["source_archive_sha256"],
-        "sandbox source identity differs from prepared input",
+        result_archive_hash == expected_source_archive_sha256,
+        "validation source identity differs from the reviewed archive",
     )
 
-    log = (results / "sandbox-validation.log").read_text(
+    log = (results / log_name).read_text(
         encoding="utf-8-sig", errors="strict"
     )
-    _require("[PASS] Windows Sandbox validation completed." in log, "PASS log line missing")
+    _require(pass_line in log, "PASS log line missing")
     _require("[FAIL]" not in log, "sandbox log contains a failed gate")
     _require("ERROR: Hidden import" not in log, "PyInstaller reported a missing hidden import")
     _require("Traceback (most recent call last)" not in log, "sandbox log contains a traceback")
 
     report = json.loads((results / "runtime-validation.json").read_text(encoding="utf-8"))
+    boundary = report["runtime_boundary"]
+    _require(boundary["kind"] == expected_boundary, "source runtime boundary differs")
+    if expected_boundary == "github-hosted-windows":
+        _require(boundary["commit"] == expected_commit, "source runtime commit differs")
+        _require(
+            expected_workflow_commit is not None
+            and boundary["workflow_commit"] == expected_workflow_commit,
+            "source trusted workflow commit differs",
+        )
     crash = report["audio_crash_cleanup"]
     _require(crash["leftover_removed"] is True, "crash-leftover audio was not removed")
     privacy = report["privacy_controls"]
@@ -650,6 +678,21 @@ def verify(
         "pre-release artifact has an unexpected Authenticode state",
     )
     packaged = application["packaged_security_self_test"]
+    _require(
+        packaged["runtime_boundary"]["kind"] == expected_boundary,
+        "packaged runtime boundary differs",
+    )
+    if expected_boundary == "github-hosted-windows":
+        _require(
+            packaged["runtime_boundary"]["commit"] == expected_commit,
+            "packaged runtime commit differs",
+        )
+        _require(
+            expected_workflow_commit is not None
+            and packaged["runtime_boundary"]["workflow_commit"]
+            == expected_workflow_commit,
+            "packaged trusted workflow commit differs",
+        )
     _require(packaged["runtime_boundary"]["frozen"] is True, "self-test was not packaged")
     _require(
         str(packaged["runtime_boundary"]["executable"]).lower().endswith("clicky.exe"),
@@ -717,7 +760,7 @@ def verify(
     )
     return {
         "commit": source_commit,
-        "source_archive_sha256": prepared["source_archive_sha256"],
+        "source_archive_sha256": expected_source_archive_sha256,
         "clicky_exe_sha256": executable_hash,
         "distribution_archive_sha256": archive_hash,
         "distribution_tree_sha256": pristine,
@@ -727,6 +770,25 @@ def verify(
         "cloud_tts_public_addresses": packaged["cloud_tts"]["resolved_public_addresses"],
     }
 
+
+def verify(
+    run_root: Path, expected_commit: str, expected_archive_sha256: str
+) -> dict[str, object]:
+    prepared = verify_prepared(
+        run_root,
+        expected_commit,
+        expected_archive_sha256,
+        require_empty_results=False,
+    )
+    return verify_runtime_results(
+        run_root.resolve() / "results",
+        expected_commit,
+        prepared["source_archive_sha256"],
+        result_limits=_RESULT_LIMITS,
+        log_name="sandbox-validation.log",
+        pass_line="[PASS] Windows Sandbox validation completed.",
+        expected_boundary="windows-sandbox",
+    )
 
 def _independent_archive_hash(repo_root: Path, git_exe: Path, commit: str) -> str:
     # Git for Windows may install identical binaries as hardlinks. Its exact
