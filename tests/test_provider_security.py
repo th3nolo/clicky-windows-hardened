@@ -273,8 +273,11 @@ class TierThreeFallbackTests(unittest.TestCase):
             "user_question": "save button",
         }])
 
-    def test_tier_three_also_works_inside_running_event_loop(self):
+    def test_tier_three_refuses_to_block_a_running_event_loop(self):
+        calls = []
+
         async def detect_element(**_kwargs):
+            calls.append(_kwargs)
             return types.SimpleNamespace(x=10, y=20)
 
         hybrid, modules = self._load_hybrid(detect_element)
@@ -292,16 +295,19 @@ class TierThreeFallbackTests(unittest.TestCase):
 
         async def exercise():
             with mock.patch.dict(sys.modules, modules):
-                return hybrid.find_target(
-                    "target",
-                    screenshot=screenshot,
-                    llm_provider=object(),
-                    skip_uia=True,
-                    skip_ocr=True,
-                )
+                with self.assertRaisesRegex(
+                    RuntimeError, "cannot run inside an active asyncio event loop"
+                ):
+                    hybrid.find_target(
+                        "target",
+                        screenshot=screenshot,
+                        llm_provider=object(),
+                        skip_uia=True,
+                        skip_ocr=True,
+                    )
 
-        target = asyncio.run(exercise())
-        self.assertEqual(target.center_xy, (10, 20))
+        asyncio.run(exercise())
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

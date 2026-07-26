@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import threading
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, List, Tuple
 
@@ -268,32 +267,31 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
 #  TIER 3 — Vision LLM grid fallback (delegated to existing element_locator)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+class _ActiveEventLoopError(RuntimeError):
+    """Raised when the synchronous Tier 3 API would block an event loop."""
+
+
 def _run_locator(coroutine: Coroutine[Any, Any, Any]) -> Any:
     """Run the async locator while preserving this module's synchronous API.
 
-    find_target normally runs outside an asyncio loop. If a caller invokes it
-    from an async context, use a dedicated thread rather than nesting event
-    loops (which Python rejects).
+    find_target normally runs outside an asyncio loop. A synchronous call from
+    a running event loop cannot wait for Tier 3 without freezing that loop, so
+    fail immediately instead of hiding the block in a helper thread.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coroutine)
 
-    result: dict[str, Any] = {}
-
-    def _runner() -> None:
-        try:
-            result["value"] = asyncio.run(coroutine)
-        except BaseException as exc:
-            result["error"] = exc
-
-    worker = threading.Thread(target=_runner, daemon=True)
-    worker.start()
-    worker.join()
-    if "error" in result:
-        raise result["error"]
-    return result.get("value")
+    # The coroutine has already been constructed by the caller. Close it
+    # before rejecting the unsupported boundary so Python does not later emit
+    # an "unawaited coroutine" warning.
+    coroutine.close()
+    raise _ActiveEventLoopError(
+        "Tier 3's synchronous locator cannot run inside an active asyncio "
+        "event loop; use a non-loop worker or keep skip_vision=True"
+    )
 
 
 def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
@@ -325,6 +323,8 @@ def _find_via_vision(query: str, screenshot, llm_provider) -> Optional[Target]:
             label=query, source="vision",
             confidence=0.5,   # vision is least trustworthy
         )
+    except _ActiveEventLoopError:
+        raise
     except Exception as e:
         log.warning("Vision tier failed: %s", e)
         return None
