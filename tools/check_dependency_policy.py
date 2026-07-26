@@ -490,6 +490,9 @@ class BatchCommand:
     depth: int
 
 
+# Intentional whole-file seal: every legitimate build.bat change requires a
+# security review of the complete diff. Update this digest in the same reviewed
+# commit; never change it only to make CI pass.
 EXPECTED_BUILD_SCRIPT_SHA256 = (
     "d8f3552ea6c9f79f18b8ed9bc8267430ca5ac9b636d238e79952d3713a2ea3fe"
 )
