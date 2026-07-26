@@ -291,6 +291,14 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
             workflow_text=VALID_WORKFLOW,
         )
 
+    def test_prefix_like_argument_does_not_satisfy_policy(self) -> None:
+        tampered = VALID_BUILD.replace("--group build", "--group buildx")
+        with self.assertRaisesRegex(AssertionError, "hardened uv sync"):
+            policy.check_build_script(
+                build_text=tampered,
+                workflow_text=VALID_WORKFLOW,
+            )
+
     def test_comments_cannot_satisfy_required_commands(self) -> None:
         commented = "\n".join(f"REM {line}" for line in VALID_BUILD.splitlines())
         with self.assertRaisesRegex(AssertionError, "pinned settings"):

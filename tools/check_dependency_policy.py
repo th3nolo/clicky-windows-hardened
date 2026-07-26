@@ -558,22 +558,67 @@ def _workflow_run_commands(text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
+def _batch_command_tokens(command: str) -> tuple[str, ...]:
+    """Tokenize the constrained batch commands checked by this policy."""
+    tokens: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for character in command:
+        if character == '"':
+            quoted = not quoted
+            continue
+        if character.isspace() and not quoted:
+            if current:
+                tokens.append("".join(current).casefold())
+                current = []
+            continue
+        current.append(character)
+    if quoted:
+        fail(f"build.bat contains an unterminated quoted argument: {command!r}")
+    if current:
+        tokens.append("".join(current).casefold())
+    if tokens and tokens[0].startswith("@"):
+        tokens[0] = tokens[0][1:]
+    return tuple(tokens)
+
+
+def _contains_token_sequence(
+    tokens: tuple[str, ...], required: tuple[str, ...]
+) -> bool:
+    if not required or len(required) > len(tokens):
+        return False
+    return any(
+        tokens[index : index + len(required)] == required
+        for index in range(len(tokens) - len(required) + 1)
+    )
+
+
 def _require_batch_command(
     commands: tuple[str, ...],
     prefix: str,
     required_arguments: tuple[str, ...],
 ) -> None:
-    prefix_parts = prefix.split()
-    executable = re.escape(prefix_parts[0]) + r"(?:\.exe)?"
-    subcommands = "".join(rf"\s+{re.escape(part)}" for part in prefix_parts[1:])
-    prefix_pattern = rf"(?i)^@?{executable}{subcommands}(?:\s|$)"
-    candidates = [
-        command.lower()
-        for command in commands
-        if re.match(prefix_pattern, command)
-    ]
+    prefix_tokens = _batch_command_tokens(prefix)
+    required_tokens = tuple(
+        _batch_command_tokens(argument) for argument in required_arguments
+    )
+    candidates: list[tuple[str, ...]] = []
+    for command in commands:
+        tokens = _batch_command_tokens(command)
+        if len(tokens) < len(prefix_tokens):
+            continue
+        executable_matches = tokens[0] in {
+            prefix_tokens[0],
+            f"{prefix_tokens[0]}.exe",
+        }
+        subcommands_match = (
+            tokens[1 : len(prefix_tokens)] == prefix_tokens[1:]
+        )
+        if executable_matches and subcommands_match:
+            candidates.append(tokens[len(prefix_tokens) :])
+
     if not candidates or not any(
-        all(argument.lower() in candidate for argument in required_arguments)
+        all(_contains_token_sequence(candidate, required) for required in required_tokens)
         for candidate in candidates
     ):
         fail(
