@@ -156,12 +156,18 @@ def _require_no_alternate_streams(path: Path) -> None:
     )
 
 
-def _require_regular_file(path: Path, maximum_bytes: int) -> None:
+def _require_regular_file(
+    path: Path,
+    maximum_bytes: int,
+    *,
+    reject_hardlinks: bool = True,
+) -> None:
     _require(path.exists(), f"required file is missing: {path.name}")
     _require(not _is_reparse(path), f"reparse-point evidence is forbidden: {path.name}")
     _require(path.is_file(), f"evidence is not a regular file: {path.name}")
     details = path.stat()
-    _require(details.st_nlink == 1, f"hard-linked evidence is forbidden: {path.name}")
+    if reject_hardlinks:
+        _require(details.st_nlink == 1, f"hard-linked evidence is forbidden: {path.name}")
     _require_no_alternate_streams(path)
     _require(details.st_size <= maximum_bytes, f"evidence exceeds size limit: {path.name}")
 
@@ -723,7 +729,9 @@ def verify(
 
 
 def _independent_archive_hash(repo_root: Path, git_exe: Path, commit: str) -> str:
-    _require_regular_file(git_exe, 16 * 1024 * 1024)
+    # Git for Windows may install identical binaries as hardlinks. Its exact
+    # digest, version, and Authenticode signer are authenticated separately.
+    _require_regular_file(git_exe, 16 * 1024 * 1024, reject_hardlinks=False)
     _require(_sha256(git_exe) == _EXPECTED_GIT_SHA256, "Git is not the reviewed executable")
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     environment.update({

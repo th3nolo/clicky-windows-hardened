@@ -213,6 +213,16 @@ class WindowsSandboxResultTests(unittest.TestCase):
             ):
                 verifier.verify(run_root, commit, archive_hash)
 
+    def test_explicit_authenticated_tool_hardlink_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original = Path(tmp) / "reviewed-tool.exe"
+            linked = Path(tmp) / "reviewed-tool-hardlink.exe"
+            original.write_bytes(b"separately authenticated tool")
+            os.link(original, linked)
+            verifier._require_regular_file(
+                linked, 1024, reject_hardlinks=False
+            )
+
     @unittest.skipUnless(os.name == "nt", "NTFS alternate streams require Windows")
     def test_rejects_result_alternate_data_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
