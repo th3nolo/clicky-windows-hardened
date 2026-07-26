@@ -1054,9 +1054,7 @@ def _require_clean_vt_report(
             require(result.get("category") == "undetected", f"VirusTotal {engine} did not report undetected")
 
 
-def _vt_scan_one(
-    path: Path, api_key: str, *, require_vendor_votes: bool
-) -> dict[str, object]:
+def _vt_scan_one(path: Path, api_key: str) -> dict[str, object]:
     require_plain_file(path, VT_MAX_UPLOAD_BYTES, f"VirusTotal input {path.name}")
     digest = sha256_file(path)
     upload_url = VT_UPLOAD_URL
@@ -1098,11 +1096,6 @@ def _vt_scan_one(
     require(isinstance(analysis_date, int) and analysis_date > 0, "analysis date is missing")
     analysis_stats = _sanitize_vt_stats(analysis_attributes.get("stats"), "analysis")
     analysis_results = _sanitize_vt_results(analysis_attributes.get("results"), "analysis")
-    _require_clean_vt_report(
-        analysis_stats, analysis_results, path.name,
-        require_vendor_votes=require_vendor_votes,
-    )
-
     file_data: dict[str, object] | None = None
     while time.monotonic() < deadline:
         file_report = _vt_request_json(
@@ -1125,10 +1118,6 @@ def _vt_scan_one(
     file_attributes = file_data["attributes"]
     file_stats = _sanitize_vt_stats(file_attributes.get("last_analysis_stats"), "file report")
     file_results = _sanitize_vt_results(file_attributes.get("last_analysis_results"), "file report")
-    _require_clean_vt_report(
-        file_stats, file_results, path.name,
-        require_vendor_votes=require_vendor_votes,
-    )
     return {
         "sha256": digest,
         "bytes": path.stat().st_size,
@@ -1141,27 +1130,54 @@ def _vt_scan_one(
         "minimum_clean_participating_engines": 50,
     }
 
+
+def _vt_gate_failures(files: dict[str, dict[str, object]]) -> list[str]:
+    failures: list[str] = []
+    for label, details in files.items():
+        require_vendor_votes = label == "clicky_executable"
+        for report_name in ("analysis_report", "file_report"):
+            report = details[report_name]
+            require(isinstance(report, dict), f"{label}.{report_name} is invalid")
+            stats = report.get("stats")
+            results = report.get("results")
+            require(isinstance(stats, dict), f"{label}.{report_name} stats are invalid")
+            require(isinstance(results, dict), f"{label}.{report_name} results are invalid")
+            try:
+                _require_clean_vt_report(
+                    stats,
+                    results,
+                    label,
+                    require_vendor_votes=require_vendor_votes,
+                )
+            except HarnessError as exc:
+                failures.append(f"{label}.{report_name}: {exc}")
+    return failures
+
+
 def virus_total_scan(source: Path, distribution: Path, executable: Path, output: Path) -> None:
     api_key = os.environ.get("VT_API_KEY", "").strip()
     require(20 <= len(api_key) <= 512, "VT_API_KEY secret is missing or invalid")
     require("\r" not in api_key and "\n" not in api_key, "VT_API_KEY contains a newline")
     require(not output.exists(), "VirusTotal report output already exists")
+    files = {
+        "source_archive": _vt_scan_one(source, api_key),
+        "distribution_archive": _vt_scan_one(distribution, api_key),
+        "clicky_executable": _vt_scan_one(executable, api_key),
+    }
+    failures = _vt_gate_failures(files)
     report = {
-        "schema": 1,
-        "verdict": "clean",
-        "files": {
-            "source_archive": _vt_scan_one(source, api_key, require_vendor_votes=False),
-            "distribution_archive": _vt_scan_one(
-                distribution, api_key, require_vendor_votes=False
-            ),
-            "clicky_executable": _vt_scan_one(
-                executable, api_key, require_vendor_votes=True
-            ),
-        },
+        "schema": 2,
+        "verdict": "failed" if failures else "clean",
+        "failures": failures,
+        "files": files,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(_json_bytes(report))
     print(json.dumps(report, sort_keys=True))
+    require(
+        not failures,
+        "VirusTotal clean gate failed: " + "; ".join(failures),
+    )
 
 
 def _write_recipient(path: Path, value: str) -> None:
