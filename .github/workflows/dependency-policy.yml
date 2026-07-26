@@ -82,7 +82,7 @@ jobs:
       - name: Install the frozen wheel-only environment
         shell: pwsh
         run: >-
-          uv sync --frozen --group build --no-build --no-sources
+          uv sync --frozen --group build --no-build
           --no-managed-python --no-python-downloads --python "3.12.10"
           --keyring-provider disabled --no-cache
 

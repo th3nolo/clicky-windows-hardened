@@ -42,8 +42,10 @@ uv lock --check --offline --no-build --no-sources --no-python-downloads --python
 Then create the environment from the frozen lock:
 
 ~~~powershell
-uv sync --frozen --group build --no-build --no-sources --no-managed-python --no-python-downloads --python "3.12.10" --default-index "https://pypi.org/simple" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
+uv sync --frozen --group build --no-build --no-managed-python --no-python-downloads --python "3.12.10" --default-index "https://pypi.org/simple" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
 ~~~
+
+Registry-only dependency sourcing is enforced by the checked-in `tool.uv.no-sources = true` setting. With uv 0.11.19, do not repeat `--no-sources` on a frozen sync because that flag combination is invalid.
 
 This command refuses source builds and unmanaged Python downloads. Do not use pip, requirement files, editable installs, Git dependencies, or upgrade flags.
 

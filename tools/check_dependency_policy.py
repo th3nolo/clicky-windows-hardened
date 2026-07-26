@@ -198,7 +198,7 @@ def check_build_script() -> None:
         f'set "EXPECTED_UV_VERSION={EXPECTED_UV}"',
         f'set "EXPECTED_PYTHON_VERSION={EXPECTED_PYTHON}"',
         "uv lock --check --offline --no-build --no-sources --no-python-downloads",
-        "uv sync --frozen --group build --no-build --no-sources",
+        "uv sync --frozen --group build --no-build",
         "--no-managed-python --no-python-downloads",
         "--keyring-provider disabled --link-mode copy --no-cache",
         "uv export --frozen --no-dev --no-emit-project "
@@ -210,6 +210,18 @@ def check_build_script() -> None:
     for fragment in required_fragments:
         if fragment not in text:
             fail(f"build.bat is missing required hardening: {fragment}")
+    if "UV_NO_SOURCES" in text:
+        fail("build.bat must rely on checked-in tool.uv.no-sources during sync")
+    for line in text.splitlines():
+        if "uv sync" in line and "--frozen" in line and "--no-sources" in line:
+            fail("uv 0.11.19 rejects sync --frozen combined with --no-sources")
+    workflow = (
+        ROOT / ".github" / "workflows" / "dependency-policy.yml"
+    ).read_text(encoding="utf-8")
+    if "UV_NO_SOURCES" in workflow:
+        fail("CI sync must rely on checked-in tool.uv.no-sources")
+    if "uv sync --frozen" in workflow and "--no-sources" in workflow:
+        fail("CI uses the invalid sync --frozen plus --no-sources combination")
     forbidden = (
         " pip ",
         "pip install",

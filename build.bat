@@ -70,7 +70,6 @@ set "UV_DEFAULT_INDEX=%PYPI_INDEX%"
 set "UV_INDEX_STRATEGY=first-index"
 set "UV_KEYRING_PROVIDER=disabled"
 set "UV_NO_BUILD=1"
-set "UV_NO_SOURCES=1"
 set "UV_PYTHON_DOWNLOADS=never"
 set "PIP_INDEX_URL="
 set "PIP_EXTRA_INDEX_URL="
@@ -90,7 +89,7 @@ if exist "!UV_PROJECT_ENVIRONMENT!" (
 )
 
 echo [2/6] Creating an isolated environment from reviewed wheels...
-uv sync --frozen --group build --no-build --no-sources --no-managed-python --no-python-downloads --python "%EXPECTED_PYTHON_VERSION%" --default-index "%PYPI_INDEX%" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
+uv sync --frozen --group build --no-build --no-managed-python --no-python-downloads --python "%EXPECTED_PYTHON_VERSION%" --default-index "%PYPI_INDEX%" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
 if errorlevel 1 (
     echo [ERROR] Frozen wheel-only dependency sync failed.
     goto :cleanup

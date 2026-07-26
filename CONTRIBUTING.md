@@ -26,8 +26,10 @@ Verify and install the lock without changing it:
 
 ~~~powershell
 uv lock --check --offline --no-build --no-sources --no-python-downloads --python "3.12.10"
-uv sync --frozen --group build --no-build --no-sources --no-managed-python --no-python-downloads --python "3.12.10" --default-index "https://pypi.org/simple" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
+uv sync --frozen --group build --no-build --no-managed-python --no-python-downloads --python "3.12.10" --default-index "https://pypi.org/simple" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
 ~~~
+
+Registry-only dependency sourcing is enforced by the checked-in `tool.uv.no-sources = true` setting. With uv 0.11.19, do not repeat `--no-sources` on a frozen sync because that flag combination is invalid.
 
 Do not use pip, editable installs, alternate indexes, Git dependencies, path dependencies, source builds, or upgrade flags.
 
