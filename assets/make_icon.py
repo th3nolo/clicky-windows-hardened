@@ -4,7 +4,7 @@ Generate a Clicky-blue icon.ico for the PyInstaller build.
 Produces assets/icon.ico with multiple sizes (16, 32, 48, 64, 128, 256) —
 Windows picks the right size for taskbar, file explorer, and installer.
 
-Run once before building:  python assets\make_icon.py
+Build script entry point: uv run --no-sync python assets/make_icon.py
 """
 
 from pathlib import Path

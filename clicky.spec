@@ -6,13 +6,16 @@ Build:
     pyinstaller clicky.spec --clean --noconfirm
 
 Output:
-    dist/Clicky/Clicky.exe           ← distribute this whole folder
+    dist/Clicky/Clicky.exe
 
-We use --onedir (not --onefile) because:
-  • faster-whisper + ctranslate2 ship large native DLLs that onefile
-    extracts to %TEMP% on every launch (slow, antivirus-triggering).
-  • onedir launches in ~1s vs ~8s for onefile.
-  • Inno Setup bundles the folder into a single Setup.exe anyway.
+SECURITY STATUS:
+    LOCAL TEST ONLY — UNSIGNED — DO NOT DISTRIBUTE.
+    Installer packaging is disabled until an Authenticode signing and
+    post-signature verification pipeline is implemented.
+
+We use --onedir (not --onefile) because faster-whisper and ctranslate2 ship
+large native DLLs. A one-file build extracts those files to a temporary
+directory at every launch, increasing startup time and transient-file surface.
 """
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -64,9 +67,6 @@ for pkg in (
     "edge_tts",
     "anthropic",
     "openai",
-    "ollama",
-    "elevenlabs",
-    "tavily",
     "httpx",
     "httpcore",
     "certifi",
@@ -76,13 +76,10 @@ for pkg in (
     "onnxruntime",
     "cv2",                      # figure detection for teaching drawings
     # Web search + misc runtime deps added since 1.1.x
-    "ddgs",
     "imageio",
     "imageio_ffmpeg",
     "pypdf",
     "docx",
-    "langdetect",
-    "pynput",
     "pywhispercpp",
 ):
     try:
@@ -126,8 +123,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,                    # UPX often triggers Windows Defender
-    console=False,                # no terminal window for released builds
+    upx=False,                    # keep binaries uncompressed and inspectable
+    console=False,                # windowed local-test build
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -1,93 +1,158 @@
 @echo off
-REM ────────────────────────────────────────────────────────────────────
-REM Clicky Windows — one-click build script
-REM
-REM Produces:  dist\Clicky\Clicky.exe   (portable folder)
-REM            Setup-Clicky.exe         (if Inno Setup is installed)
-REM
-REM Usage:  build.bat           ← builds portable folder only
-REM         build.bat installer ← also builds Setup-Clicky.exe
-REM ────────────────────────────────────────────────────────────────────
+setlocal EnableExtensions EnableDelayedExpansion
+cd /d "%~dp0" || exit /b 1
 
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
+REM Clicky Windows hardened build.
+REM This build is intentionally fail-closed:
+REM   - uv and Python versions are pinned.
+REM   - uv.lock must already be current.
+REM   - only PyPI wheels from the frozen lock may be installed.
+REM   - no pip, source builds, Git/path dependencies, or package upgrades.
 
-echo.
-echo ================================================================
-echo   Clicky for Windows — Build
-echo ================================================================
-echo.
+set "EXPECTED_UV_VERSION=0.11.19"
+set "EXPECTED_PYTHON_VERSION=3.12.10"
+set "PYPI_INDEX=https://pypi.org/simple"
+set "RESULT=1"
 
-REM ── 1. Sanity check Python ─────────────────────────────────────────
-where python >nul 2>&1
+if /I "%~1"=="installer" (
+    echo [ERROR] Installer builds are disabled.
+    echo An Authenticode signing and verification pipeline does not exist yet.
+    echo build.bat produces an unsigned LOCAL TEST ONLY portable artifact.
+    goto :cleanup
+)
+if not "%~1"=="" (
+    echo [ERROR] Unknown argument: %~1
+    echo Usage: build.bat
+    goto :cleanup
+)
+
+where uv.exe >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python not found on PATH. Install Python 3.11+ first.
-    exit /b 1
+    echo [ERROR] uv %EXPECTED_UV_VERSION% is required on PATH.
+    echo Install that reviewed version from the official uv release, then retry.
+    goto :cleanup
 )
 
-REM ── 2. Install build deps if missing ───────────────────────────────
-echo [1/4] Checking build dependencies...
-python -c "import PyInstaller" 2>nul
+for /f "tokens=2" %%V in ('uv --version 2^>nul') do set "FOUND_UV_VERSION=%%V"
+if not "!FOUND_UV_VERSION!"=="%EXPECTED_UV_VERSION%" (
+    echo [ERROR] Expected uv %EXPECTED_UV_VERSION%, found !FOUND_UV_VERSION!.
+    echo Refusing to build with a different dependency toolchain.
+    goto :cleanup
+)
+
+if not exist "pyproject.toml" (
+    echo [ERROR] pyproject.toml is missing.
+    goto :cleanup
+)
+if not exist "uv.lock" (
+    echo [ERROR] uv.lock is missing.
+    goto :cleanup
+)
+if not exist "clicky.spec" (
+    echo [ERROR] clicky.spec is missing.
+    goto :cleanup
+)
+if exist "build" (
+    echo [ERROR] build\ already exists. Inspect and remove it before rebuilding.
+    goto :cleanup
+)
+if exist "dist" (
+    echo [ERROR] dist\ already exists. Inspect and remove it before rebuilding.
+    goto :cleanup
+)
+
+REM Ignore dependency-related environment overrides inherited from the caller.
+set "UV_INDEX="
+set "UV_EXTRA_INDEX_URL="
+set "UV_INDEX_URL="
+set "UV_FIND_LINKS="
+set "UV_DEFAULT_INDEX=%PYPI_INDEX%"
+set "UV_INDEX_STRATEGY=first-index"
+set "UV_KEYRING_PROVIDER=disabled"
+set "UV_NO_BUILD=1"
+set "UV_NO_SOURCES=1"
+set "UV_PYTHON_DOWNLOADS=never"
+set "PIP_INDEX_URL="
+set "PIP_EXTRA_INDEX_URL="
+set "PIP_FIND_LINKS="
+
+echo [1/6] Verifying the frozen lock without network access...
+uv lock --check --offline --no-build --no-sources --no-python-downloads --python "%EXPECTED_PYTHON_VERSION%"
 if errorlevel 1 (
-    echo     Installing PyInstaller...
-    python -m pip install --quiet --upgrade pyinstaller
+    echo [ERROR] uv.lock does not match pyproject.toml.
+    goto :cleanup
 )
-python -c "import PyQt6" 2>nul
+
+set "UV_PROJECT_ENVIRONMENT=%TEMP%\clicky-build-%RANDOM%-%RANDOM%"
+if exist "!UV_PROJECT_ENVIRONMENT!" (
+    echo [ERROR] Refusing to reuse an existing temporary build environment.
+    goto :cleanup
+)
+
+echo [2/6] Creating an isolated environment from reviewed wheels...
+uv sync --frozen --group build --no-build --no-sources --no-managed-python --no-python-downloads --python "%EXPECTED_PYTHON_VERSION%" --default-index "%PYPI_INDEX%" --index-strategy first-index --keyring-provider disabled --link-mode copy --no-cache
 if errorlevel 1 (
-    echo     Installing project requirements...
-    python -m pip install --quiet -r requirements.txt
+    echo [ERROR] Frozen wheel-only dependency sync failed.
+    goto :cleanup
 )
 
-REM ── 2b. Generate icon if missing ───────────────────────────────────
-if not exist "assets\icon.ico" (
-    echo     Generating default icon...
-    python "assets\make_icon.py"
-)
-
-REM ── 3. Clean old build ─────────────────────────────────────────────
-echo [2/4] Cleaning old build...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-
-REM ── 4. Run PyInstaller ─────────────────────────────────────────────
-echo [3/4] Building with PyInstaller (this takes 2-5 min)...
-python -m PyInstaller clicky.spec --clean --noconfirm
+echo [3/6] Generating the deterministic application icon...
+uv run --frozen --no-sync --python "%EXPECTED_PYTHON_VERSION%" python "assets\make_icon.py"
 if errorlevel 1 (
-    echo.
-    echo [ERROR] Build failed. Check the output above.
-    exit /b 1
+    echo [ERROR] Icon generation failed.
+    goto :cleanup
 )
 
-REM ── 5. Copy .env.example and LICENSE into the dist folder ─────────
-echo [4/4] Bundling docs and env template...
+echo [4/6] Building the portable application...
+uv run --frozen --no-sync --python "%EXPECTED_PYTHON_VERSION%" python -m PyInstaller "clicky.spec" --clean
+if errorlevel 1 (
+    echo [ERROR] PyInstaller build failed.
+    goto :cleanup
+)
+
+if not exist "dist\Clicky\Clicky.exe" (
+    echo [ERROR] Expected output dist\Clicky\Clicky.exe was not created.
+    goto :cleanup
+)
+
+echo [5/6] Bundling attribution and dependency evidence...
 copy /y ".env.example" "dist\Clicky\.env.example" >nul
-copy /y "LICENSE"       "dist\Clicky\LICENSE"      >nul
-copy /y "README.md"     "dist\Clicky\README.md"    >nul
-
-echo.
-echo ================================================================
-echo   Portable build complete!
-echo   Run:  dist\Clicky\Clicky.exe
-echo ================================================================
-echo.
-
-REM ── 6. Optional: build Inno Setup installer ────────────────────────
-if /i "%1"=="installer" (
-    echo Building Inno Setup installer...
-    where iscc >nul 2>&1
-    if errorlevel 1 (
-        set "ISCC=C:\Program Files ^(x86^)\Inno Setup 6\ISCC.exe"
-        if not exist "!ISCC!" (
-            echo [WARN] Inno Setup not found. Install from https://jrsoftware.org/isdl.php
-            echo        Then re-run:  build.bat installer
-            exit /b 0
-        )
-        "!ISCC!" installer.iss
-    ) else (
-        iscc installer.iss
-    )
-    echo.
-    echo Installer: dist\Setup-Clicky.exe
+copy /y "LICENSE" "dist\Clicky\LICENSE" >nul
+copy /y "README.md" "dist\Clicky\README.md" >nul
+copy /y "pyproject.toml" "dist\Clicky\pyproject.toml" >nul
+copy /y "uv.lock" "dist\Clicky\uv.lock" >nul
+uv export --frozen --no-dev --no-emit-project --format cyclonedx1.5 --output-file "dist\Clicky\sbom.cdx.json"
+if errorlevel 1 (
+    echo [ERROR] CycloneDX SBOM generation failed.
+    goto :cleanup
 )
 
-endlocal
+for /f "tokens=*" %%H in ('certutil.exe -hashfile "dist\Clicky\Clicky.exe" SHA256 ^| findstr.exe /R /X "[0-9a-fA-F][0-9a-fA-F]*"') do if not defined CLICKY_SHA256 set "CLICKY_SHA256=%%H"
+if not defined CLICKY_SHA256 (
+    echo [ERROR] Could not calculate the executable SHA-256.
+    goto :cleanup
+)
+> "dist\Clicky\SHA256SUMS.txt" echo !CLICKY_SHA256!  Clicky.exe
+> "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (
+    echo UNSIGNED LOCAL TEST ARTIFACT
+    echo.
+    echo DO NOT DISTRIBUTE OR REPRESENT THIS BUILD AS A RELEASE.
+    echo It has not been Authenticode-signed or verified by a release pipeline.
+    echo Rebuild through the future signing pipeline before any distribution.
+)
+
+echo [6/6] Unsigned portable local-test build complete.
+
+set "RESULT=0"
+echo.
+echo ================================================================
+echo   LOCAL TEST ONLY - UNSIGNED - DO NOT DISTRIBUTE
+echo ================================================================
+echo Output: dist\Clicky\Clicky.exe
+echo SHA-256: !CLICKY_SHA256!
+goto :cleanup
+:cleanup
+if defined UV_PROJECT_ENVIRONMENT if exist "!UV_PROJECT_ENVIRONMENT!" (
+    rmdir /s /q "!UV_PROJECT_ENVIRONMENT!"
+)
+exit /b !RESULT!

@@ -1,15 +1,13 @@
-; ────────────────────────────────────────────────────────────────────
-;  Clicky for Windows — Inno Setup script
+; REFERENCE ONLY — NOT A RELEASE PIPELINE.
+; This installer must not compile until Authenticode signing and post-signature
+; verification are implemented and reviewed.
+#error "Installer build disabled: Authenticode signing pipeline is not implemented"
+
+;  Clicky for Windows — reference-only Inno Setup script
 ;
-;  Builds a single Setup-Clicky.exe from the PyInstaller dist folder.
-;
-;  Prerequisites:
-;    1. Run  build.bat  first (produces dist\Clicky\)
-;    2. Install Inno Setup 6 from https://jrsoftware.org/isdl.php
-;    3. Run:  iscc installer.iss
-;
-;  Output:  dist\Setup-Clicky.exe   (single-file installer, ~200-400 MB)
-; ────────────────────────────────────────────────────────────────────
+;  COMPILATION IS INTENTIONALLY DISABLED ABOVE.
+;  Do not remove the guard until a reviewed release pipeline signs and verifies
+;  both Clicky.exe and Setup-Clicky.exe with Authenticode before distribution.
 
 #define MyAppName        "Clicky"
 #define MyAppVersion     "1.2.0"
@@ -48,7 +46,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon";  Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 Name: "startupicon";  Description: "Launch Clicky when Windows &starts";  GroupDescription: "Additional shortcuts:"; Flags: unchecked
-Name: "installollama"; Description: "Also download && install Ollama (free local AI engine, ~700 MB) — needed for the no-API-key mode"; GroupDescription: "Free AI engine:"
 
 [Files]
 ; Everything PyInstaller produced
@@ -61,14 +58,8 @@ Name: "{autodesktop}\{#MyAppName}";              Filename: "{app}\{#MyAppExeName
 Name: "{userstartup}\{#MyAppName}";              Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Run]
-; Optional: download + run the official Ollama installer when the user opts in.
-; PowerShell does the download (no extra tooling needed); the Ollama installer
-; itself is an Inno Setup wizard so /SILENT works.
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; $url='https://ollama.com/download/OllamaSetup.exe'; $dst=Join-Path $env:TEMP 'OllamaSetup.exe'; Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing; Start-Process -FilePath $dst -ArgumentList '/SILENT' -Wait"""; \
-  StatusMsg: "Downloading and installing Ollama (this can take a few minutes)..."; \
-  Tasks: installollama; \
-  Flags: runhidden waituntilterminated
+; The hardened installer never downloads or executes third-party installers.
+; Ollama and model provisioning are separate, user-directed steps.
 
 ; Offer to launch Clicky after install
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
@@ -80,10 +71,12 @@ begin
   begin
     MsgBox(
       'Clicky installed successfully!' #13#13
-      'On first launch, Clicky will walk you through downloading the AI models' #13
-      'so it can answer your questions offline (free, no API keys needed).' #13#13
-      'You can also use Claude / OpenAI / Gemini / GitHub Copilot — see' #13
-      '.env.example inside the install folder for the template.',
+      'Clicky never downloads or executes Ollama or AI models.' #13
+      'If you want local AI, install Ollama separately from its official site,' #13
+      'verify the installer publisher, and provision reviewed models yourself.' #13#13
+      'Credentials must be supplied by a trusted parent process or Windows' #13
+      'environment. The bundled .env.example is reference-only and is never' #13
+      'loaded by Clicky.',
       mbInformation, MB_OK
     );
   end;

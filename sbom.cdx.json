@@ -1,0 +1,1348 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:8295dd2b-c7cb-44b5-a050-50e84dd48854",
+  "metadata": {
+    "timestamp": "2026-07-26T01:28:46.548878700Z",
+    "tools": [
+      {
+        "vendor": "Astral Software Inc.",
+        "name": "uv",
+        "version": "0.11.19"
+      }
+    ],
+    "component": {
+      "type": "library",
+      "bom-ref": "clicky-windows-hardened-1@1.2.0",
+      "name": "clicky-windows-hardened",
+      "version": "1.2.0",
+      "properties": [
+        {
+          "name": "uv:package:is_project_root",
+          "value": "true"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "aiohappyeyeballs-2@2.7.1",
+      "name": "aiohappyeyeballs",
+      "version": "2.7.1",
+      "purl": "pkg:pypi/aiohappyeyeballs@2.7.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "aiohttp-3@3.14.2",
+      "name": "aiohttp",
+      "version": "3.14.2",
+      "purl": "pkg:pypi/aiohttp@3.14.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "aiosignal-4@1.4.0",
+      "name": "aiosignal",
+      "version": "1.4.0",
+      "purl": "pkg:pypi/aiosignal@1.4.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "annotated-types-5@0.7.0",
+      "name": "annotated-types",
+      "version": "0.7.0",
+      "purl": "pkg:pypi/annotated-types@0.7.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "anthropic-6@0.112.0",
+      "name": "anthropic",
+      "version": "0.112.0",
+      "purl": "pkg:pypi/anthropic@0.112.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "anyio-7@4.14.2",
+      "name": "anyio",
+      "version": "4.14.2",
+      "purl": "pkg:pypi/anyio@4.14.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "attrs-8@26.1.0",
+      "name": "attrs",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/attrs@26.1.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "av-9@17.1.0",
+      "name": "av",
+      "version": "17.1.0",
+      "purl": "pkg:pypi/av@17.1.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "certifi-10@2026.6.17",
+      "name": "certifi",
+      "version": "2026.6.17",
+      "purl": "pkg:pypi/certifi@2026.6.17",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "cffi-11@2.1.0",
+      "name": "cffi",
+      "version": "2.1.0",
+      "purl": "pkg:pypi/cffi@2.1.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "charset-normalizer-12@3.4.9",
+      "name": "charset-normalizer",
+      "version": "3.4.9",
+      "purl": "pkg:pypi/charset-normalizer@3.4.9",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "click-13@8.4.2",
+      "name": "click",
+      "version": "8.4.2",
+      "purl": "pkg:pypi/click@8.4.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "colorama-14@0.4.6",
+      "name": "colorama",
+      "version": "0.4.6",
+      "purl": "pkg:pypi/colorama@0.4.6",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "comtypes-15@1.4.16",
+      "name": "comtypes",
+      "version": "1.4.16",
+      "purl": "pkg:pypi/comtypes@1.4.16",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "ctranslate2-16@4.8.1",
+      "name": "ctranslate2",
+      "version": "4.8.1",
+      "purl": "pkg:pypi/ctranslate2@4.8.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "distro-17@1.9.0",
+      "name": "distro",
+      "version": "1.9.0",
+      "purl": "pkg:pypi/distro@1.9.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "docstring-parser-18@0.18.0",
+      "name": "docstring-parser",
+      "version": "0.18.0",
+      "purl": "pkg:pypi/docstring-parser@0.18.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "edge-tts-19@7.2.8",
+      "name": "edge-tts",
+      "version": "7.2.8",
+      "purl": "pkg:pypi/edge-tts@7.2.8",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "faster-whisper-20@1.2.1",
+      "name": "faster-whisper",
+      "version": "1.2.1",
+      "purl": "pkg:pypi/faster-whisper@1.2.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "filelock-21@3.32.0",
+      "name": "filelock",
+      "version": "3.32.0",
+      "purl": "pkg:pypi/filelock@3.32.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "flatbuffers-22@25.12.19",
+      "name": "flatbuffers",
+      "version": "25.12.19",
+      "purl": "pkg:pypi/flatbuffers@25.12.19",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "frozenlist-23@1.8.0",
+      "name": "frozenlist",
+      "version": "1.8.0",
+      "purl": "pkg:pypi/frozenlist@1.8.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "fsspec-24@2026.6.0",
+      "name": "fsspec",
+      "version": "2026.6.0",
+      "purl": "pkg:pypi/fsspec@2026.6.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "h11-25@0.16.0",
+      "name": "h11",
+      "version": "0.16.0",
+      "purl": "pkg:pypi/h11@0.16.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "hf-xet-26@1.5.2",
+      "name": "hf-xet",
+      "version": "1.5.2",
+      "purl": "pkg:pypi/hf-xet@1.5.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "httpcore-27@1.0.9",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "purl": "pkg:pypi/httpcore@1.0.9",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "httpx-28@0.28.1",
+      "name": "httpx",
+      "version": "0.28.1",
+      "purl": "pkg:pypi/httpx@0.28.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "huggingface-hub-29@1.24.0",
+      "name": "huggingface-hub",
+      "version": "1.24.0",
+      "purl": "pkg:pypi/huggingface-hub@1.24.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "idna-30@3.18",
+      "name": "idna",
+      "version": "3.18",
+      "purl": "pkg:pypi/idna@3.18",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "imageio-31@2.37.3",
+      "name": "imageio",
+      "version": "2.37.3",
+      "purl": "pkg:pypi/imageio@2.37.3",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "imageio-ffmpeg-32@0.6.0",
+      "name": "imageio-ffmpeg",
+      "version": "0.6.0",
+      "purl": "pkg:pypi/imageio-ffmpeg@0.6.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "jiter-33@0.16.0",
+      "name": "jiter",
+      "version": "0.16.0",
+      "purl": "pkg:pypi/jiter@0.16.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "keyboard-34@0.13.5",
+      "name": "keyboard",
+      "version": "0.13.5",
+      "purl": "pkg:pypi/keyboard@0.13.5",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "lxml-35@6.1.1",
+      "name": "lxml",
+      "version": "6.1.1",
+      "purl": "pkg:pypi/lxml@6.1.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "mss-36@10.2.0",
+      "name": "mss",
+      "version": "10.2.0",
+      "purl": "pkg:pypi/mss@10.2.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "multidict-37@6.7.1",
+      "name": "multidict",
+      "version": "6.7.1",
+      "purl": "pkg:pypi/multidict@6.7.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "numpy-38@2.4.6",
+      "name": "numpy",
+      "version": "2.4.6",
+      "purl": "pkg:pypi/numpy@2.4.6",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "onnxruntime-39@1.27.0",
+      "name": "onnxruntime",
+      "version": "1.27.0",
+      "purl": "pkg:pypi/onnxruntime@1.27.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "openai-40@2.44.0",
+      "name": "openai",
+      "version": "2.44.0",
+      "purl": "pkg:pypi/openai@2.44.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "opencv-python-41@4.13.0.92",
+      "name": "opencv-python",
+      "version": "4.13.0.92",
+      "purl": "pkg:pypi/opencv-python@4.13.0.92",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "packaging-42@26.2",
+      "name": "packaging",
+      "version": "26.2",
+      "purl": "pkg:pypi/packaging@26.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pillow-43@12.3.0",
+      "name": "pillow",
+      "version": "12.3.0",
+      "purl": "pkg:pypi/pillow@12.3.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "platformdirs-44@4.11.0",
+      "name": "platformdirs",
+      "version": "4.11.0",
+      "purl": "pkg:pypi/platformdirs@4.11.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "propcache-45@0.5.2",
+      "name": "propcache",
+      "version": "0.5.2",
+      "purl": "pkg:pypi/propcache@0.5.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "protobuf-46@7.35.1",
+      "name": "protobuf",
+      "version": "7.35.1",
+      "purl": "pkg:pypi/protobuf@7.35.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pyclipper-47@1.4.0",
+      "name": "pyclipper",
+      "version": "1.4.0",
+      "purl": "pkg:pypi/pyclipper@1.4.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pycparser-48@3.0",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "implementation_name != 'PyPy' and platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pydantic-49@2.13.4",
+      "name": "pydantic",
+      "version": "2.13.4",
+      "purl": "pkg:pypi/pydantic@2.13.4",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pydantic-core-50@2.46.4",
+      "name": "pydantic-core",
+      "version": "2.46.4",
+      "purl": "pkg:pypi/pydantic-core@2.46.4",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pypdf-51@6.14.2",
+      "name": "pypdf",
+      "version": "6.14.2",
+      "purl": "pkg:pypi/pypdf@6.14.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pyqt6-52@6.11.0",
+      "name": "pyqt6",
+      "version": "6.11.0",
+      "purl": "pkg:pypi/pyqt6@6.11.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pyqt6-qt6-53@6.11.1",
+      "name": "pyqt6-qt6",
+      "version": "6.11.1",
+      "purl": "pkg:pypi/pyqt6-qt6@6.11.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pyqt6-sip-54@13.11.1",
+      "name": "pyqt6-sip",
+      "version": "13.11.1",
+      "purl": "pkg:pypi/pyqt6-sip@13.11.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pytesseract-55@0.3.13",
+      "name": "pytesseract",
+      "version": "0.3.13",
+      "purl": "pkg:pypi/pytesseract@0.3.13",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "python-docx-56@1.2.0",
+      "name": "python-docx",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/python-docx@1.2.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pywhispercpp-57@1.5.0",
+      "name": "pywhispercpp",
+      "version": "1.5.0",
+      "purl": "pkg:pypi/pywhispercpp@1.5.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pyyaml-58@6.0.3",
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "rapidocr-onnxruntime-59@1.4.4",
+      "name": "rapidocr-onnxruntime",
+      "version": "1.4.4",
+      "purl": "pkg:pypi/rapidocr-onnxruntime@1.4.4",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "requests-60@2.34.2",
+      "name": "requests",
+      "version": "2.34.2",
+      "purl": "pkg:pypi/requests@2.34.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "setuptools-61@83.0.0",
+      "name": "setuptools",
+      "version": "83.0.0",
+      "purl": "pkg:pypi/setuptools@83.0.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "shapely-62@2.1.2",
+      "name": "shapely",
+      "version": "2.1.2",
+      "purl": "pkg:pypi/shapely@2.1.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "six-63@1.17.0",
+      "name": "six",
+      "version": "1.17.0",
+      "purl": "pkg:pypi/six@1.17.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "sniffio-64@1.3.1",
+      "name": "sniffio",
+      "version": "1.3.1",
+      "purl": "pkg:pypi/sniffio@1.3.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "sounddevice-65@0.5.5",
+      "name": "sounddevice",
+      "version": "0.5.5",
+      "purl": "pkg:pypi/sounddevice@0.5.5",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "tabulate-66@0.10.0",
+      "name": "tabulate",
+      "version": "0.10.0",
+      "purl": "pkg:pypi/tabulate@0.10.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "tokenizers-67@0.23.1",
+      "name": "tokenizers",
+      "version": "0.23.1",
+      "purl": "pkg:pypi/tokenizers@0.23.1",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "tqdm-68@4.69.0",
+      "name": "tqdm",
+      "version": "4.69.0",
+      "purl": "pkg:pypi/tqdm@4.69.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "typing-extensions-69@4.16.0",
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "purl": "pkg:pypi/typing-extensions@4.16.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "typing-inspection-70@0.4.2",
+      "name": "typing-inspection",
+      "version": "0.4.2",
+      "purl": "pkg:pypi/typing-inspection@0.4.2",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "uiautomation-71@2.0.29",
+      "name": "uiautomation",
+      "version": "2.0.29",
+      "purl": "pkg:pypi/uiautomation@2.0.29",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "urllib3-72@2.7.0",
+      "name": "urllib3",
+      "version": "2.7.0",
+      "purl": "pkg:pypi/urllib3@2.7.0",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "yarl-73@1.24.5",
+      "name": "yarl",
+      "version": "1.24.5",
+      "purl": "pkg:pypi/yarl@1.24.5",
+      "properties": [
+        {
+          "name": "uv:package:marker",
+          "value": "platform_machine == 'AMD64' and sys_platform == 'win32'"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "aiohappyeyeballs-2@2.7.1"
+    },
+    {
+      "ref": "aiohttp-3@3.14.2",
+      "dependsOn": [
+        "aiohappyeyeballs-2@2.7.1",
+        "aiosignal-4@1.4.0",
+        "attrs-8@26.1.0",
+        "frozenlist-23@1.8.0",
+        "multidict-37@6.7.1",
+        "propcache-45@0.5.2",
+        "typing-extensions-69@4.16.0",
+        "yarl-73@1.24.5"
+      ]
+    },
+    {
+      "ref": "aiosignal-4@1.4.0",
+      "dependsOn": [
+        "frozenlist-23@1.8.0",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "annotated-types-5@0.7.0"
+    },
+    {
+      "ref": "anthropic-6@0.112.0",
+      "dependsOn": [
+        "anyio-7@4.14.2",
+        "distro-17@1.9.0",
+        "docstring-parser-18@0.18.0",
+        "httpx-28@0.28.1",
+        "jiter-33@0.16.0",
+        "pydantic-49@2.13.4",
+        "sniffio-64@1.3.1",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "anyio-7@4.14.2",
+      "dependsOn": [
+        "idna-30@3.18",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "attrs-8@26.1.0"
+    },
+    {
+      "ref": "av-9@17.1.0"
+    },
+    {
+      "ref": "certifi-10@2026.6.17"
+    },
+    {
+      "ref": "cffi-11@2.1.0",
+      "dependsOn": [
+        "pycparser-48@3.0"
+      ]
+    },
+    {
+      "ref": "charset-normalizer-12@3.4.9"
+    },
+    {
+      "ref": "click-13@8.4.2",
+      "dependsOn": [
+        "colorama-14@0.4.6"
+      ]
+    },
+    {
+      "ref": "colorama-14@0.4.6"
+    },
+    {
+      "ref": "comtypes-15@1.4.16"
+    },
+    {
+      "ref": "ctranslate2-16@4.8.1",
+      "dependsOn": [
+        "numpy-38@2.4.6",
+        "pyyaml-58@6.0.3",
+        "setuptools-61@83.0.0"
+      ]
+    },
+    {
+      "ref": "distro-17@1.9.0"
+    },
+    {
+      "ref": "docstring-parser-18@0.18.0"
+    },
+    {
+      "ref": "edge-tts-19@7.2.8",
+      "dependsOn": [
+        "aiohttp-3@3.14.2",
+        "certifi-10@2026.6.17",
+        "tabulate-66@0.10.0",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "faster-whisper-20@1.2.1",
+      "dependsOn": [
+        "av-9@17.1.0",
+        "ctranslate2-16@4.8.1",
+        "huggingface-hub-29@1.24.0",
+        "onnxruntime-39@1.27.0",
+        "tokenizers-67@0.23.1",
+        "tqdm-68@4.69.0"
+      ]
+    },
+    {
+      "ref": "filelock-21@3.32.0"
+    },
+    {
+      "ref": "flatbuffers-22@25.12.19"
+    },
+    {
+      "ref": "frozenlist-23@1.8.0"
+    },
+    {
+      "ref": "fsspec-24@2026.6.0"
+    },
+    {
+      "ref": "h11-25@0.16.0"
+    },
+    {
+      "ref": "hf-xet-26@1.5.2"
+    },
+    {
+      "ref": "httpcore-27@1.0.9",
+      "dependsOn": [
+        "certifi-10@2026.6.17",
+        "h11-25@0.16.0"
+      ]
+    },
+    {
+      "ref": "httpx-28@0.28.1",
+      "dependsOn": [
+        "anyio-7@4.14.2",
+        "certifi-10@2026.6.17",
+        "httpcore-27@1.0.9",
+        "idna-30@3.18"
+      ]
+    },
+    {
+      "ref": "huggingface-hub-29@1.24.0",
+      "dependsOn": [
+        "click-13@8.4.2",
+        "filelock-21@3.32.0",
+        "fsspec-24@2026.6.0",
+        "hf-xet-26@1.5.2",
+        "httpx-28@0.28.1",
+        "packaging-42@26.2",
+        "pyyaml-58@6.0.3",
+        "tqdm-68@4.69.0",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "idna-30@3.18"
+    },
+    {
+      "ref": "imageio-31@2.37.3",
+      "dependsOn": [
+        "numpy-38@2.4.6",
+        "pillow-43@12.3.0"
+      ]
+    },
+    {
+      "ref": "imageio-ffmpeg-32@0.6.0"
+    },
+    {
+      "ref": "jiter-33@0.16.0"
+    },
+    {
+      "ref": "keyboard-34@0.13.5"
+    },
+    {
+      "ref": "lxml-35@6.1.1"
+    },
+    {
+      "ref": "mss-36@10.2.0"
+    },
+    {
+      "ref": "multidict-37@6.7.1"
+    },
+    {
+      "ref": "numpy-38@2.4.6"
+    },
+    {
+      "ref": "onnxruntime-39@1.27.0",
+      "dependsOn": [
+        "flatbuffers-22@25.12.19",
+        "numpy-38@2.4.6",
+        "packaging-42@26.2",
+        "protobuf-46@7.35.1"
+      ]
+    },
+    {
+      "ref": "openai-40@2.44.0",
+      "dependsOn": [
+        "anyio-7@4.14.2",
+        "distro-17@1.9.0",
+        "httpx-28@0.28.1",
+        "jiter-33@0.16.0",
+        "pydantic-49@2.13.4",
+        "sniffio-64@1.3.1",
+        "tqdm-68@4.69.0",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "opencv-python-41@4.13.0.92",
+      "dependsOn": [
+        "numpy-38@2.4.6"
+      ]
+    },
+    {
+      "ref": "packaging-42@26.2"
+    },
+    {
+      "ref": "pillow-43@12.3.0"
+    },
+    {
+      "ref": "platformdirs-44@4.11.0"
+    },
+    {
+      "ref": "propcache-45@0.5.2"
+    },
+    {
+      "ref": "protobuf-46@7.35.1"
+    },
+    {
+      "ref": "pyclipper-47@1.4.0"
+    },
+    {
+      "ref": "pycparser-48@3.0"
+    },
+    {
+      "ref": "pydantic-49@2.13.4",
+      "dependsOn": [
+        "annotated-types-5@0.7.0",
+        "pydantic-core-50@2.46.4",
+        "typing-extensions-69@4.16.0",
+        "typing-inspection-70@0.4.2"
+      ]
+    },
+    {
+      "ref": "pydantic-core-50@2.46.4",
+      "dependsOn": [
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "pypdf-51@6.14.2"
+    },
+    {
+      "ref": "pyqt6-52@6.11.0",
+      "dependsOn": [
+        "pyqt6-qt6-53@6.11.1",
+        "pyqt6-sip-54@13.11.1"
+      ]
+    },
+    {
+      "ref": "pyqt6-qt6-53@6.11.1"
+    },
+    {
+      "ref": "pyqt6-sip-54@13.11.1"
+    },
+    {
+      "ref": "pytesseract-55@0.3.13",
+      "dependsOn": [
+        "packaging-42@26.2",
+        "pillow-43@12.3.0"
+      ]
+    },
+    {
+      "ref": "python-docx-56@1.2.0",
+      "dependsOn": [
+        "lxml-35@6.1.1",
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "pywhispercpp-57@1.5.0",
+      "dependsOn": [
+        "numpy-38@2.4.6",
+        "platformdirs-44@4.11.0",
+        "requests-60@2.34.2",
+        "tqdm-68@4.69.0"
+      ]
+    },
+    {
+      "ref": "pyyaml-58@6.0.3"
+    },
+    {
+      "ref": "rapidocr-onnxruntime-59@1.4.4",
+      "dependsOn": [
+        "numpy-38@2.4.6",
+        "onnxruntime-39@1.27.0",
+        "opencv-python-41@4.13.0.92",
+        "pillow-43@12.3.0",
+        "pyclipper-47@1.4.0",
+        "pyyaml-58@6.0.3",
+        "shapely-62@2.1.2",
+        "six-63@1.17.0",
+        "tqdm-68@4.69.0"
+      ]
+    },
+    {
+      "ref": "requests-60@2.34.2",
+      "dependsOn": [
+        "certifi-10@2026.6.17",
+        "charset-normalizer-12@3.4.9",
+        "idna-30@3.18",
+        "urllib3-72@2.7.0"
+      ]
+    },
+    {
+      "ref": "setuptools-61@83.0.0"
+    },
+    {
+      "ref": "shapely-62@2.1.2",
+      "dependsOn": [
+        "numpy-38@2.4.6"
+      ]
+    },
+    {
+      "ref": "six-63@1.17.0"
+    },
+    {
+      "ref": "sniffio-64@1.3.1"
+    },
+    {
+      "ref": "sounddevice-65@0.5.5",
+      "dependsOn": [
+        "cffi-11@2.1.0"
+      ]
+    },
+    {
+      "ref": "tabulate-66@0.10.0"
+    },
+    {
+      "ref": "tokenizers-67@0.23.1",
+      "dependsOn": [
+        "huggingface-hub-29@1.24.0"
+      ]
+    },
+    {
+      "ref": "tqdm-68@4.69.0",
+      "dependsOn": [
+        "colorama-14@0.4.6"
+      ]
+    },
+    {
+      "ref": "typing-extensions-69@4.16.0"
+    },
+    {
+      "ref": "typing-inspection-70@0.4.2",
+      "dependsOn": [
+        "typing-extensions-69@4.16.0"
+      ]
+    },
+    {
+      "ref": "uiautomation-71@2.0.29",
+      "dependsOn": [
+        "comtypes-15@1.4.16"
+      ]
+    },
+    {
+      "ref": "urllib3-72@2.7.0"
+    },
+    {
+      "ref": "yarl-73@1.24.5",
+      "dependsOn": [
+        "idna-30@3.18",
+        "multidict-37@6.7.1",
+        "propcache-45@0.5.2"
+      ]
+    }
+  ]
+}
