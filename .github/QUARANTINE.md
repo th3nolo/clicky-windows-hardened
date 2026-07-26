@@ -11,8 +11,9 @@ Before dispatching it:
 3. Pass the matching single-line public key as
    `age_ssh_public_recipient`.
 4. Store the VirusTotal API key as `VT_API_KEY`.
-5. Pass the exact target commit and the independently computed SHA-256 of
-   `git archive --format=zip` for that commit.
+5. Pass the exact target commit. The trusted build hashes its source archive
+   before candidate code executes and exposes that hash as an immutable step
+   output to the fresh verifier.
 
 After every run, whether it succeeds or fails, remove both `AGE_SSH_PRIVATE_KEY`
 and `VT_API_KEY` from the repository Actions secrets. Confirm independently in
@@ -46,6 +47,15 @@ hostile process can still attempt same-user races inside the build VM. A success
 race could transiently upload a file that merely imitates an age header; the fresh
 verifier would reject it only after upload. This is one reason the workflow remains
 a merge-only signal, not a proof that hostile target code cannot influence its VM.
+
+The workflow does not allowlist one Git for Windows release. A fresh hosted
+runner supplies Git; the workflow records its path, version, SHA-256, link
+metadata, and Authenticode identity for audit evidence. Security comes from the
+exact commit binding and hardened invocation: hooks and filesystem monitoring
+are disabled, system/global config and credential helpers are cleared,
+submodules and LFS are disabled, file transport and replacement objects are
+blocked, push credentials are not persisted, and the source-archive hash is
+captured before candidate code runs.
 
 A release still requires the existing Windows Sandbox validation, a manual consumer Malwarebytes
 scan of the exact built files, and an Authenticode-signed

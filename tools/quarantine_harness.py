@@ -46,7 +46,6 @@ AGE_ARCHIVE_SHA256 = (
     "c56e8ce22f7e80cb85ad946cc82d198767b056366201d3e1a2b93d865be38154"
 )
 AGE_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024
-GIT_EXE_SHA256 = "22fead8244ef3a7225fb800099a4e43eca8bcec0466774917669599c2f19a05a"
 ARTIFACT_MAX_BYTES = 480_000_000
 CIPHERTEXT_PAYLOAD_MAX_BYTES = 479_000_000
 SOURCE_MAX_BYTES = 32 * 1024 * 1024
@@ -164,10 +163,6 @@ def validate_context_from_environment(*, require_recipient: bool) -> dict[str, s
         os.environ.get("GITHUB_WORKFLOW_SHA", ""), "GITHUB_WORKFLOW_SHA"
     )
     target_sha = require_commit(os.environ.get("INPUT_TARGET_SHA", ""), "target_sha")
-    source_sha = require_hash(
-        os.environ.get("INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256", ""),
-        "expected_source_archive_sha256",
-    )
     require(repository == REPOSITORY, "workflow is running in an unexpected repository")
     require(github_ref == "refs/heads/main", "workflow must be dispatched from main")
     require(workflow_ref == WORKFLOW_REF, "workflow reference is not trusted main")
@@ -175,7 +170,6 @@ def validate_context_from_environment(*, require_recipient: bool) -> dict[str, s
     require(target_sha != workflow_sha, "target SHA must be distinct from the workflow SHA")
     result = {
         "target_sha": target_sha,
-        "source_sha256": source_sha,
         "workflow_sha": workflow_sha,
     }
     if require_recipient:
@@ -185,20 +179,19 @@ def validate_context_from_environment(*, require_recipient: bool) -> dict[str, s
     return result
 
 
-def _reviewed_git_executable() -> Path:
-    value = os.environ.get("CLICKY_REVIEWED_GIT_EXE", "")
-    require(value and "\r" not in value and "\n" not in value, "reviewed Git path is missing")
+def _hosted_git_executable() -> Path:
+    value = os.environ.get("CLICKY_HOSTED_GIT_EXE", "")
+    require(value and "\r" not in value and "\n" not in value, "hosted Git path is missing")
     path = Path(value)
-    require(path.is_absolute(), "reviewed Git path is not absolute")
-    require_plain_file(
-        path, 16 * 1024 * 1024, "reviewed git.exe", reject_hardlinks=False
-    )
-    require(sha256_file(path) == GIT_EXE_SHA256, "reviewed git.exe SHA-256 differs")
+    require(path.is_absolute(), "hosted Git path is not absolute")
+    require(path.name.casefold() == "git.exe", "hosted Git executable name differs")
+    require(path.exists() and path.is_file(), "hosted git.exe is unavailable")
+    require(0 < path.stat().st_size <= 16 * 1024 * 1024, "hosted git.exe size is invalid")
     return path
 
 
 def _run_git(root: Path, arguments: list[str]) -> str:
-    git_executable = _reviewed_git_executable()
+    git_executable = _hosted_git_executable()
     environment = dict(os.environ)
     environment.update(
         {
@@ -231,9 +224,10 @@ def _run_git(root: Path, arguments: list[str]) -> str:
     return result.stdout
 
 
-def verify_target_checkout(root: Path, output: Path, expected_commit: str, expected_hash: str) -> None:
+def verify_target_checkout(
+    root: Path, output: Path, expected_commit: str
+) -> dict[str, str]:
     expected_commit = require_commit(expected_commit, "target_sha")
-    expected_hash = require_hash(expected_hash, "expected source archive SHA-256")
     require(root.is_dir() and not root.is_symlink(), "target checkout is not a plain directory")
     git_dir = root / ".git"
     require(git_dir.is_dir() and not git_dir.is_symlink(), "target .git directory is unexpected")
@@ -250,6 +244,8 @@ def verify_target_checkout(root: Path, output: Path, expected_commit: str, expec
 
     actual = _run_git(root, ["rev-parse", "--verify", "HEAD^{commit}"]).strip()
     require(actual == expected_commit, "target checkout does not match target_sha")
+    tree = _run_git(root, ["rev-parse", "--verify", "HEAD^{tree}"]).strip()
+    require(COMMIT_RE.fullmatch(tree) is not None, "target tree identity is invalid")
     require(not _run_git(root, ["status", "--porcelain=v1"]).strip(), "target checkout is dirty")
     require(not hooks.exists(), "target Git hooks directory survived hardening")
 
@@ -257,7 +253,11 @@ def verify_target_checkout(root: Path, output: Path, expected_commit: str, expec
     require(not output.exists(), "source archive output already exists")
     _run_git(root, ["archive", "--format=zip", f"--output={output}", actual])
     require_plain_file(output, SOURCE_MAX_BYTES, "source archive")
-    require(sha256_file(output) == expected_hash, "source archive SHA-256 differs from input")
+    return {
+        "commit": actual,
+        "tree": tree,
+        "source_sha256": sha256_file(output),
+    }
 
 
 def _require_safe_archive_name(name: str) -> None:
@@ -1190,7 +1190,7 @@ def main(argv: list[str] | None = None) -> int:
     checkout.add_argument("--root", type=Path, required=True)
     checkout.add_argument("--source-output", type=Path, required=True)
     checkout.add_argument("--target-sha", required=True)
-    checkout.add_argument("--expected-source-sha256", required=True)
+    checkout.add_argument("--github-output", type=Path)
 
     assemble = subparsers.add_parser("assemble")
     assemble.add_argument("--source", type=Path, required=True)
@@ -1239,9 +1239,15 @@ def main(argv: list[str] | None = None) -> int:
         values = validate_context_from_environment(require_recipient=args.recipient_output is not None)
         if args.recipient_output is not None:
             _write_recipient(args.recipient_output, values["recipient"])
-        print(json.dumps({key: values[key] for key in ("target_sha", "source_sha256", "workflow_sha")}, sort_keys=True))
+        print(json.dumps({key: values[key] for key in ("target_sha", "workflow_sha")}, sort_keys=True))
     elif args.command == "verify-target-checkout":
-        verify_target_checkout(args.root, args.source_output, args.target_sha, args.expected_source_sha256)
+        result = verify_target_checkout(args.root, args.source_output, args.target_sha)
+        if args.github_output is not None:
+            _append_github_outputs(
+                args.github_output,
+                {"source_sha256": result["source_sha256"]},
+            )
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "assemble":
         result = create_evidence_archive(
             args.source, args.runtime_report, args.distribution, args.executable_copy,

@@ -175,7 +175,6 @@ class ContextTests(unittest.TestCase):
             "GITHUB_SHA": WORKFLOW,
             "GITHUB_WORKFLOW_SHA": WORKFLOW,
             "INPUT_TARGET_SHA": TARGET,
-            "INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256": "a" * 64,
             "INPUT_AGE_SSH_PUBLIC_RECIPIENT": f"ssh-ed25519 {recipient_blob}",
         }
 
@@ -195,6 +194,17 @@ class ContextTests(unittest.TestCase):
     def test_recipient_must_be_one_public_key_line(self) -> None:
         with self.assertRaises(HARNESS.HarnessError):
             HARNESS.validate_ssh_recipient("ssh-ed25519 AAAA\nssh-ed25519 BBBB")
+
+    def test_hosted_git_identity_is_not_version_allowlisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            git_executable = Path(temporary) / "git.exe"
+            git_executable.write_bytes(b"hosted runner git")
+            with mock.patch.dict(
+                os.environ,
+                {"CLICKY_HOSTED_GIT_EXE": str(git_executable)},
+                clear=True,
+            ):
+                self.assertEqual(HARNESS._hosted_git_executable(), git_executable)
 
 
 class EvidenceTests(unittest.TestCase):
@@ -535,10 +545,17 @@ class CiphertextAndWorkflowTests(unittest.TestCase):
         self.assertIn("--verify-pypi", build)
         self.assertIn("--link-mode copy", build)
         self.assertIn("TRUSTED_HARNESS_SHA256", build)
-        self.assertIn("2.55.0.windows.2", build)
-        self.assertIn(HARNESS.GIT_EXE_SHA256, build)
-        self.assertIn("336C3F70E00092A477DCF6D5F44CE5E31E044C20", build)
-        self.assertIn("CLICKY_REVIEWED_GIT_EXE", build)
+        self.assertIn("CLICKY_HOSTED_GIT_EXE", build)
+        self.assertNotIn("2.55.0.windows.2", build)
+        self.assertNotIn("expected_source_archive_sha256:", workflow)
+        self.assertIn(
+            "source_sha256: ${{ steps.bind_source.outputs.source_sha256 }}",
+            build,
+        )
+        self.assertIn(
+            "EXPECTED_SOURCE_SHA256: ${{ needs.build-runtime.outputs.source_sha256 }}",
+            verifier,
+        )
 
     def test_action_allowlist_matches_workflow(self) -> None:
         policy = (ROOT / "tools" / "check_dependency_policy.py").read_text(encoding="utf-8")

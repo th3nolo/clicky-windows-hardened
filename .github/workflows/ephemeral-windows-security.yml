@@ -7,10 +7,6 @@ on:
         description: Exact lowercase 40-character target commit SHA
         required: true
         type: string
-      expected_source_archive_sha256:
-        description: Expected SHA-256 of git archive --format=zip for the target
-        required: true
-        type: string
       age_ssh_public_recipient:
         description: One-time ssh-ed25519 or ssh-rsa public key for age encryption
         required: true
@@ -45,7 +41,6 @@ env:
   GIT_CONFIG_KEY_3: credential.helper
   GIT_CONFIG_VALUE_3: ""
   INPUT_TARGET_SHA: ${{ inputs.target_sha }}
-  INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256: ${{ inputs.expected_source_archive_sha256 }}
   QUARANTINE_ARTIFACT: clicky-quarantine-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -55,6 +50,8 @@ jobs:
     timeout-minutes: 75
     permissions:
       contents: read
+    outputs:
+      source_sha256: ${{ steps.bind_source.outputs.source_sha256 }}
     env:
       INPUT_AGE_SSH_PUBLIC_RECIPIENT: ${{ inputs.age_ssh_public_recipient }}
     steps:
@@ -88,29 +85,34 @@ jobs:
           $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath "trusted\tools\quarantine_harness.py").Hash.ToLowerInvariant()
           "TRUSTED_HARNESS_SHA256=$digest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Authenticate the reviewed Git for Windows executable
+      - name: Record the hosted runner Git identity
         shell: pwsh
         run: |
           $command = Get-Command git.exe -CommandType Application -ErrorAction Stop
           $git = Get-Item -LiteralPath $command.Source -Force -ErrorAction Stop
-          if ($git.PSIsContainer -or ($git.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "git.exe is not a regular non-reparse file"
+          if ($git.PSIsContainer) {
+            throw "hosted git.exe resolved to a directory"
           }
-          if ($git.VersionInfo.ProductVersion -cne "2.55.0.windows.2" -or
-              $git.VersionInfo.FileVersion -cne "2.55.0.windows.2") {
-            throw "git.exe version differs from the reviewed 2.55.0.windows.2"
+          $version = & $command.Source --version
+          if ($LASTEXITCODE -ne 0 -or $version -cnotmatch '^git version [0-9]') {
+            throw "hosted git.exe did not report a valid version"
           }
           $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $git.FullName).Hash.ToLowerInvariant()
-          if ($digest -cne "22fead8244ef3a7225fb800099a4e43eca8bcec0466774917669599c2f19a05a") {
-            throw "git.exe SHA-256 differs from the reviewed binary"
-          }
           $signature = Get-AuthenticodeSignature -LiteralPath $git.FullName
-          if ($signature.Status.ToString() -cne "Valid" -or
-              $null -eq $signature.SignerCertificate -or
-              $signature.SignerCertificate.Thumbprint -cne "336C3F70E00092A477DCF6D5F44CE5E31E044C20") {
-            throw "git.exe Authenticode signer differs from the reviewed identity"
+          $identity = [ordered]@{
+            path = $git.FullName
+            attributes = $git.Attributes.ToString()
+            link_type = $git.LinkType
+            link_target = $git.Target
+            version = $version
+            product_version = $git.VersionInfo.ProductVersion
+            file_version = $git.VersionInfo.FileVersion
+            sha256 = $digest
+            authenticode_status = $signature.Status.ToString()
+            signer_thumbprint = if ($null -eq $signature.SignerCertificate) { $null } else { $signature.SignerCertificate.Thumbprint }
           }
-          "CLICKY_REVIEWED_GIT_EXE=$($git.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $identity | ConvertTo-Json -Compress | Write-Output
+          "CLICKY_HOSTED_GIT_EXE=$($git.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Check out the exact untrusted target
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -128,13 +130,14 @@ jobs:
           ssh-strict: true
 
       - name: Harden target Git metadata and bind the source archive
+        id: bind_source
         shell: pwsh
         run: >-
           python trusted/tools/quarantine_harness.py verify-target-checkout
           --root target
           --source-output "$env:RUNNER_TEMP\clicky-stage\clicky-source.zip"
           --target-sha "$env:INPUT_TARGET_SHA"
-          --expected-source-sha256 "$env:INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256"
+          --github-output "$env:GITHUB_OUTPUT"
 
       - name: Set up the pinned uv toolchain
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -197,6 +200,8 @@ jobs:
 
       - name: Assemble deterministic runtime evidence
         shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA256: ${{ steps.bind_source.outputs.source_sha256 }}
         run: |
           function Assert-TrustedHarness {
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath "trusted\tools\quarantine_harness.py").Hash.ToLowerInvariant()
@@ -210,7 +215,7 @@ jobs:
             --executable-copy "$env:RUNNER_TEMP\clicky-stage\clicky-executable.exe" `
             --output "$env:RUNNER_TEMP\clicky-stage\clicky-runtime-evidence.zip" `
             --target-sha "$env:INPUT_TARGET_SHA" `
-            --expected-source-sha256 "$env:INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256" `
+            --expected-source-sha256 "$env:EXPECTED_SOURCE_SHA256" `
             --workflow-sha "$env:GITHUB_WORKFLOW_SHA"
           if ($LASTEXITCODE -ne 0) { throw "trusted evidence assembly failed" }
           Assert-TrustedHarness
@@ -306,6 +311,8 @@ jobs:
       distribution_sha256: ${{ steps.verify.outputs.distribution_sha256 }}
       executable_sha256: ${{ steps.verify.outputs.executable_sha256 }}
       evidence_sha256: ${{ steps.verify.outputs.evidence_sha256 }}
+    env:
+      EXPECTED_SOURCE_SHA256: ${{ needs.build-runtime.outputs.source_sha256 }}
     steps:
       - name: Check out only the trusted workflow revision
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -388,7 +395,7 @@ jobs:
             --executable "$plain\clicky-executable.exe" `
             --output-directory "$env:RUNNER_TEMP\clicky-verified-output" `
             --target-sha "$env:INPUT_TARGET_SHA" `
-            --expected-source-sha256 "$env:INPUT_EXPECTED_SOURCE_ARCHIVE_SHA256" `
+            --expected-source-sha256 "$env:EXPECTED_SOURCE_SHA256" `
             --workflow-sha "$env:GITHUB_WORKFLOW_SHA" `
             --github-output "$env:GITHUB_OUTPUT"
 
