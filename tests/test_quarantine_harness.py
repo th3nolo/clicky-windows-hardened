@@ -546,6 +546,8 @@ class CiphertextAndWorkflowTests(unittest.TestCase):
         self.assertIn("--link-mode copy", build)
         self.assertIn("TRUSTED_HARNESS_SHA256", build)
         self.assertIn("CLICKY_HOSTED_GIT_EXE", build)
+        self.assertIn("Select-Object -First 1", build)
+        self.assertIn("$command.Path", build)
         self.assertNotIn("2.55.0.windows.2", build)
         self.assertNotIn("expected_source_archive_sha256:", workflow)
         self.assertIn(
