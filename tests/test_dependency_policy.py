@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ ARTIFACT_URL = (
 ARTIFACT_DIGEST = "a" * 64
 ARTIFACT_SIZE = 123
 
+TLS_CONTEXT = object()
 
 def _release() -> policy.LockedRelease:
     return policy.LockedRelease(
@@ -139,10 +141,106 @@ class PyPIMetadataPolicyTests(unittest.TestCase):
         with mock.patch.object(
             policy, "_fetch_pypi_release", return_value=_metadata()
         ) as fetch:
-            checked = policy.check_pypi_releases((_release(),), now=NOW)
+            checked = policy.check_pypi_releases(
+                (_release(),), now=NOW, ssl_context=TLS_CONTEXT
+            )
         self.assertEqual(checked, 1)
-        fetch.assert_called_once_with(_release())
+        fetch.assert_called_once_with(_release(), ssl_context=TLS_CONTEXT)
 
+
+class ReviewedTrustBundleTests(unittest.TestCase):
+    def _fixture(self, root: Path) -> Path:
+        trust = root / "tools" / "trust"
+        trust.mkdir(parents=True)
+        source = policy.ROOT / "tools" / "trust"
+        bundle = trust / f"certifi-{policy.REVIEWED_CERTIFI_VERSION}.pem"
+        license_path = trust / f"LICENSE.certifi-{policy.REVIEWED_CERTIFI_VERSION}"
+        bundle.write_bytes(
+            (source / f"certifi-{policy.REVIEWED_CERTIFI_VERSION}.pem").read_bytes()
+        )
+        license_path.write_bytes(
+            (source / f"LICENSE.certifi-{policy.REVIEWED_CERTIFI_VERSION}").read_bytes()
+        )
+        return bundle
+
+    def test_context_uses_reviewed_bundle_and_secure_defaults(self) -> None:
+        bundle = policy.check_trust_bundle()
+        context = policy._reviewed_ca_context(bundle)
+        self.assertEqual(context.verify_mode, policy.ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertGreaterEqual(context.cert_store_stats()["x509_ca"], 100)
+
+    def test_tampered_linked_and_oversized_bundle_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = self._fixture(root)
+            with mock.patch.object(policy, "ROOT", root):
+                bundle.write_bytes(b"tampered")
+                with self.assertRaisesRegex(AssertionError, "SHA-256"):
+                    policy.check_trust_bundle()
+
+                bundle.write_bytes(b"x" * (policy.MAX_CA_BUNDLE_BYTES + 1))
+                with self.assertRaisesRegex(AssertionError, "size limit"):
+                    policy.check_trust_bundle()
+
+                with mock.patch.object(Path, "is_symlink", return_value=True):
+                    with self.assertRaisesRegex(AssertionError, "linked"):
+                        policy.check_trust_bundle()
+
+                reparse = mock.Mock(st_file_attributes=0x400, st_size=1)
+                with mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(
+                    Path, "lstat", return_value=reparse
+                ):
+                    with self.assertRaisesRegex(AssertionError, "linked"):
+                        policy.check_trust_bundle()
+
+    def test_invalid_pem_fails_without_ambient_trust_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = self._fixture(root)
+            invalid = b"not a certificate bundle\n"
+            bundle.write_bytes(invalid)
+            digest = hashlib.sha256(invalid).hexdigest()
+            with mock.patch.object(policy, "ROOT", root), mock.patch.object(
+                policy, "REVIEWED_CA_BUNDLE_SHA256", digest
+            ), self.assertRaisesRegex(AssertionError, "could not load"):
+                policy._reviewed_ca_context(bundle)
+
+
+    def test_trust_source_is_bound_to_the_exact_locked_wheel(self) -> None:
+        url = (
+            "https://files.pythonhosted.org/packages/ef/2f/"
+            "c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/"
+            "certifi-2026.6.17-py3-none-any.whl"
+        )
+        artifact = policy.LockedArtifact(
+            url=url,
+            sha256=policy.REVIEWED_CERTIFI_WHEEL_SHA256,
+            size=policy.REVIEWED_CERTIFI_WHEEL_SIZE,
+        )
+        release = policy.LockedRelease(
+            name="certifi",
+            version=policy.REVIEWED_CERTIFI_VERSION,
+            artifacts=(artifact,),
+        )
+        policy.check_trust_bundle_lock((release,))
+
+        cases = (
+            policy.LockedRelease("certifi", "0", (artifact,)),
+            policy.LockedRelease(
+                "certifi",
+                policy.REVIEWED_CERTIFI_VERSION,
+                (policy.LockedArtifact(url, "0" * 64, artifact.size),),
+            ),
+            policy.LockedRelease(
+                "certifi",
+                policy.REVIEWED_CERTIFI_VERSION,
+                (policy.LockedArtifact(url, artifact.sha256, artifact.size + 1),),
+            ),
+        )
+        for candidate in cases:
+            with self.subTest(candidate=candidate), self.assertRaises(AssertionError):
+                policy.check_trust_bundle_lock((candidate,))
 
 class _FakeResponse:
     def __init__(self, payload: bytes, *, url: str, status: int = 200) -> None:
@@ -168,29 +266,37 @@ class PyPIFetchBoundaryTests(unittest.TestCase):
         payload = json.dumps(_metadata()).encode("utf-8")
         calls = []
 
-        def opener(request, *, timeout):
-            calls.append((request, timeout))
+        def opener(request, *, timeout, context):
+            calls.append((request, timeout, context))
             return _FakeResponse(
                 payload,
                 url="https://pypi.org/pypi/demo/1.0.0/json",
             )
 
-        self.assertEqual(policy._fetch_pypi_release(_release(), opener=opener), _metadata())
+        self.assertEqual(
+            policy._fetch_pypi_release(
+                _release(), opener=opener, ssl_context=TLS_CONTEXT
+            ),
+            _metadata(),
+        )
         self.assertEqual(len(calls), 1)
-        request, timeout = calls[0]
+        request, timeout, context = calls[0]
         self.assertEqual(request.full_url, "https://pypi.org/pypi/demo/1.0.0/json")
         self.assertEqual(timeout, policy.PYPI_METADATA_TIMEOUT_SECONDS)
+        self.assertIs(context, TLS_CONTEXT)
         self.assertEqual(request.get_header("Accept"), "application/json")
 
     def test_fetch_rejects_redirect_outside_pypi(self) -> None:
-        def opener(request, *, timeout):
+        def opener(request, *, timeout, context):
             return _FakeResponse(
                 json.dumps(_metadata()).encode("utf-8"),
                 url="https://attacker.example/metadata.json",
             )
 
         with self.assertRaisesRegex(AssertionError, "outside pypi.org"):
-            policy._fetch_pypi_release(_release(), opener=opener)
+            policy._fetch_pypi_release(
+                _release(), opener=opener, ssl_context=TLS_CONTEXT
+            )
 
     def test_fetch_rejects_invalid_or_oversized_json(self) -> None:
         cases = (
@@ -199,14 +305,16 @@ class PyPIFetchBoundaryTests(unittest.TestCase):
         )
         for payload, expected_error in cases:
             with self.subTest(expected_error=expected_error):
-                def opener(request, *, timeout):
+                def opener(request, *, timeout, context):
                     return _FakeResponse(
                         payload,
                         url="https://pypi.org/pypi/demo/1.0.0/json",
                     )
 
                 with self.assertRaisesRegex(AssertionError, expected_error):
-                    policy._fetch_pypi_release(_release(), opener=opener)
+                    policy._fetch_pypi_release(
+                        _release(), opener=opener, ssl_context=TLS_CONTEXT
+                    )
 
 
 class BundledSkillPolicyTests(unittest.TestCase):
@@ -292,7 +400,7 @@ jobs:
 
       - name: Validate dependency policy
         shell: pwsh
-        run: python tools/check_dependency_policy.py --verify-pypi
+        run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
 '''
 
 
@@ -504,8 +612,8 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
 
     def test_commented_pypi_check_cannot_satisfy_workflow(self) -> None:
         workflow = VALID_WORKFLOW.replace(
-            "        run: python tools/check_dependency_policy.py --verify-pypi",
-            "        # run: python tools/check_dependency_policy.py --verify-pypi\n"
+            "        run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem",
+            "        # run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem\n"
             "        run: python tools/check_dependency_policy.py",
         )
         with self.assertRaisesRegex(AssertionError, "CI dependency-policy step"):
@@ -516,7 +624,7 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
 
     def test_inline_comment_cannot_supply_verify_pypi_flag(self) -> None:
         workflow = VALID_WORKFLOW.replace(
-            "        run: python tools/check_dependency_policy.py --verify-pypi",
+            "        run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem",
             "        run: python tools/check_dependency_policy.py # --verify-pypi",
         )
         with self.assertRaisesRegex(AssertionError, "CI dependency-policy step"):
@@ -526,7 +634,7 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
             )
 
     def test_echo_dead_conditional_and_masked_failure_are_rejected(self) -> None:
-        command = "python tools/check_dependency_policy.py --verify-pypi"
+        command = "python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem"
         variants = (
             f"echo {command}",
             f"if ($false) {{ {command} }}",

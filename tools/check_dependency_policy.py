@@ -13,6 +13,8 @@ import ast
 import hashlib
 import json
 import re
+import ssl
+import stat
 import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +37,13 @@ MINIMUM_RELEASE_AGE = timedelta(hours=72)
 PYPI_METADATA_TIMEOUT_SECONDS = 15.0
 MAX_PYPI_METADATA_BYTES = 4 * 1024 * 1024
 PYPI_VALIDATION_WORKERS = 8
+REVIEWED_CERTIFI_VERSION = "2026.6.17"
+REVIEWED_CERTIFI_WHEEL_SHA256 = "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db"
+REVIEWED_CERTIFI_WHEEL_SIZE = 133289
+REVIEWED_CA_BUNDLE_SHA256 = "bbc7e9c01d7551bb8a159b5dedd989b8ee3ce105aff522b68eb1b01bf854cab0"
+REVIEWED_CERTIFI_LICENSE_SHA256 = "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+MAX_CA_BUNDLE_BYTES = 1024 * 1024
+MAX_CERTIFI_LICENSE_BYTES = 64 * 1024
 BANNED_PACKAGES = {"evdev", "langdetect", "pynput"}
 UNUSED_DIRECT_PACKAGES = {
     "aiohttp",
@@ -326,11 +335,94 @@ def _check_locked_release_metadata(
         checked += 1
     return checked
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _require_reviewed_file(
+    path: Path, *, expected_sha256: str, maximum_bytes: int, label: str
+) -> None:
+    try:
+        details = path.lstat()
+    except OSError:
+        fail(f"{label} is missing, linked, or not a regular file")
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = getattr(details, "st_file_attributes", 0)
+    if path.is_symlink() or bool(attributes & reparse_flag) or not path.is_file():
+        fail(f"{label} is missing, linked, or not a regular file")
+    if details.st_size > maximum_bytes:
+        fail(f"{label} exceeds its reviewed size limit")
+    if _sha256_file(path) != expected_sha256:
+        fail(f"{label} SHA-256 does not match the reviewed digest")
+
+
+def check_trust_bundle() -> Path:
+    """Bind live PyPI validation to the reviewed, commit-tracked CA bundle."""
+    trust_directory = ROOT / "tools" / "trust"
+    bundle = trust_directory / f"certifi-{REVIEWED_CERTIFI_VERSION}.pem"
+    license_path = trust_directory / f"LICENSE.certifi-{REVIEWED_CERTIFI_VERSION}"
+    _require_reviewed_file(
+        bundle,
+        expected_sha256=REVIEWED_CA_BUNDLE_SHA256,
+        maximum_bytes=MAX_CA_BUNDLE_BYTES,
+        label="reviewed CA bundle",
+    )
+    _require_reviewed_file(
+        license_path,
+        expected_sha256=REVIEWED_CERTIFI_LICENSE_SHA256,
+        maximum_bytes=MAX_CERTIFI_LICENSE_BYTES,
+        label="certifi license",
+    )
+    return bundle
+
+def check_trust_bundle_lock(releases: tuple[LockedRelease, ...]) -> None:
+    """Prove the vendored trust assets came from the exact locked wheel."""
+    matches = [release for release in releases if canonical_name(release.name) == "certifi"]
+    if len(matches) != 1 or matches[0].version != REVIEWED_CERTIFI_VERSION:
+        fail("uv.lock does not contain the reviewed certifi release exactly once")
+    release = matches[0]
+    expected_filename = f"certifi-{REVIEWED_CERTIFI_VERSION}-py3-none-any.whl"
+    wheels = [
+        artifact
+        for artifact in release.artifacts
+        if unquote(urlparse(artifact.url).path).rsplit("/", 1)[-1] == expected_filename
+    ]
+    if len(wheels) != 1:
+        fail("uv.lock does not contain the reviewed certifi wheel exactly once")
+    wheel = wheels[0]
+    if (
+        wheel.sha256 != REVIEWED_CERTIFI_WHEEL_SHA256
+        or wheel.size != REVIEWED_CERTIFI_WHEEL_SIZE
+    ):
+        fail("uv.lock certifi wheel identity differs from the reviewed trust source")
+
+
+
+def _reviewed_ca_context(ca_bundle: Path) -> ssl.SSLContext:
+    reviewed_bundle = check_trust_bundle()
+    if ca_bundle.resolve() != reviewed_bundle.resolve():
+        fail("live PyPI validation must use the reviewed CA bundle")
+    try:
+        context = ssl.create_default_context(cafile=str(reviewed_bundle))
+    except (OSError, ValueError) as error:
+        fail(f"could not load the reviewed CA bundle: {error}")
+    if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+        fail("reviewed CA context does not enforce certificate and hostname checks")
+    if context.cert_store_stats().get("x509_ca", 0) < 100:
+        fail("reviewed CA bundle contains too few trusted CA certificates")
+    return context
+
+
 
 def _fetch_pypi_release(
     release: LockedRelease,
     *,
     opener: Any = urlopen,
+    ssl_context: ssl.SSLContext,
 ) -> dict[str, Any]:
     name = quote(release.name, safe="")
     version = quote(release.version, safe="")
@@ -344,7 +436,9 @@ def _fetch_pypi_release(
         method="GET",
     )
     try:
-        with opener(request, timeout=PYPI_METADATA_TIMEOUT_SECONDS) as response:
+        with opener(
+            request, timeout=PYPI_METADATA_TIMEOUT_SECONDS, context=ssl_context
+        ) as response:
             if getattr(response, "status", None) != 200:
                 fail(
                     f"PyPI metadata request failed for {release.name} "
@@ -381,6 +475,7 @@ def check_pypi_releases(
     releases: tuple[LockedRelease, ...],
     *,
     now: datetime | None = None,
+    ssl_context: ssl.SSLContext,
 ) -> int:
     """Validate lock provenance against live, fail-closed PyPI metadata."""
     checked_at = now or datetime.now(timezone.utc)
@@ -388,7 +483,7 @@ def check_pypi_releases(
         fail("the PyPI validation clock must be timezone-aware")
 
     def validate(release: LockedRelease) -> int:
-        metadata = _fetch_pypi_release(release)
+        metadata = _fetch_pypi_release(release, ssl_context=ssl_context)
         return _check_locked_release_metadata(release, metadata, now=checked_at)
 
     with ThreadPoolExecutor(max_workers=PYPI_VALIDATION_WORKERS) as executor:
@@ -731,7 +826,7 @@ def _require_authoritative_pypi_step(text: str) -> None:
     expected_step = [
         "- name: Validate dependency policy",
         "shell: pwsh",
-        "run: python tools/check_dependency_policy.py --verify-pypi",
+        "run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem",
     ]
     if actual_step != expected_step:
         fail(
@@ -764,7 +859,7 @@ def _require_authoritative_pypi_step(text: str) -> None:
         "check-latest: false",
         "- name: Validate dependency policy",
         "shell: pwsh",
-        "run: python tools/check_dependency_policy.py --verify-pypi",
+        "run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem",
     ]
     if actual_prefix != expected_prefix:
         fail(
@@ -1351,10 +1446,17 @@ def main(argv: list[str] | None = None) -> int:
             "and has been public for at least 72 hours"
         ),
     )
+    parser.add_argument(
+        "--ca-bundle",
+        type=Path,
+        help="reviewed CA bundle required for fail-closed live PyPI TLS",
+    )
     args = parser.parse_args(argv)
+    reviewed_bundle = check_trust_bundle()
 
     runtime, build = check_pyproject()
     locked_releases = check_lock(runtime | build)
+    check_trust_bundle_lock(locked_releases)
     check_sbom(runtime)
     check_bundled_skills()
     check_legacy_manifests()
@@ -1363,8 +1465,17 @@ def main(argv: list[str] | None = None) -> int:
     check_editor_automation()
     check_actions()
     provenance = ""
+    if args.ca_bundle is not None and not args.verify_pypi:
+        fail("--ca-bundle may be used only with --verify-pypi")
     if args.verify_pypi:
-        checked_artifacts = check_pypi_releases(locked_releases)
+        if args.ca_bundle is None:
+            fail("--verify-pypi requires --ca-bundle")
+        if args.ca_bundle.resolve() != reviewed_bundle.resolve():
+            fail("--verify-pypi must use the reviewed CA bundle")
+        ssl_context = _reviewed_ca_context(reviewed_bundle)
+        checked_artifacts = check_pypi_releases(
+            locked_releases, ssl_context=ssl_context
+        )
         provenance = f", {checked_artifacts} artifacts verified against PyPI"
     print(
         "Dependency policy OK: "

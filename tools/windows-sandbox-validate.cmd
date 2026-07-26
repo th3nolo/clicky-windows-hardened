@@ -93,6 +93,11 @@ set "HTTP_PROXY="
 set "HTTPS_PROXY="
 set "ALL_PROXY="
 set "NO_PROXY="
+set "SSL_CERT_FILE="
+set "SSL_CERT_DIR="
+set "PYTHONHTTPSVERIFY="
+set "REQUESTS_CA_BUNDLE="
+set "CURL_CA_BUNDLE="
 set "UV_INDEX="
 set "UV_INDEX_URL="
 set "UV_EXTRA_INDEX_URL="
@@ -130,6 +135,19 @@ if errorlevel 1 (
     >> "%LOG%" echo [FAIL] Bootstrap validator does not match the archived source.
     goto :finish
 )
+
+set "CA_BUNDLE=%WORK%\tools\trust\certifi-2026.6.17.pem"
+set "EXPECTED_CA_BUNDLE_SHA256=bbc7e9c01d7551bb8a159b5dedd989b8ee3ce105aff522b68eb1b01bf854cab0"
+if not exist "%CA_BUNDLE%" (
+    >> "%LOG%" echo [FAIL] Reviewed CA bundle is missing.
+    goto :finish
+)
+set "ACTUAL_CA_BUNDLE_SHA256="
+for /f "tokens=*" %%H in ('certutil.exe -hashfile "%CA_BUNDLE%" SHA256 ^| findstr.exe /R /X "[0-9a-fA-F][0-9a-fA-F]*"') do if not defined ACTUAL_CA_BUNDLE_SHA256 set "ACTUAL_CA_BUNDLE_SHA256=%%H"
+if /I not "!ACTUAL_CA_BUNDLE_SHA256!"=="!EXPECTED_CA_BUNDLE_SHA256!" (
+    >> "%LOG%" echo [FAIL] Reviewed CA bundle SHA-256 mismatch.
+    goto :finish
+)
 cd /d "%WORK%" || goto :finish
 
 >> "%LOG%" echo [1/7] Checking lock offline
@@ -137,7 +155,8 @@ cd /d "%WORK%" || goto :finish
 if errorlevel 1 goto :finish
 
 >> "%LOG%" echo [2/7] Verifying live PyPI provenance
-"%PYTHON%" tools\check_dependency_policy.py --verify-pypi >> "%LOG%" 2>&1
+>> "%LOG%" echo Reviewed CA bundle SHA-256 !ACTUAL_CA_BUNDLE_SHA256!
+"%PYTHON%" tools\check_dependency_policy.py --verify-pypi --ca-bundle "%CA_BUNDLE%" >> "%LOG%" 2>&1
 if errorlevel 1 goto :finish
 
 >> "%LOG%" echo [3/7] Creating frozen validation environment

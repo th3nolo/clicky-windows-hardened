@@ -26,7 +26,7 @@ jobs:
 
       - name: Validate dependency policy
         shell: pwsh
-        run: python tools/check_dependency_policy.py --verify-pypi
+        run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
 
       - name: Run standard-library security tests
         shell: pwsh

@@ -323,5 +323,53 @@ class SandboxBootstrapSafetyTests(unittest.TestCase):
             self.assertIn(f"Remove-Item Env:{variable}", cleanup)
 
 
+    def test_sandbox_uses_only_the_reviewed_ca_bundle_for_live_pypi(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "windows-sandbox-validate.cmd"
+        ).read_text(encoding="utf-8")
+        expected_hash = (
+            "bbc7e9c01d7551bb8a159b5dedd989b8"
+            "ee3ce105aff522b68eb1b01bf854cab0"
+        )
+        bundle = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "trust"
+            / "certifi-2026.6.17.pem"
+        )
+        self.assertEqual(hashlib.sha256(bundle.read_bytes()).hexdigest(), expected_hash)
+        policy_call = (
+            'tools\\check_dependency_policy.py --verify-pypi '
+            '--ca-bundle "%CA_BUNDLE%"'
+        )
+        hash_check = 'certutil.exe -hashfile "%CA_BUNDLE%" SHA256'
+        self.assertIn(
+            'set "CA_BUNDLE=%WORK%\\tools\\trust\\certifi-2026.6.17.pem"',
+            script,
+        )
+        self.assertIn(f'set "EXPECTED_CA_BUNDLE_SHA256={expected_hash}"', script)
+        self.assertIn(hash_check, script)
+        self.assertIn(policy_call, script)
+        self.assertLess(script.index(hash_check), script.index(policy_call))
+        for variable in (
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "PYTHONHTTPSVERIFY",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+        ):
+            clear = f'set "{variable}="'
+            self.assertIn(clear, script)
+            self.assertLess(script.index(clear), script.index(policy_call))
+        for bypass in (
+            "PYTHONHTTPSVERIFY=0",
+            "_create_unverified_context",
+            "--trusted-host",
+            "verify=False",
+        ):
+            self.assertNotIn(bypass, script)
+
 if __name__ == "__main__":
     unittest.main()

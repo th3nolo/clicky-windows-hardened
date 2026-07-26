@@ -48,6 +48,7 @@ Third-party provider services, Ollama, LM Studio, model publishers, Python, uv, 
 - `uv.lock` contains SHA-256 hashes and is restricted to the official PyPI index and 64-bit Windows wheels.
 - Source builds, Git dependencies, path dependencies, managed Python downloads, package upgrades, and unreviewed package indexes are refused by the supported build.
 - The publication cutoff is `2026-07-22T00:00:00Z`. CI additionally matches every locked artifact URL, filename, size, and SHA-256 against live PyPI version metadata and rejects yanked, future-dated, or under-72-hour artifacts.
+- Live PyPI TLS is bound to the reviewed `certifi==2026.6.17` CA bundle tracked with its upstream license; ambient host roots and TLS bypass variables are not accepted by the supported gate.
 - GitHub Actions use reviewed full commit hashes and do not persist checkout credentials.
 
 These controls reduce dependency substitution and fresh-package risk. They do not prove that a locked dependency is free from malicious or vulnerable code.

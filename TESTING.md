@@ -25,6 +25,14 @@ uv run --frozen --no-sync --python "3.12.10" python tools/check_dependency_polic
 
 This check validates exact dependency pins, the publication cutoff, the sole index, Windows wheel coverage, artifact hashes, the SBOM, non-installable legacy requirement files, hardened build flags, and commit-pinned GitHub Actions.
 
+Live PyPI validation must use the reviewed CA bundle explicitly:
+
+~~~powershell
+uv run --frozen --no-sync --python "3.12.10" python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
+~~~
+
+The bundle is `certifi/cacert.pem` extracted without execution from the already locked `certifi==2026.6.17` wheel. The wheel SHA-256 is `2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db`; the tracked PEM SHA-256 is `bbc7e9c01d7551bb8a159b5dedd989b8ee3ce105aff522b68eb1b01bf854cab0`. Its upstream license is retained beside it. The policy binds that exact wheel version, filename, size, and SHA-256 to `uv.lock`, and rejects a missing, reparse-point, oversized, altered, or invalid bundle and passes the resulting certificate-verifying, hostname-checking SSL context directly to every PyPI request. Ambient Windows roots and TLS override variables are not trusted for this gate. A network that requires a private inspection CA therefore fails closed unless that trust decision receives a separate explicit review.
+
 ### Standard-library test suite
 
 ~~~powershell
@@ -107,7 +115,7 @@ Launching the generated configuration disables vGPU, host microphone and camera 
 
 The fresh results directory is the only writable host mapping. The bootstrap and host verifier enforce an exact bounded result-file allowlist and reject reparse points and oversized evidence. Windows Sandbox mapped folders do not provide a per-folder disk quota, so a compromised process could still attempt to consume free space before shutdown. Ensure adequate free space and monitor the disposable run; this is a documented residual containment limitation.
 
-Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock and live PyPI provenance; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. The runtime harness verifies:
+Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. The runtime harness verifies:
 
 - source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
 - denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled
