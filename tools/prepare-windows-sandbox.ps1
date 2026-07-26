@@ -17,6 +17,9 @@ Set-StrictMode -Version Latest
 
 $ExpectedPythonRuntimeSha256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 $ExpectedUvSha256 = "cd628b46729d01ad110146a647a633a6e5de0e091d73db46afaeee6fcb4ba648"
+# Git upgrades are security-sensitive. Review the official signed Git for Windows
+# binary, then update this version/hash/signer set together in the same change.
+$ExpectedGitProductVersion = "2.55.0.windows.2"
 $ExpectedGitSha256 = "22fead8244ef3a7225fb800099a4e43eca8bcec0466774917669599c2f19a05a"
 $ExpectedGitSignerThumbprint = "336C3F70E00092A477DCF6D5F44CE5E31E044C20"
 
@@ -59,6 +62,11 @@ if ($gitSignature.Status.ToString() -cne "Valid" -or
     $null -eq $gitSignature.SignerCertificate -or
     $gitSignature.SignerCertificate.Thumbprint -cne $ExpectedGitSignerThumbprint) {
     throw "Git Authenticode identity is not the reviewed signer."
+}
+$gitVersionInfo = (Get-Item -LiteralPath $GitExe -Force).VersionInfo
+if ($gitVersionInfo.ProductVersion -cne $ExpectedGitProductVersion -or
+    $gitVersionInfo.FileVersion -cne $ExpectedGitProductVersion) {
+    throw "Git product/file version is not the reviewed Git for Windows version."
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem

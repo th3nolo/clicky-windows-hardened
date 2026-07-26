@@ -276,6 +276,35 @@ class SandboxBootstrapSafetyTests(unittest.TestCase):
         self.assertIn(publish, command)
         self.assertLess(command.index(shutdown), command.index(publish))
 
+    def test_preparer_pins_reviewed_git_for_windows_version(self) -> None:
+        preparer = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "prepare-windows-sandbox.ps1"
+        ).read_text(encoding="utf-8")
+        hash_check = preparer.index(
+            "$GitExe = Assert-ReviewedFile $GitExe $ExpectedGitSha256"
+        )
+        signature_check = preparer.index(
+            "$gitSignature = Get-AuthenticodeSignature -LiteralPath $GitExe"
+        )
+        version_check = preparer.index(
+            "$gitVersionInfo = (Get-Item -LiteralPath $GitExe -Force).VersionInfo"
+        )
+        self.assertIn(
+            '$ExpectedGitProductVersion = "2.55.0.windows.2"', preparer
+        )
+        self.assertIn(
+            "$gitVersionInfo.ProductVersion -cne $ExpectedGitProductVersion",
+            preparer,
+        )
+        self.assertIn(
+            "$gitVersionInfo.FileVersion -cne $ExpectedGitProductVersion",
+            preparer,
+        )
+        self.assertLess(hash_check, signature_check)
+        self.assertLess(signature_check, version_check)
+
     def test_preparer_restores_git_environment_in_finally(self) -> None:
         preparer = (
             Path(__file__).resolve().parents[1]
