@@ -19,6 +19,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from types import MappingProxyType
 from typing import Optional
 
 
@@ -27,6 +28,16 @@ _MAX_BUNDLED_SKILL_BYTES = 256 * 1024
 _MAX_USER_SKILL_BYTES = 256 * 1024
 _MAX_ALLOWLIST_BYTES = 64 * 1024
 _BUNDLED_MANIFEST_NAME = "manifest.json"
+# This immutable trust anchor is embedded in the PyInstaller executable/PYZ.
+# The external manifest is retained for transparency, but cannot authorize a
+# different sidecar skill even if both files are replaced together.
+_BUNDLED_SKILL_DIGESTS = MappingProxyType(
+    {
+        "example_self_mode.py": (
+            "a360d83d8b67774078b46b0caaebcbdf9bbe8c5373cdf6f85c0fc7fd5acced19"
+        )
+    }
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -69,6 +80,8 @@ def _verified_bundled_skill_sources() -> list[tuple[Path, bytes, str]]:
             if not path.name.startswith("_")
         }
         if set(bundled) != set(approved):
+            return []
+        if dict(approved) != dict(_BUNDLED_SKILL_DIGESTS):
             return []
 
         verified: list[tuple[Path, bytes, str]] = []

@@ -206,9 +206,11 @@ class SkillApprovalTests(unittest.TestCase):
             (user / "custom.py").write_bytes(user_source)
             original_file = skills.__file__
             skills.__file__ = str(bundled / "__init__.py")
+            bundled_digest = hashlib.sha256(bundled_source).hexdigest()
             try:
                 with mock.patch.object(skills, "_user_skills_dir", return_value=user), \
-                     mock.patch.object(skills, "_user_skill_allowlist_path", return_value=user / "allowlist.json"):
+                     mock.patch.object(skills, "_user_skill_allowlist_path", return_value=user / "allowlist.json"), \
+                     mock.patch.object(skills, "_BUNDLED_SKILL_DIGESTS", {"safe.py": bundled_digest}):
                     loaded = skills.load_all()
                     self.assertEqual([s["name"] for s in loaded], ["Bundled"])
                     self.assertFalse(marker.exists())
@@ -257,6 +259,10 @@ class SkillApprovalTests(unittest.TestCase):
             try:
                 with mock.patch.object(
                     skills, "_user_skills_dir", return_value=Path(tmp) / "user"
+                ), mock.patch.object(
+                    skills,
+                    "_BUNDLED_SKILL_DIGESTS",
+                    {"safe.py": hashlib.sha256(reviewed).hexdigest()},
                 ):
                     self.assertEqual(skills.load_all(), [])
                     self.assertFalse(marker.exists())
@@ -285,8 +291,43 @@ class SkillApprovalTests(unittest.TestCase):
             try:
                 with mock.patch.object(
                     skills, "_user_skills_dir", return_value=Path(tmp) / "user"
+                ), mock.patch.object(
+                    skills,
+                    "_BUNDLED_SKILL_DIGESTS",
+                    {"safe.py": hashlib.sha256(source).hexdigest()},
                 ):
                     self.assertEqual(skills.load_all(), [])
+            finally:
+                skills.__file__ = original_file
+
+    def test_replacing_skill_and_manifest_cannot_replace_embedded_trust_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled"
+            bundled.mkdir()
+            marker = Path(tmp) / "executed.txt"
+            tampered = (
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n"
+                "async def handle(*args): return 'bad'\n"
+                "SKILL={'name':'Tampered','trigger':'tampered','handler':handle}\n"
+            ).encode()
+            (bundled / "example_self_mode.py").write_bytes(tampered)
+            (bundled / "manifest.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "files": {
+                        "example_self_mode.py": hashlib.sha256(tampered).hexdigest()
+                    },
+                }),
+                encoding="utf-8",
+            )
+            original_file = skills.__file__
+            skills.__file__ = str(bundled / "__init__.py")
+            try:
+                with mock.patch.object(
+                    skills, "_user_skills_dir", return_value=Path(tmp) / "user"
+                ):
+                    self.assertEqual(skills.load_all(), [])
+                    self.assertFalse(marker.exists())
             finally:
                 skills.__file__ = original_file
 

@@ -144,6 +144,12 @@ class AmbientListener:
         self._reset_segment()
         return pcm
 
+    def cancel_recording(self) -> None:
+        """Discard buffered speech and return to standby without exposing it."""
+        self._rec_buffer = []
+        self._mode = Mode.STANDBY
+        self._reset_segment()
+
     def set_wake_word_enabled(self, enabled: bool):
         self._wake_word_enabled = enabled
 

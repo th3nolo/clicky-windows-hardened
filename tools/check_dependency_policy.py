@@ -435,6 +435,36 @@ def check_bundled_skills() -> None:
     }
     if set(manifest) != set(bundled):
         fail("bundled skill manifest must cover exactly every bundled skill")
+
+    loader_path = directory / "__init__.py"
+    loader_tree = ast.parse(loader_path.read_text(encoding="utf-8"), filename=str(loader_path))
+    anchors = [
+        node.value
+        for node in loader_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_BUNDLED_SKILL_DIGESTS"
+            for target in node.targets
+        )
+    ]
+    if len(anchors) != 1:
+        fail("bundled skills need exactly one embedded digest trust anchor")
+    anchor_call = anchors[0]
+    if not (
+        isinstance(anchor_call, ast.Call)
+        and isinstance(anchor_call.func, ast.Name)
+        and anchor_call.func.id == "MappingProxyType"
+        and len(anchor_call.args) == 1
+        and not anchor_call.keywords
+    ):
+        fail("bundled skill trust anchor must be an immutable static mapping")
+    try:
+        embedded = ast.literal_eval(anchor_call.args[0])
+    except (ValueError, TypeError):
+        fail("bundled skill trust anchor must contain only static digests")
+    if embedded != manifest:
+        fail("external bundled-skill manifest differs from the embedded trust anchor")
+
     for filename, path in bundled.items():
         expected = manifest.get(filename)
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
@@ -704,6 +734,20 @@ def check_packaging_policy() -> None:
     spec_path = ROOT / "clicky.spec"
     spec = spec_path.read_text(encoding="utf-8")
     spec_tree = ast.parse(spec, filename=str(spec_path))
+    parents = {child: parent for parent in ast.walk(spec_tree) for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(spec_tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "collect_all"
+        ):
+            continue
+        ancestor = parents.get(node)
+        while ancestor is not None:
+            if isinstance(ancestor, ast.Try):
+                fail("clicky.spec must not suppress required-package collection failures")
+            ancestor = parents.get(ancestor)
+
     packaged_names: set[str] = set()
     for node in ast.walk(spec_tree):
         if isinstance(node, ast.Assign) and any(

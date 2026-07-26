@@ -52,9 +52,6 @@ hidden = [
     "audio.tts.openai_tts_provider",
     "audio.tts.elevenlabs_provider",
 
-    # Indirect deps
-    "tiktoken_ext",
-    "tiktoken_ext.openai_public",
 ]
 
 # ── Heavy packages that ship non-Python assets (DLLs, JSON, voices).
@@ -66,6 +63,8 @@ datas += [
     ("skills/example_self_mode.py", "skills"),
     ("skills/manifest.json", "skills"),
 ]
+# Every package below is a pinned runtime dependency. Collection failures are
+# fatal so a green build cannot silently omit an installed feature.
 for pkg in (
     "faster_whisper",
     "ctranslate2",
@@ -88,13 +87,10 @@ for pkg in (
     "docx",
     "pywhispercpp",
 ):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception:
-        pass  # package not installed — that path is optional anyway
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
 
 hiddenimports += hidden
 hiddenimports += collect_submodules("PyQt6")

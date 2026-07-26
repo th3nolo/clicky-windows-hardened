@@ -1382,6 +1382,7 @@ class CompanionManager(QObject):
                 self.sig_error.emit(f"Could not start mic: {exc}")
         else:
             self._listener.stop()
+            self._listener.cancel_recording()
             if self._state == AppState.LISTENING:
                 self._emit_state(AppState.IDLE)
 

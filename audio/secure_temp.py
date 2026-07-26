@@ -108,9 +108,52 @@ def _ensure_private_directory() -> Path:
     return directory
 
 
+def _windows_pid_is_running(pid: int) -> bool:
+    """Probe process state without using os.kill, which terminates on Windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    error_invalid_parameter = 87
+    wait_object_0 = 0x00000000
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    wait_for_single_object.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    ctypes.set_last_error(0)
+    handle = open_process(synchronize, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == error_invalid_parameter:
+            return False
+        # Fail closed for privacy: an inaccessible or indeterminate process is
+        # treated as live so cleanup never deletes another process's recording.
+        return True
+    try:
+        result = wait_for_single_object(handle, 0)
+        if result == wait_object_0:
+            return False
+        # WAIT_TIMEOUT is the expected live result. WAIT_FAILED and unknown
+        # results are indeterminate, so preserve the other process's fresh
+        # recording rather than deleting it.
+        return True
+    finally:
+        close_handle(handle)
+
+
 def _pid_is_running(pid: int) -> bool:
     if pid == os.getpid():
         return True
+    if os.name == "nt":
+        return _windows_pid_is_running(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -123,7 +166,7 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def cleanup_stale_audio(directory: Path | None = None) -> int:
-    """Remove Clicky WAV files that are no longer owned by a live session."""
+    """Remove abandoned WAVs, with a hard privacy TTL despite PID reuse."""
     target = directory or _ensure_private_directory()
     try:
         entries = tuple(target.iterdir())
@@ -143,13 +186,19 @@ def cleanup_stale_audio(directory: Path | None = None) -> int:
         except OSError:
             continue
 
+        # Process IDs are reusable. Liveness is therefore only a short-term
+        # concurrency guard, never an indefinite ownership proof. A Clicky
+        # utterance lasts seconds, so the 24-hour bound safely wins even if a
+        # stale filename happens to name a newly reused PID.
         should_remove = age >= _STALE_AFTER_SECONDS
-        if match is not None:
+        if match is not None and not should_remove:
             owner_pid = int(match.group("pid"))
             owner_session = match.group("session")
             if owner_session == _SESSION_ID:
                 should_remove = candidate not in _CURRENT_FILES
-            elif not _pid_is_running(owner_pid):
+            elif _pid_is_running(owner_pid):
+                should_remove = False
+            else:
                 should_remove = True
         if not should_remove:
             continue

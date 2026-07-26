@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -140,14 +141,39 @@ class PrivacyControlTests(unittest.TestCase):
 
 
 class PrivacyWiringTests(unittest.TestCase):
-    def test_consent_prompt_precedes_hotkey_and_microphone_start(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        prompt = source.index(
-            "Sensitive capabilities remain off until the current privacy notice"
+    def test_consent_precedes_manager_construction_hotkey_and_microphone(self) -> None:
+        tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+        main = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
         )
-        hotkey = source.index("hotkey.start()", prompt)
-        listener = source.index("manager.start()", hotkey)
-        self.assertLess(prompt, hotkey)
+
+        def call_line(name: str, owner: str | None = None) -> int:
+            matches = []
+            for node in ast.walk(main):
+                if not isinstance(node, ast.Call):
+                    continue
+                if owner is None and isinstance(node.func, ast.Name):
+                    if node.func.id == name:
+                        matches.append(node.lineno)
+                elif (
+                    owner is not None
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == name
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == owner
+                ):
+                    matches.append(node.lineno)
+            self.assertEqual(len(matches), 1, f"unexpected call count for {owner}.{name}")
+            return matches[0]
+
+        prompt = call_line("request_privacy_permissions")
+        manager = call_line("CompanionManager")
+        hotkey = call_line("start", "hotkey")
+        listener = call_line("start", "manager")
+        self.assertLess(prompt, manager)
+        self.assertLess(manager, hotkey)
         self.assertLess(hotkey, listener)
 
     def test_manager_gates_every_screen_capture_path(self) -> None:

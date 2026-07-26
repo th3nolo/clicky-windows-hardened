@@ -2,7 +2,7 @@
 
 Testing establishes behavior under stated conditions. It does not prove the absence of malicious code, unknown vulnerabilities, provider-side failures, or unsafe model behavior.
 
-Use Windows x86-64, Python `3.12.10`, uv `0.11.19`, and the checked-in lock. Tests must not install packages, contact public services, access real secrets, or run the desktop application unless the manual test explicitly requires it.
+Use Windows x86-64, Python `3.12.10`, uv `0.11.19`, and the checked-in lock. Unit tests and static checks must not install packages, contact public services, access real secrets, or run the desktop application. The isolated Windows Sandbox gate is the explicit dynamic exception described below.
 
 ## Prepare the locked environment
 
@@ -70,6 +70,54 @@ CI has two paths:
 - a locked-build job that installs the frozen wheel-only environment, repeats tests and parsing, performs an unsigned PyInstaller smoke build, and deletes the output
 
 The CI artifact is not a release and is not retained for distribution.
+
+## Isolated Windows Sandbox validation
+
+The runtime gate uses a commit-exact archive rather than mapping the Git checkout. Candidate Python and uv tools are never executed on the host. `tools/prepare-windows-sandbox.ps1` authenticates these exact inputs before use:
+
+- CPython `3.12.10` Windows x86-64 embeddable archive from `https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip`, SHA-256 `4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3`
+- uv `0.11.19` Windows x86-64 executable, SHA-256 `cd628b46729d01ad110146a647a633a6e5de0e091d73db46afaeee6fcb4ba648`
+- the reviewed Git for Windows executable and Authenticode signer pinned in the preparer
+
+The Python archive may be downloaded to an untrusted staging path, but do not extract or execute it on the host. Do not substitute a Microsoft Store App Execution Alias, a different tool version, or a self-calculated replacement digest.
+
+~~~powershell
+$pythonArchive = "$env:TEMP\python-3.12.10-embed-amd64.zip"
+$uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
+$gitExe = "C:\Program Files\Git\cmd\git.exe"
+.\tools\prepare-windows-sandbox.ps1 `
+  -PythonRuntimeArchive $pythonArchive `
+  -UvExe $uvExe `
+  -GitExe $gitExe
+~~~
+
+The preparer refuses inherited `GIT_*` variables, executable FSMonitor configuration, replace refs, grafts, object alternates, a dirty tree, or any hook path other than the repository-local `NUL`. It verifies Git objects, runs replacement-disabled commands through the authenticated absolute Git path, archives the exact HEAD commit, and extracts the bootstrap bytes from that archive. Preparation occurs in a temporary directory and is atomically published only after every check passes.
+
+The generated `.wsb` has exactly two mappings: a read-only input directory and a fresh writable results directory. The complete hash-pinned Python archive and uv executable are inside the input mapping; no host toolchain directory is exposed. Before launch, run the host verifier in prepared-only mode with a separately trusted Python interpreter. It independently regenerates the exact commit archive with the authenticated Git executable and rejects duplicate/overlapping mappings, reparse points, unexpected inputs, oversized files, malformed archives, or a nonempty results directory.
+
+~~~powershell
+python .\tools\verify_windows_sandbox_results.py <run-directory> `
+  --prepared-only `
+  --expected-commit <40-character-commit> `
+  --repo-root . `
+  --git-exe "C:\Program Files\Git\cmd\git.exe"
+~~~
+
+Launching the generated configuration disables vGPU, host microphone and camera input, clipboard and printer redirection, and enables Protected Client mode. Networking is a controlled exception because live PyPI provenance, current Defender signatures, and an actual post-consent Edge TTS destination test require internet access. Microsoft documents that network-enabled Windows Sandbox can also reach networks available to the host. Run this gate only on a trusted or isolated network. The TTS test sends only the fixed text `Clicky synthetic privacy validation.` to `speech.platform.bing.com`; no API key or personal content is used.
+
+The fresh results directory is the only writable host mapping. The bootstrap and host verifier enforce an exact bounded result-file allowlist and reject reparse points and oversized evidence. Windows Sandbox mapped folders do not provide a per-folder disk quota, so a compromised process could still attempt to consume free space before shutdown. Ensure adequate free space and monitor the disposable run; this is a documented residual containment limitation.
+
+Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock and live PyPI provenance; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. The runtime harness verifies:
+
+- source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
+- denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled
+- denied and granted manager-controlled screen capture against a known synthetic window, plus the same capture path inside `Clicky.exe`
+- denied cloud TTS before consent and packaged/source destination evidence after consent, restricted to the pinned Microsoft hostname with DNS-to-TCP peer correlation
+- crash-abandoned WAV cleanup, a hard 24-hour privacy TTL resistant to PID reuse, and locale-independent directory/file ACL evidence
+- native packaged startup, first-run privacy dialog before manager/skill construction, no external pre-consent TCP destination, embedded bundled-skill trust anchoring, and unsigned Authenticode status
+- a current-signature, no-remediation Defender scan of the pristine distribution before any packaged execution; an unchanged whole-tree digest after execution; and a second clean scan
+
+Only `sandbox-validation.log`, `runtime-validation.json`, the source/archive/executable identity files, and one `PASS.txt` or `FAIL.txt` marker are expected in the fresh results directory. Treat extra, oversized, non-regular, or reparse-point output as a failed containment check. The sandbox automatically shuts down after the run. After shutdown, rerun the host verifier without `--prepared-only`; only that post-run result is authoritative.
 
 ## Manual security checks
 
