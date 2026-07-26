@@ -587,6 +587,7 @@ def _connections_for_process(process_id: int) -> set[tuple[str, str, str]]:
 def _authenticode_status(executable: Path) -> dict[str, object]:
     executable_literal = _powershell_literal(executable)
     command = (
+        "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
         f"$signature = Get-AuthenticodeSignature -LiteralPath {executable_literal}; "
         "[pscustomobject]@{Status=$signature.Status.ToString(); "
         "StatusMessage=$signature.StatusMessage; "
@@ -606,6 +607,7 @@ def _authenticode_status(executable: Path) -> dict[str, object]:
         capture_output=True,
         text=True,
         timeout=30,
+        env=_windows_powershell_environment(),
     )
     _require(result.returncode == 0, f"Authenticode inspection failed: {result.stderr}")
     payload = json.loads(result.stdout)
