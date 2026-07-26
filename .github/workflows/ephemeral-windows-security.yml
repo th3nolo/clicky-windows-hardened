@@ -88,12 +88,15 @@ jobs:
       - name: Record the hosted runner Git identity
         shell: pwsh
         run: |
-          $command = Get-Command git.exe -CommandType Application -ErrorAction Stop
-          $git = Get-Item -LiteralPath $command.Source -Force -ErrorAction Stop
+          $command = Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          if ($null -eq $command -or [String]::IsNullOrWhiteSpace($command.Path)) {
+            throw "hosted git.exe command resolution failed"
+          }
+          $git = Get-Item -LiteralPath $command.Path -Force -ErrorAction Stop
           if ($git.PSIsContainer) {
             throw "hosted git.exe resolved to a directory"
           }
-          $version = & $command.Source --version
+          $version = & $command.Path --version
           if ($LASTEXITCODE -ne 0 -or $version -cnotmatch '^git version [0-9]') {
             throw "hosted git.exe did not report a valid version"
           }
