@@ -92,7 +92,7 @@ Clicky does not download, install, start, or pull Ollama or local speech models.
 - An Ollama model must match its configured model tag and the exact digest returned by the local Ollama API.
 - Missing, ambiguous, changed, or unverifiable models fail closed.
 
-Model hashes establish file or artifact identity. They do not establish model quality, license compliance, training-data provenance, or resistance to malicious prompts.
+Model hashes establish file or artifact identity. They do not establish model quality, license compliance, training-data provenance, or resistance to malicious prompts. Digest verification does not lock the model directory: another process with the same user's write access could replace files between verification and the native runtime's load. Keep reviewed model directories write-protected from other same-user processes when that local threat is in scope.
 
 ### Privacy defaults
 
