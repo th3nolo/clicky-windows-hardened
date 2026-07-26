@@ -549,6 +549,23 @@ class CiphertextAndWorkflowTests(unittest.TestCase):
         self.assertIn("Select-Object -First 1", build)
         self.assertIn("$command.Path", build)
         self.assertNotIn("2.55.0.windows.2", build)
+        build_step = build.index("- name: Build the unsigned onedir distribution")
+        marker_step = build.index("- name: Materialize fixed unsigned warning")
+        runtime_step = build.index("- name: Run target runtime validation")
+        self.assertLess(build_step, marker_step)
+        self.assertLess(marker_step, runtime_step)
+        self.assertEqual(
+            build.count("UNSIGNED-LOCAL-TEST-ONLY.txt"),
+            1,
+        )
+        self.assertIn(
+            "[System.Text.UTF8Encoding]::new($false)",
+            build,
+        )
+        self.assertIn(
+            "unsigned warning marker did not round-trip exactly",
+            build,
+        )
         self.assertNotIn("expected_source_archive_sha256:", workflow)
         self.assertIn(
             "source_sha256: ${{ steps.bind_source.outputs.source_sha256 }}",
