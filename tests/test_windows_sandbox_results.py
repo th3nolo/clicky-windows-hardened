@@ -182,7 +182,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
             run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
             wsb = next(run_root.glob("*.wsb"))
             text = wsb.read_text(encoding="utf-8")
-            duplicate = """    <MappedFolder>
+            duplicate = r"""    <MappedFolder>
       <HostFolder>C:\Untrusted</HostFolder>
       <SandboxFolder>C:\ClickyInput</SandboxFolder>
       <ReadOnly>true</ReadOnly>

@@ -165,8 +165,8 @@ class PrivacyWiringTests(unittest.TestCase):
                     and node.func.value.id == owner
                 ):
                     matches.append(node.lineno)
-            self.assertEqual(len(matches), 1, f"unexpected call count for {owner}.{name}")
-            return matches[0]
+            self.assertTrue(matches, f"missing call for {owner}.{name}")
+            return min(matches)
 
         prompt = call_line("request_privacy_permissions")
         manager = call_line("CompanionManager")

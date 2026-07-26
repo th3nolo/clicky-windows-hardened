@@ -214,15 +214,19 @@ class BundledSkillPolicyTests(unittest.TestCase):
         directory = root / "skills"
         directory.mkdir()
         source = b"SKILL = {'name': 'safe'}\n"
+        digest = hashlib.sha256(source).hexdigest()
         skill = directory / "safe.py"
         skill.write_bytes(source)
         (directory / "manifest.json").write_text(
             json.dumps({
                 "version": 1,
-                "files": {
-                    "safe.py": hashlib.sha256(source).hexdigest()
-                },
+                "files": {"safe.py": digest},
             }),
+            encoding="utf-8",
+        )
+        (directory / "__init__.py").write_text(
+            "from types import MappingProxyType\n"
+            f"_BUNDLED_SKILL_DIGESTS = MappingProxyType({{'safe.py': {digest!r}}})\n",
             encoding="utf-8",
         )
         return skill, source
