@@ -346,7 +346,7 @@ class EvidenceTests(unittest.TestCase):
                 )
 
 
-    def test_virustotal_requires_vendor_votes_only_for_executable(self) -> None:
+    def test_virustotal_scan_binds_analysis_and_file_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             candidate = Path(temporary) / "candidate.bin"
             candidate.write_bytes(b"opaque candidate")
@@ -382,17 +382,11 @@ class EvidenceTests(unittest.TestCase):
                 HARNESS, "_vt_request_json", side_effect=[analysis, file_report]
             ):
                 archive_result = HARNESS._vt_scan_one(
-                    candidate, "x" * 32, require_vendor_votes=False
+                    candidate, "x" * 32
                 )
             self.assertEqual(archive_result["analysis_id"], "analysis-1")
             self.assertEqual(archive_result["file_id"], digest)
             self.assertIn("Other", archive_result["file_report"]["results"])
-            with mock.patch.object(
-                HARNESS, "_vt_upload_file", return_value={"data": {"id": "analysis-1"}}
-            ), mock.patch.object(HARNESS, "_vt_request_json", return_value=analysis):
-                with self.assertRaises(HARNESS.HarnessError):
-                    HARNESS._vt_scan_one(candidate, "x" * 32, require_vendor_votes=True)
-
     def test_virustotal_file_id_must_match_local_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             candidate = Path(temporary) / "candidate.bin"
@@ -412,7 +406,59 @@ class EvidenceTests(unittest.TestCase):
                 HARNESS, "_vt_request_json", side_effect=[analysis, bad_file]
             ):
                 with self.assertRaises(HARNESS.HarnessError):
-                    HARNESS._vt_scan_one(candidate, "x" * 32, require_vendor_votes=False)
+                    HARNESS._vt_scan_one(candidate, "x" * 32)
+
+    def test_virustotal_finishes_all_files_before_failing_clean_gate(self) -> None:
+        clean_results = {
+            "Other": {"category": "undetected"},
+            "Malwarebytes": {"category": "undetected"},
+            "Microsoft": {"category": "undetected"},
+        }
+        clean = {
+            "analysis_report": {
+                "stats": {"malicious": 0, "suspicious": 0, "undetected": 60},
+                "results": clean_results,
+            },
+            "file_report": {
+                "stats": {"malicious": 0, "suspicious": 0, "undetected": 60},
+                "results": clean_results,
+            },
+        }
+        detected = {
+            "analysis_report": {
+                "stats": {"malicious": 1, "suspicious": 0, "undetected": 60},
+                "results": {"Bkav": {"category": "malicious"}},
+            },
+            "file_report": {
+                "stats": {"malicious": 1, "suspicious": 0, "undetected": 60},
+                "results": {"Bkav": {"category": "malicious"}},
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "report.json"
+            with mock.patch.dict(os.environ, {"VT_API_KEY": "x" * 32}, clear=True), \
+                    mock.patch.object(
+                        HARNESS, "_vt_scan_one", side_effect=[clean, detected, clean]
+                    ) as scanned, mock.patch("builtins.print"):
+                with self.assertRaises(HARNESS.HarnessError):
+                    HARNESS.virus_total_scan(
+                        root / "source.zip",
+                        root / "distribution.zip",
+                        root / "Clicky.exe",
+                        output,
+                    )
+            self.assertEqual(scanned.call_count, 3)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema"], 2)
+            self.assertEqual(report["verdict"], "failed")
+            self.assertEqual(
+                set(report["files"]),
+                {"source_archive", "distribution_archive", "clicky_executable"},
+            )
+            self.assertTrue(
+                any("distribution_archive" in failure for failure in report["failures"])
+            )
 
     def test_virustotal_transport_blocks_proxy_redirect_and_bounds_429(self) -> None:
         proxy_handlers = [
@@ -477,6 +523,22 @@ class EvidenceTests(unittest.TestCase):
                 HARNESS._vt_request_json(HARNESS.VT_LARGE_UPLOAD_URL, "x" * 32)
                 HARNESS._vt_upload_file(HARNESS.VT_UPLOAD_URL, candidate, "x" * 32)
             self.assertEqual(paced.call_count, 2)
+
+    def test_virustotal_executable_still_requires_vendor_votes(self) -> None:
+        report = {
+            "stats": {"malicious": 0, "suspicious": 0, "undetected": 60},
+            "results": {"Other": {"category": "undetected"}},
+        }
+        failures = HARNESS._vt_gate_failures(
+            {
+                "clicky_executable": {
+                    "analysis_report": report,
+                    "file_report": report,
+                }
+            }
+        )
+        self.assertEqual(len(failures), 2)
+        self.assertTrue(all("Malwarebytes" in failure for failure in failures))
 
     def test_virustotal_requires_at_least_fifty_clean_participants(self) -> None:
         with self.assertRaises(HARNESS.HarnessError):
@@ -549,6 +611,23 @@ class CiphertextAndWorkflowTests(unittest.TestCase):
         self.assertIn("Select-Object -First 1", build)
         self.assertIn("$command.Path", build)
         self.assertNotIn("2.55.0.windows.2", build)
+        build_step = build.index("- name: Build the unsigned onedir distribution")
+        marker_step = build.index("- name: Materialize fixed unsigned warning")
+        runtime_step = build.index("- name: Run target runtime validation")
+        self.assertLess(build_step, marker_step)
+        self.assertLess(marker_step, runtime_step)
+        self.assertEqual(
+            build.count("UNSIGNED-LOCAL-TEST-ONLY.txt"),
+            1,
+        )
+        self.assertIn(
+            "[System.Text.UTF8Encoding]::new($false)",
+            build,
+        )
+        self.assertIn(
+            "unsigned warning marker did not round-trip exactly",
+            build,
+        )
         self.assertNotIn("expected_source_archive_sha256:", workflow)
         self.assertIn(
             "source_sha256: ${{ steps.bind_source.outputs.source_sha256 }}",

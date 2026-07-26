@@ -186,6 +186,31 @@ jobs:
           uv run --frozen --no-sync --python "3.12.10"
           python -m PyInstaller clicky.spec --clean --noconfirm
 
+      - name: Materialize fixed unsigned warning
+        working-directory: target
+        shell: pwsh
+        run: |
+          $marker = Join-Path $PWD "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt"
+          if (-not (Test-Path -LiteralPath "dist\Clicky\Clicky.exe" -PathType Leaf)) {
+            throw "PyInstaller did not produce Clicky.exe"
+          }
+          $markerText = @(
+            "UNSIGNED LOCAL TEST ARTIFACT"
+            ""
+            "DO NOT DISTRIBUTE OR REPRESENT THIS BUILD AS A RELEASE."
+            "It has not been Authenticode-signed or verified by a release pipeline."
+            "Rebuild through the future signing pipeline before any distribution."
+            ""
+          ) -join "`r`n"
+          [System.IO.File]::WriteAllText(
+            $marker,
+            $markerText,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          if ([System.IO.File]::ReadAllText($marker) -cne $markerText) {
+            throw "unsigned warning marker did not round-trip exactly"
+          }
+
       - name: Run target runtime validation in the ephemeral runner
         working-directory: target
         shell: pwsh
