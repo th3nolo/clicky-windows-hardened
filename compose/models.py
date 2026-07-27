@@ -21,6 +21,13 @@ MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024
 MAX_COMBINED_SCREENSHOT_BYTES = 12 * 1024 * 1024
 MAX_SCREENSHOT_ID_CHARS = 96
 MAX_STYLE_PROFILE_ID_CHARS = 64
+MAX_STYLE_PROFILE_NAME_CHARS = 80
+MAX_STYLE_RULES = 32
+MAX_STYLE_RULE_CHARS = 1_000
+MAX_COMBINED_STYLE_RULE_CHARS = 8_000
+MAX_STYLE_EXAMPLES = 16
+MAX_STYLE_EXAMPLE_CHARS = 2_000
+MAX_COMBINED_STYLE_EXAMPLE_CHARS = 16_000
 MAX_RESPONSE_LANGUAGE_CHARS = 16
 MAX_APPLICATION_NAME_CHARS = 256
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -141,6 +148,41 @@ class ComposeInvocation:
 
 
 @dataclass(frozen=True, slots=True)
+class ComposeStyleContext:
+    """Explicitly selected user-authored style data, never system policy."""
+
+    profile_id: str
+    name: str = field(repr=False)
+    rules: tuple[str, ...] = field(repr=False)
+    examples: tuple[str, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_profile_id(self.profile_id)
+        if (
+            not isinstance(self.name, str)
+            or not self.name.strip()
+            or self.name != self.name.strip()
+            or len(self.name) > MAX_STYLE_PROFILE_NAME_CHARS
+            or not self.name.isprintable()
+        ):
+            raise ValueError("Compose style profile name is invalid")
+        _validate_style_text(
+            self.rules,
+            maximum_count=MAX_STYLE_RULES,
+            maximum_chars=MAX_STYLE_RULE_CHARS,
+            maximum_combined_chars=MAX_COMBINED_STYLE_RULE_CHARS,
+            label="rules",
+        )
+        _validate_style_text(
+            self.examples,
+            maximum_count=MAX_STYLE_EXAMPLES,
+            maximum_chars=MAX_STYLE_EXAMPLE_CHARS,
+            maximum_combined_chars=MAX_COMBINED_STYLE_EXAMPLE_CHARS,
+            label="examples",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ComposeRequest:
     """Authorized provider request plus the remembered destination lease."""
 
@@ -153,6 +195,10 @@ class ComposeRequest:
     response_language: str
     style_profile_id: str | None
     max_output_chars: int
+    style_context: ComposeStyleContext | None = field(
+        default=None,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -183,6 +229,16 @@ class ComposeRequest:
             screenshot.byte_count for screenshot in self.screenshots
         ) > MAX_COMBINED_SCREENSHOT_BYTES:
             raise ValueError("Compose screenshots exceed the combined limit")
+        if self.style_profile_id is None:
+            if self.style_context is not None:
+                raise ValueError("Compose style context has no selected profile")
+        elif (
+            not isinstance(self.style_context, ComposeStyleContext)
+            or self.style_context.profile_id != self.style_profile_id
+        ):
+            raise ValueError(
+                "Compose style context does not match the selected profile"
+            )
 
     @property
     def destination_application(self) -> str:
@@ -354,6 +410,40 @@ def _validate_profile_id(value: object) -> str | None:
     ):
         raise ValueError("Compose style profile ID is invalid")
     return value
+
+
+def _validate_style_text(
+    values: object,
+    *,
+    maximum_count: int,
+    maximum_chars: int,
+    maximum_combined_chars: int,
+    label: str,
+) -> tuple[str, ...]:
+    if (
+        not isinstance(values, tuple)
+        or len(values) > maximum_count
+    ):
+        raise TypeError(f"Compose style {label} must be a bounded tuple")
+    for value in values:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or value != value.strip()
+            or len(value) > maximum_chars
+            or any(
+                ord(character) < 32 and character not in "\n\t"
+                for character in value
+            )
+        ):
+            raise ValueError(f"Compose style {label} contain invalid text")
+    if len(set(values)) != len(values):
+        raise ValueError(f"Compose style {label} must be unique")
+    if sum(len(value) for value in values) > maximum_combined_chars:
+        raise ValueError(
+            f"Compose style {label} exceed the combined limit"
+        )
+    return values
 
 
 def _validate_output_limit(value: object) -> int:
