@@ -184,6 +184,18 @@ Use synthetic screen content, test accounts, and temporary process-scoped keys. 
 10. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
 11. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
 
+### Unfinished action feature gates
+
+Launch the baseline build with fresh preferences and confirm Global Dictation,
+Screen-Aware Compose, Task Agent, connector reads, connector writes, workspace
+coding, and desktop automation are not exposed. Confirm the source manifest
+marks every action build flag unavailable. In a test build, make only one
+capability available with the current permission schema; verify it still fails
+without its independent user permission and matching per-run grant. Change the
+run ID, permission version, or capability ID and confirm authorization fails.
+Finally, enable a persisted action permission without its current schema and
+confirm startup refuses the invalid configuration rather than granting access.
+
 ### Live speech-to-text
 
 Use a test Deepgram account and synthetic spoken phrases. Grant microphone and cloud-STT permissions, then choose **Setup & Diagnostics → Speech input → Deepgram Nova-2 — live streaming**. Verify partial text appears while the hotkey is still held and network capture shows bounded binary audio frames before release, followed by the explicit finalization messages. Release and confirm one final transcript is used for the turn without a batch transcription POST.
