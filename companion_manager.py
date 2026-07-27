@@ -1797,7 +1797,9 @@ class CompanionManager(QObject):
 
     def start_recording(self) -> Optional[str]:
         if self._recorder is None:
-            self._recorder = lesson_recorder.LessonRecorder()
+            self._recorder = lesson_recorder.LessonRecorder(
+                on_error=self.sig_error.emit
+            )
         out = self._recorder.start()
         if out:
             self.sig_recording_state.emit(True, str(out))

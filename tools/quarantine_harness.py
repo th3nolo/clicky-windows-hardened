@@ -523,7 +523,8 @@ def validate_runtime_report(
             "microphone_stopped_after_revocation",
             "microphone_recording_cancelled_after_revocation",
             "microphone_standby_after_regrant", "cloud_tts_denied_before_consent",
-            "screen_denied_before_consent", "synthetic_screen_content_observed",
+            "screen_denied_before_consent", "clicky_owned_window_excluded",
+            "owned_window_fallback_restored",
         ),
         "privacy_controls",
     )

@@ -207,9 +207,10 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
         if pil_image is None and screenshot_path is None:
             # Capture primary screen at full resolution
             import mss
+            from screen.capture_exclusion import capture_without_owned_windows
             with mss.mss() as sct:
                 mon = sct.monitors[1]
-                raw = sct.grab(mon)
+                raw = capture_without_owned_windows(lambda: sct.grab(mon))
                 from PIL import Image
                 pil_image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 

@@ -659,7 +659,8 @@ def verify_runtime_results(
         "microphone_standby_after_regrant",
         "cloud_tts_denied_before_consent",
         "screen_denied_before_consent",
-        "synthetic_screen_content_observed",
+        "clicky_owned_window_excluded",
+        "owned_window_fallback_restored",
     ):
         _require(privacy[key] is True, f"privacy runtime gate failed: {key}")
     _validate_cloud_tts(privacy["cloud_tts_after_consent"], "source cloud TTS")
