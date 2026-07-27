@@ -67,6 +67,13 @@ DPAPI does not protect a token from malware already running as the same Windows 
 
 Cloud AI, speech, text-to-speech, and search features send data to their configured third-party services. Review the service policy and account settings before enabling a provider.
 
+Kimi Code, MiniMax Token Plan, DeepSeek, and Qwen direct inference use
+compile-time provider identities and fixed HTTPS base URLs. Credentials are
+provider-specific process-environment values. Their clients disable ambient
+environment proxies, redirects, and automatic retries. Model-list and
+generation inputs and outputs are bounded; an unavailable provider error is not
+converted into a request against another provider.
+
 Web search is disabled by default. When enabled, page fetches:
 
 - require HTTPS
@@ -95,9 +102,38 @@ Clicky does not download, install, start, or pull Ollama or local speech models.
 
 Model hashes establish file or artifact identity. They do not establish model quality, license compliance, training-data provenance, or resistance to malicious prompts. Digest verification does not lock the model directory: another process with the same user's write access could replace files between verification and the native runtime's load. Keep reviewed model directories write-protected from other same-user processes when that local threat is in scope.
 
+Codex and Qwen Code are optional external coding agents, not bundled
+dependencies. Clicky checks only for an already-installed executable and starts
+it only after the user grants the separate coding-agent permission, selects the
+agent, and submits a turn. Agent requests use an isolated temporary working
+directory, bounded stdin/stdout/stderr/runtime, no shell command construction,
+and owned-process termination on cancellation. Temporary screenshot files use
+exclusive creation and are deleted when the turn exits.
+
+Codex runs are ephemeral, ignore user configuration and project rules, use the
+read-only sandbox, and inherit only a narrow environment allowlist plus official
+Codex authentication inputs. Clicky does not inspect or copy Codex login caches.
+Qwen Code runs use safe mode, plan approval mode, bounded turns and tool calls,
+and an allowlisted Alibaba Coding Plan model. Clicky overrides the model and
+base URL with the fixed international Coding Plan endpoint and passes only the
+dedicated plan key. Both agents remain separate same-user executables: a
+malicious or replaced executable can act with the user's process privileges,
+and the restrictive flags do not establish executable integrity.
+
 ### Privacy defaults
 
-Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture are independently off until the current first-run privacy notice records an explicit choice. Closing the dialog grants nothing, and accepting an older notice version grants nothing after the permission model changes. Microphone permission covers local wake-word listening and deliberate capture only; cloud STT permission separately covers captured audio sent to a selected cloud transcription provider. Screen permission covers capture of every monitor and disclosure that cloud LLM providers receive those images; cloud TTS permission covers response text sent to Microsoft Edge TTS, OpenAI, or ElevenLabs.
+Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
+and external coding-agent execution are independently off until the current
+first-run privacy notice records an explicit choice. Closing the dialog grants
+nothing, and accepting an older notice version grants nothing after the
+permission model changes. Microphone permission covers local wake-word
+listening and deliberate capture only; cloud STT permission separately covers
+captured audio sent to a selected cloud transcription provider. Screen
+permission covers capture of every monitor and disclosure that cloud LLM
+providers receive those images; cloud TTS permission covers response text sent
+to Microsoft Edge TTS, OpenAI, or ElevenLabs. Coding-agent permission covers
+starting a separately installed Codex or Qwen Code process and discloses that
+the agent has its own read-only local tools and cloud account.
 
 Temporary local-transcription WAV files are created in a protected per-user directory, removed after use, and swept after a terminated-process crash. Deletion cannot guarantee forensic erasure from SSDs, backups, snapshots, or other same-user processes that read a file while it existed.
 
@@ -141,12 +177,15 @@ ambiguous hardware identities, or topology changes fail explicitly. Per-monitor
 v2 awareness is declared in both startup code and the executable manifest.
 
 Model selections are bounded, syntax-validated non-secret preferences stored
-separately for Claude, OpenAI, Gemini, Copilot, Ollama, and LM Studio. A saved
-cloud model is restored only when its exact ID remains in the validated model
-list. Removed IDs can fall back only to reviewed low-cost aliases; Copilot
-requires an explicit zero multiplier from its model metadata. Without an
-eligible fallback, Clicky blocks the request and asks for a visible selection
-instead of using a provider default or the first list entry.
+separately for every provider and agent. A saved cloud or agent model is
+restored only when its exact ID remains in the validated model list. Removed
+IDs can fall back only to reviewed low-cost aliases or plan-safe defaults;
+Copilot requires an explicit zero multiplier from its model metadata. Qwen
+standard and Qwen Code plan models require an explicit selection because list
+order and plan inclusion are not treated as a cost signal. Without an eligible
+fallback, Clicky blocks the request instead of using a provider default or the
+first list entry. Screenshot pixels are withheld when the selected model lacks
+validated image-input support.
 
 Transcription vocabulary contains the shipped `Clicky` term plus only terms the
 user entered and saved in the dedicated editor. Custom terms are normalized,

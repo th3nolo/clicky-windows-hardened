@@ -31,7 +31,10 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Screen capture that excludes Clicky-owned windows, identity-based multi-monitor
   routing, mixed-DPI coordinate mapping, and a click-through PyQt overlay.
 - Pointing and drawing instructions produced by supported vision models.
-- Cloud LLM support for Anthropic, OpenAI, Gemini, and GitHub Copilot.
+- Cloud LLM support for Anthropic, OpenAI, Gemini, GitHub Copilot, Kimi Code,
+  MiniMax Token Plan, DeepSeek, and standard-rate Qwen.
+- Optional Codex and Qwen Code agent backends through already-installed
+  official CLIs. Agent execution has its own explicit privacy permission.
 - Local LLM support through an already-installed Ollama or LM Studio server.
 - True Deepgram streaming speech-to-text, explicit cloud-batch modes, and local batch speech-to-text fallbacks.
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
@@ -58,7 +61,9 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
 - The selected model is stored independently for each provider. Saved IDs are
   restored only while they remain in that provider's validated model list.
-- Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture require independent persisted permission. Microphone permission alone never authorizes cloud transcription.
+- Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
+  and external coding-agent execution require independent persisted permission.
+  Microphone permission alone never authorizes cloud transcription.
 - Journal logging and web search are disabled until the user enables them in the tray.
 
 ### Network requests
@@ -66,6 +71,20 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 Web search accepts HTTPS destinations only. It rejects local, private, link-local, reserved, multicast, and unspecified IP addresses before connecting, repeats the check for every redirect, and verifies the actual connected socket peer. Response types, redirects, and decoded byte counts are bounded. Environment proxies are not used.
 
 Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect or silently fall back after a provider failure.
+
+Additional OpenAI-compatible providers use fixed reviewed destinations:
+
+- Kimi Code: `https://api.kimi.com/coding/v1`
+- MiniMax Token Plan: `https://api.minimax.io/v1`
+- DeepSeek standard API: `https://api.deepseek.com`
+- Qwen standard API: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`
+
+Clicky disables environment proxies and redirects for these direct provider
+clients. Their keys are provider-specific and are never reused across billing
+realms. Qwen Coding Plan is not exposed as a generic application backend.
+Instead, an explicitly selected, already-installed Qwen Code agent receives
+only `BAILIAN_CODING_PLAN_API_KEY`, the selected allowlisted plan model, and
+Alibaba's fixed international Coding Plan endpoint.
 
 The transcription vocabulary editor is an explicit approval boundary. Clicky
 ships only its own product name, accepts at most 63 custom terms of 64 characters
@@ -102,12 +121,32 @@ Set only the keys needed for the current PowerShell process:
 $env:ANTHROPIC_API_KEY = "..."
 $env:OPENAI_API_KEY = "..."
 $env:GOOGLE_API_KEY = "..."
+$env:KIMI_CODE_API_KEY = "..."
+$env:MINIMAX_API_KEY = "..."
+$env:DEEPSEEK_API_KEY = "..."
+$env:DASHSCOPE_API_KEY = "..."
+$env:BAILIAN_CODING_PLAN_API_KEY = "..."
 $env:DEEPGRAM_API_KEY = "..."
 $env:ELEVENLABS_API_KEY = "..."
 $env:TAVILY_API_KEY = "..."
 ~~~
 
-Do not place keys in this repository or in a sidecar configuration file. GitHub Copilot uses the tray device-login flow and stores its resulting token with DPAPI.
+Do not place keys in this repository or in a sidecar configuration file.
+GitHub Copilot uses the tray device-login flow and stores its resulting token
+with DPAPI.
+
+Codex agent mode requires an official `codex` executable already on `PATH` and
+an explicit login completed through that CLI. Clicky uses ephemeral
+non-interactive runs, ignores user Codex configuration and rules, selects a
+read-only sandbox, supplies prompts through stdin, and leaves authentication
+storage and token refresh entirely to Codex. It never reads `auth.json`.
+
+Qwen Code agent mode requires an official `qwen` executable already on `PATH`
+and `BAILIAN_CODING_PLAN_API_KEY`. Clicky uses Qwen Code's safe headless mode,
+plan approval mode, bounded turns/tool calls/runtime, a temporary working
+directory, and the fixed international Coding Plan endpoint. Clicky never
+installs either CLI. Selecting a direct provider or agent never silently falls
+back to a different billing realm.
 
 See [SETUP.md](SETUP.md) for the frozen environment and model-integrity steps.
 

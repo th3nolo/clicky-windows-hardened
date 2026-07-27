@@ -14,6 +14,7 @@ from unittest import mock
 from ai.model_selection import (
     MAX_MODEL_CHOICES,
     model_is_available,
+    model_supports_vision,
     normalized_model_records,
     resolve_model,
     valid_model_id,
@@ -79,6 +80,42 @@ class ModelResolutionTests(unittest.TestCase):
             ).model_id
         )
 
+    def test_plan_and_standard_providers_use_only_reviewed_defaults(self):
+        self.assertEqual(
+            resolve_model(
+                "kimi_code",
+                [
+                    {"id": "kimi-for-coding"},
+                    {"id": "kimi-for-coding-highspeed"},
+                ],
+                "",
+            ).model_id,
+            "kimi-for-coding",
+        )
+        self.assertEqual(
+            resolve_model(
+                "minimax_plan",
+                [{"id": "MiniMax-M2.7-highspeed"}, {"id": "MiniMax-M2.7"}],
+                "",
+            ).model_id,
+            "MiniMax-M2.7",
+        )
+        self.assertEqual(
+            resolve_model(
+                "deepseek",
+                [{"id": "deepseek-reasoner"}, {"id": "deepseek-chat"}],
+                "",
+            ).model_id,
+            "deepseek-chat",
+        )
+        self.assertIsNone(
+            resolve_model(
+                "qwen",
+                [{"id": "qwen3.5-plus"}, {"id": "qwen3-coder-plus"}],
+                "",
+            ).model_id
+        )
+
     def test_provider_records_are_bounded_sanitized_and_deduplicated(self):
         records = [
             {"id": "ok-model", "label": "Okay", "vision": True},
@@ -94,6 +131,10 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(normalized[0]["id"], "ok-model")
         self.assertNotIn("bad model", {item["id"] for item in normalized})
         self.assertTrue(model_is_available("ok-model", normalized))
+        self.assertTrue(model_supports_vision("ok-model", normalized))
+        self.assertFalse(
+            model_supports_vision("model-0", normalized)
+        )
         self.assertFalse(valid_model_id("line\nbreak"))
 
 
@@ -111,6 +152,12 @@ class ModelPreferenceTests(unittest.TestCase):
                 "openai": "gpt-4o-mini",
                 "gemini": "gemini-2.5-flash",
                 "copilot": "gpt-4o-mini",
+                "kimi_code": "kimi-for-coding",
+                "minimax_plan": "MiniMax-M2.7",
+                "deepseek": "deepseek-chat",
+                "qwen": "qwen3.5-plus",
+                "codex_agent": "codex-default",
+                "qwen_code_agent": "qwen3-coder-plus",
                 "ollama": "qwen2.5vl:7b",
                 "lmstudio": "publisher/model-name",
             }

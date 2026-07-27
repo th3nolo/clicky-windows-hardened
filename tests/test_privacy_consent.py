@@ -34,11 +34,13 @@ class PrivacyControlTests(unittest.TestCase):
             cloud_stt_consent=True,
             cloud_tts_consent=True,
             screen_capture_consent=True,
+            coding_agent_consent=True,
         )
         self.assertFalse(privacy_controls.microphone_allowed(configured))
         self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
         self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
         self.assertFalse(privacy_controls.screen_capture_allowed(configured))
+        self.assertFalse(privacy_controls.coding_agent_allowed(configured))
 
     def test_each_permission_is_independent(self) -> None:
         configured = types.SimpleNamespace(
@@ -47,11 +49,13 @@ class PrivacyControlTests(unittest.TestCase):
             cloud_stt_consent=False,
             cloud_tts_consent=False,
             screen_capture_consent=False,
+            coding_agent_consent=True,
         )
         self.assertTrue(privacy_controls.microphone_allowed(configured))
         self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
         self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
         self.assertFalse(privacy_controls.screen_capture_allowed(configured))
+        self.assertTrue(privacy_controls.coding_agent_allowed(configured))
 
     def test_defaults_are_disabled_and_choices_persist_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
@@ -64,12 +68,14 @@ class PrivacyControlTests(unittest.TestCase):
             self.assertFalse(initial.cloud_stt_consent)
             self.assertFalse(initial.cloud_tts_consent)
             self.assertFalse(initial.screen_capture_consent)
+            self.assertFalse(initial.coding_agent_consent)
 
             initial.set_privacy_permissions(
                 microphone=True,
                 cloud_stt=True,
                 cloud_tts=False,
                 screen_capture=True,
+                coding_agent=True,
                 notice_version=privacy_controls.PRIVACY_NOTICE_VERSION,
             )
             reloaded = config.Config()
@@ -81,6 +87,7 @@ class PrivacyControlTests(unittest.TestCase):
             self.assertTrue(reloaded.cloud_stt_consent)
             self.assertFalse(reloaded.cloud_tts_consent)
             self.assertTrue(reloaded.screen_capture_consent)
+            self.assertTrue(reloaded.coding_agent_consent)
 
     def test_tampered_preference_types_grant_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
@@ -98,6 +105,7 @@ class PrivacyControlTests(unittest.TestCase):
                             "cloud_stt_consent": {"yes": True},
                             "cloud_tts_consent": 1,
                             "screen_capture_consent": [],
+                            "coding_agent_consent": "yes",
                         },
                     }
                 ),
@@ -110,6 +118,7 @@ class PrivacyControlTests(unittest.TestCase):
             self.assertFalse(loaded.cloud_stt_consent)
             self.assertFalse(loaded.cloud_tts_consent)
             self.assertFalse(loaded.screen_capture_consent)
+            self.assertFalse(loaded.coding_agent_consent)
 
     def test_previous_notice_version_grants_no_capability(self) -> None:
         configured = types.SimpleNamespace(
@@ -118,11 +127,13 @@ class PrivacyControlTests(unittest.TestCase):
             cloud_stt_consent=True,
             cloud_tts_consent=True,
             screen_capture_consent=True,
+            coding_agent_consent=True,
         )
         self.assertFalse(privacy_controls.microphone_allowed(configured))
         self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
         self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
         self.assertFalse(privacy_controls.screen_capture_allowed(configured))
+        self.assertFalse(privacy_controls.coding_agent_allowed(configured))
 
     def test_invalid_notice_version_is_rejected_without_partial_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
@@ -163,6 +174,7 @@ class PrivacyControlTests(unittest.TestCase):
             self.assertFalse(loaded.cloud_stt_consent)
             self.assertFalse(loaded.cloud_tts_consent)
             self.assertFalse(loaded.screen_capture_consent)
+            self.assertFalse(loaded.coding_agent_consent)
 
 
 class PrivacyWiringTests(unittest.TestCase):
@@ -172,6 +184,9 @@ class PrivacyWiringTests(unittest.TestCase):
         self.assertIn('QCheckBox("Allow cloud speech-to-text")', source)
         self.assertIn("cloud_stt=cloud_stt", source)
         self.assertIn("self.cloud_stt.isChecked()", source)
+        self.assertIn("Allow explicitly selected external coding agents", source)
+        self.assertIn("coding_agent=coding_agent", source)
+        self.assertIn("self.coding_agent.isChecked()", source)
 
     def test_consent_precedes_manager_construction_hotkey_and_microphone(self) -> None:
         tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))

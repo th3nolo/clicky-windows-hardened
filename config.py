@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import threading
 from dataclasses import dataclass, field
@@ -17,6 +18,12 @@ _PREFERENCE_STRING_LIMITS = {
     "openai_default_model": 256,
     "gemini_model": 256,
     "copilot_model": 256,
+    "kimi_code_model": 256,
+    "minimax_plan_model": 256,
+    "deepseek_model": 256,
+    "qwen_model": 256,
+    "codex_agent_model": 256,
+    "qwen_code_agent_model": 256,
     "ollama_model": 256,
     "ollama_vision_model": 256,
     "ollama_text_model": 256,
@@ -36,6 +43,7 @@ _PREFERENCE_BOOL_KEYS = {
     "cloud_stt_consent",
     "cloud_tts_consent",
     "screen_capture_consent",
+    "coding_agent_consent",
 }
 _PREFERENCE_STRING_LIST_LIMITS = {
     "transcription_vocabulary": (63, 64),
@@ -240,6 +248,23 @@ class Config:
     tavily_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("TAVILY_API_KEY") or None
     )
+    kimi_code_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("KIMI_CODE_API_KEY") or None
+    )
+    minimax_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("MINIMAX_API_KEY") or None
+    )
+    deepseek_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("DEEPSEEK_API_KEY") or None
+    )
+    dashscope_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("DASHSCOPE_API_KEY") or None
+    )
+    qwen_coding_plan_api_key: Optional[str] = field(
+        default_factory=lambda: (
+            os.environ.get("BAILIAN_CODING_PLAN_API_KEY") or None
+        )
+    )
 
     # Network endpoints are fixed in the hardened build. In particular, an
     # editable local file cannot redirect a provider API key to another host.
@@ -260,6 +285,24 @@ class Config:
     )
     copilot_model: str = field(
         default_factory=lambda: _preference("copilot_model", "")
+    )
+    kimi_code_model: str = field(
+        default_factory=lambda: _preference("kimi_code_model", "")
+    )
+    minimax_plan_model: str = field(
+        default_factory=lambda: _preference("minimax_plan_model", "")
+    )
+    deepseek_model: str = field(
+        default_factory=lambda: _preference("deepseek_model", "")
+    )
+    qwen_model: str = field(
+        default_factory=lambda: _preference("qwen_model", "")
+    )
+    codex_agent_model: str = field(
+        default_factory=lambda: _preference("codex_agent_model", "")
+    )
+    qwen_code_agent_model: str = field(
+        default_factory=lambda: _preference("qwen_code_agent_model", "")
     )
     ollama_model: str = field(
         default_factory=lambda: _preference("ollama_model", "llama3.2-vision")
@@ -330,6 +373,9 @@ class Config:
     screen_capture_consent: bool = field(
         default_factory=lambda: bool(_preference("screen_capture_consent", False))
     )
+    coding_agent_consent: bool = field(
+        default_factory=lambda: bool(_preference("coding_agent_consent", False))
+    )
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
     )
@@ -375,6 +421,21 @@ class Config:
             pass
         if self.google_api_key:
             out.append("gemini")
+        if self.kimi_code_api_key:
+            out.append("kimi_code")
+        if self.minimax_api_key:
+            out.append("minimax_plan")
+        if self.deepseek_api_key:
+            out.append("deepseek")
+        if self.dashscope_api_key:
+            out.append("qwen")
+        from privacy_controls import coding_agent_allowed
+
+        if coding_agent_allowed(self):
+            if shutil.which("codex"):
+                out.append("codex_agent")
+            if self.qwen_coding_plan_api_key and shutil.which("qwen"):
+                out.append("qwen_code_agent")
         out.append("ollama")     # always available if the daemon is running
         out.append("lmstudio")   # always available if the local server is running
         return out
@@ -382,7 +443,9 @@ class Config:
     def set_active_llm(self, name: str) -> None:
         """Switch providers and persist only the provider name."""
         normalized = (name or "").strip().lower()
-        if normalized not in {"claude", "openai", "copilot", "gemini", "ollama", "lmstudio"}:
+        from ai.provider_catalog import ALL_PROVIDER_IDS
+
+        if normalized not in ALL_PROVIDER_IDS:
             return
         self.active_llm = normalized
         _save_preferences(active_llm=normalized)
@@ -393,6 +456,12 @@ class Config:
             "openai": "openai_default_model",
             "gemini": "gemini_model",
             "copilot": "copilot_model",
+            "kimi_code": "kimi_code_model",
+            "minimax_plan": "minimax_plan_model",
+            "deepseek": "deepseek_model",
+            "qwen": "qwen_model",
+            "codex_agent": "codex_agent_model",
+            "qwen_code_agent": "qwen_code_agent_model",
             "ollama": "ollama_model",
             "lmstudio": "lmstudio_model",
         }
@@ -411,6 +480,15 @@ class Config:
             "openai": ("openai_default_model", "openai_default_model"),
             "gemini": ("gemini_model", "gemini_model"),
             "copilot": ("copilot_model", "copilot_model"),
+            "kimi_code": ("kimi_code_model", "kimi_code_model"),
+            "minimax_plan": ("minimax_plan_model", "minimax_plan_model"),
+            "deepseek": ("deepseek_model", "deepseek_model"),
+            "qwen": ("qwen_model", "qwen_model"),
+            "codex_agent": ("codex_agent_model", "codex_agent_model"),
+            "qwen_code_agent": (
+                "qwen_code_agent_model",
+                "qwen_code_agent_model",
+            ),
             "ollama": ("ollama_model", "ollama_model"),
             "lmstudio": ("lmstudio_model", "lmstudio_model"),
         }
@@ -553,6 +631,7 @@ class Config:
         cloud_stt: bool = False,
         cloud_tts: bool,
         screen_capture: bool,
+        coding_agent: bool = False,
         notice_version: int,
     ) -> None:
         """Atomically persist explicit privacy choices for the current notice."""
@@ -560,7 +639,13 @@ class Config:
             raise ValueError("Unsupported privacy notice version")
         if not all(
             isinstance(value, bool)
-            for value in (microphone, cloud_stt, cloud_tts, screen_capture)
+            for value in (
+                microphone,
+                cloud_stt,
+                cloud_tts,
+                screen_capture,
+                coding_agent,
+            )
         ):
             raise TypeError("Privacy permissions must be booleans")
         _save_preferences(
@@ -569,12 +654,14 @@ class Config:
             cloud_stt_consent=cloud_stt,
             cloud_tts_consent=cloud_tts,
             screen_capture_consent=screen_capture,
+            coding_agent_consent=coding_agent,
         )
         self.privacy_consent_version = notice_version
         self.microphone_consent = microphone
         self.cloud_stt_consent = cloud_stt
         self.cloud_tts_consent = cloud_tts
         self.screen_capture_consent = screen_capture
+        self.coding_agent_consent = coding_agent
 
 
 # Singleton
