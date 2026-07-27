@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Protocol
 
 
-PRIVACY_NOTICE_VERSION = 1
+PRIVACY_NOTICE_VERSION = 2
 
 
 class PrivacyConfiguration(Protocol):
     privacy_consent_version: int
     microphone_consent: bool
+    cloud_stt_consent: bool
     cloud_tts_consent: bool
     screen_capture_consent: bool
 
@@ -21,6 +22,10 @@ def notice_accepted(config: PrivacyConfiguration) -> bool:
 
 def microphone_allowed(config: PrivacyConfiguration) -> bool:
     return notice_accepted(config) and config.microphone_consent is True
+
+
+def cloud_stt_allowed(config: PrivacyConfiguration) -> bool:
+    return notice_accepted(config) and config.cloud_stt_consent is True
 
 
 def cloud_tts_allowed(config: PrivacyConfiguration) -> bool:

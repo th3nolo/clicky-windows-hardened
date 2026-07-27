@@ -30,6 +30,7 @@ _PREFERENCE_BOOL_KEYS = {
     "journal_enabled",
     "web_search_enabled",
     "microphone_consent",
+    "cloud_stt_consent",
     "cloud_tts_consent",
     "screen_capture_consent",
 }
@@ -291,6 +292,9 @@ class Config:
     microphone_consent: bool = field(
         default_factory=lambda: bool(_preference("microphone_consent", False))
     )
+    cloud_stt_consent: bool = field(
+        default_factory=lambda: bool(_preference("cloud_stt_consent", False))
+    )
     cloud_tts_consent: bool = field(
         default_factory=lambda: bool(_preference("cloud_tts_consent", False))
     )
@@ -435,6 +439,7 @@ class Config:
         self,
         *,
         microphone: bool,
+        cloud_stt: bool = False,
         cloud_tts: bool,
         screen_capture: bool,
         notice_version: int,
@@ -444,17 +449,19 @@ class Config:
             raise ValueError("Unsupported privacy notice version")
         if not all(
             isinstance(value, bool)
-            for value in (microphone, cloud_tts, screen_capture)
+            for value in (microphone, cloud_stt, cloud_tts, screen_capture)
         ):
             raise TypeError("Privacy permissions must be booleans")
         _save_preferences(
             privacy_consent_version=notice_version,
             microphone_consent=microphone,
+            cloud_stt_consent=cloud_stt,
             cloud_tts_consent=cloud_tts,
             screen_capture_consent=screen_capture,
         )
         self.privacy_consent_version = notice_version
         self.microphone_consent = microphone
+        self.cloud_stt_consent = cloud_stt
         self.cloud_tts_consent = cloud_tts
         self.screen_capture_consent = screen_capture
 

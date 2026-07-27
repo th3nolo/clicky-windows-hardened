@@ -31,10 +31,12 @@ class PrivacyControlTests(unittest.TestCase):
         configured = types.SimpleNamespace(
             privacy_consent_version=0,
             microphone_consent=True,
+            cloud_stt_consent=True,
             cloud_tts_consent=True,
             screen_capture_consent=True,
         )
         self.assertFalse(privacy_controls.microphone_allowed(configured))
+        self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
         self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
         self.assertFalse(privacy_controls.screen_capture_allowed(configured))
 
@@ -42,10 +44,12 @@ class PrivacyControlTests(unittest.TestCase):
         configured = types.SimpleNamespace(
             privacy_consent_version=privacy_controls.PRIVACY_NOTICE_VERSION,
             microphone_consent=True,
+            cloud_stt_consent=False,
             cloud_tts_consent=False,
             screen_capture_consent=False,
         )
         self.assertTrue(privacy_controls.microphone_allowed(configured))
+        self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
         self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
         self.assertFalse(privacy_controls.screen_capture_allowed(configured))
 
@@ -57,11 +61,13 @@ class PrivacyControlTests(unittest.TestCase):
             initial = config.Config()
             self.assertEqual(initial.privacy_consent_version, 0)
             self.assertFalse(initial.microphone_consent)
+            self.assertFalse(initial.cloud_stt_consent)
             self.assertFalse(initial.cloud_tts_consent)
             self.assertFalse(initial.screen_capture_consent)
 
             initial.set_privacy_permissions(
                 microphone=True,
+                cloud_stt=True,
                 cloud_tts=False,
                 screen_capture=True,
                 notice_version=privacy_controls.PRIVACY_NOTICE_VERSION,
@@ -72,6 +78,7 @@ class PrivacyControlTests(unittest.TestCase):
                 privacy_controls.PRIVACY_NOTICE_VERSION,
             )
             self.assertTrue(reloaded.microphone_consent)
+            self.assertTrue(reloaded.cloud_stt_consent)
             self.assertFalse(reloaded.cloud_tts_consent)
             self.assertTrue(reloaded.screen_capture_consent)
 
@@ -88,6 +95,7 @@ class PrivacyControlTests(unittest.TestCase):
                         "preferences": {
                             "privacy_consent_version": True,
                             "microphone_consent": "yes",
+                            "cloud_stt_consent": {"yes": True},
                             "cloud_tts_consent": 1,
                             "screen_capture_consent": [],
                         },
@@ -99,8 +107,22 @@ class PrivacyControlTests(unittest.TestCase):
             loaded = config.Config()
             self.assertEqual(loaded.privacy_consent_version, 0)
             self.assertFalse(loaded.microphone_consent)
+            self.assertFalse(loaded.cloud_stt_consent)
             self.assertFalse(loaded.cloud_tts_consent)
             self.assertFalse(loaded.screen_capture_consent)
+
+    def test_previous_notice_version_grants_no_capability(self) -> None:
+        configured = types.SimpleNamespace(
+            privacy_consent_version=privacy_controls.PRIVACY_NOTICE_VERSION - 1,
+            microphone_consent=True,
+            cloud_stt_consent=True,
+            cloud_tts_consent=True,
+            screen_capture_consent=True,
+        )
+        self.assertFalse(privacy_controls.microphone_allowed(configured))
+        self.assertFalse(privacy_controls.cloud_stt_allowed(configured))
+        self.assertFalse(privacy_controls.cloud_tts_allowed(configured))
+        self.assertFalse(privacy_controls.screen_capture_allowed(configured))
 
     def test_invalid_notice_version_is_rejected_without_partial_save(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
@@ -111,6 +133,7 @@ class PrivacyControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 loaded.set_privacy_permissions(
                     microphone=True,
+                    cloud_stt=True,
                     cloud_tts=True,
                     screen_capture=True,
                     notice_version=privacy_controls.PRIVACY_NOTICE_VERSION + 1,
@@ -130,17 +153,26 @@ class PrivacyControlTests(unittest.TestCase):
             ), self.assertRaisesRegex(OSError, "disk blocked"):
                 loaded.set_privacy_permissions(
                     microphone=True,
+                    cloud_stt=True,
                     cloud_tts=True,
                     screen_capture=True,
                     notice_version=privacy_controls.PRIVACY_NOTICE_VERSION,
                 )
             self.assertEqual(loaded.privacy_consent_version, 0)
             self.assertFalse(loaded.microphone_consent)
+            self.assertFalse(loaded.cloud_stt_consent)
             self.assertFalse(loaded.cloud_tts_consent)
             self.assertFalse(loaded.screen_capture_consent)
 
 
 class PrivacyWiringTests(unittest.TestCase):
+    def test_dialog_collects_cloud_stt_separately_from_microphone(self) -> None:
+        source = (ROOT / "ui" / "privacy_consent.py").read_text(encoding="utf-8")
+        self.assertIn('QCheckBox("Allow microphone access")', source)
+        self.assertIn('QCheckBox("Allow cloud speech-to-text")', source)
+        self.assertIn("cloud_stt=cloud_stt", source)
+        self.assertIn("self.cloud_stt.isChecked()", source)
+
     def test_consent_precedes_manager_construction_hotkey_and_microphone(self) -> None:
         tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
         main = next(
