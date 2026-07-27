@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from capability_registry import CapabilityId
 import feature_gates
 import privacy_controls
 
@@ -73,7 +74,9 @@ class ActionFeatureGateTests(unittest.TestCase):
         config = configured(global_dictation_permission=True)
         grant = feature_gates.RunCapabilityGrant(
             run_id="dictation-run-1",
-            capabilities=frozenset({global_dictation}),
+            capabilities=frozenset(
+                {CapabilityId.DICTATION_INSERT_TEXT}
+            ),
         )
 
         self.assertTrue(
@@ -112,6 +115,57 @@ class ActionFeatureGateTests(unittest.TestCase):
             )
         )
 
+    def test_connector_run_authority_must_name_the_exact_registered_operation(self):
+        connector_read = feature_gates.ActionCapability.CONNECTOR_READ
+        flags = build_flags(connector_read)
+        config = configured(connector_read_permission=True)
+        grant = feature_gates.RunCapabilityGrant(
+            run_id="gmail-read-1",
+            capabilities=frozenset(
+                {CapabilityId.GMAIL_MESSAGE_READ}
+            ),
+        )
+
+        self.assertFalse(
+            feature_gates.action_capability_allowed(
+                config,
+                connector_read,
+                grant=grant,
+                run_id=grant.run_id,
+                build_flags=flags,
+            )
+        )
+        self.assertTrue(
+            feature_gates.action_capability_allowed(
+                config,
+                connector_read,
+                grant=grant,
+                run_id=grant.run_id,
+                grant_capability=CapabilityId.GMAIL_MESSAGE_READ,
+                build_flags=flags,
+            )
+        )
+        self.assertFalse(
+            feature_gates.action_capability_allowed(
+                config,
+                connector_read,
+                grant=grant,
+                run_id=grant.run_id,
+                grant_capability=CapabilityId.CALENDAR_EVENT_READ,
+                build_flags=flags,
+            )
+        )
+        self.assertFalse(
+            feature_gates.action_capability_allowed(
+                config,
+                connector_read,
+                grant=grant,
+                run_id=grant.run_id,
+                grant_capability=CapabilityId.GMAIL_DRAFT_WRITE,
+                build_flags=flags,
+            )
+        )
+
     def test_startup_rejects_available_flag_without_current_schema(self):
         flags = build_flags()
         flags[feature_gates.ActionCapability.TASK_AGENT] = (
@@ -142,7 +196,7 @@ class ActionFeatureGateTests(unittest.TestCase):
             feature_gates.RunCapabilityGrant(
                 run_id=" changed ",
                 capabilities=frozenset(
-                    {feature_gates.ActionCapability.GLOBAL_DICTATION}
+                    {CapabilityId.DICTATION_INSERT_TEXT}
                 ),
             )
         with self.assertRaises(TypeError):

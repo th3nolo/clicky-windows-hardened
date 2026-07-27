@@ -11,6 +11,7 @@ import types
 import unittest
 from pathlib import Path
 
+from capability_registry import CapabilityId
 from compose.models import (
     ComposeInvocation,
     ComposeProviderSelection,
@@ -133,13 +134,14 @@ def invocation(
     style_profile_id=STYLE_ID,
 ):
     run_id = "compose-7"
+    capabilities = {CapabilityId.COMPOSE_SCREEN_CONTEXT}
+    if style_profile_id is not None:
+        capabilities.add(CapabilityId.STYLE_PROFILE_USE)
     return ComposeInvocation(
         run_id=run_id,
         grant=RunCapabilityGrant(
             run_id,
-            frozenset(
-                {ActionCapability.SCREEN_AWARE_COMPOSE}
-            ),
+            frozenset(capabilities),
         ),
         instruction="Reply that Tuesday afternoon works for me.",
         target=target,
@@ -596,7 +598,7 @@ class ComposeModelBoundaryTests(unittest.TestCase):
         grant = RunCapabilityGrant(
             "other-run",
             frozenset(
-                {ActionCapability.SCREEN_AWARE_COMPOSE}
+                {CapabilityId.COMPOSE_SCREEN_CONTEXT}
             ),
         )
         with self.assertRaises(ValueError):
@@ -610,6 +612,30 @@ class ComposeModelBoundaryTests(unittest.TestCase):
                     "openai",
                     "gpt-4o-mini",
                 ),
+            )
+
+    def test_selected_style_requires_its_narrow_run_capability(self):
+        lease = Guard().lease
+        grant = RunCapabilityGrant(
+            "compose-7",
+            frozenset({CapabilityId.COMPOSE_SCREEN_CONTEXT}),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "writing-style use requires",
+        ):
+            ComposeInvocation(
+                run_id="compose-7",
+                grant=grant,
+                instruction="draft",
+                target=lease,
+                authorized_screenshot_ids=("monitor-one",),
+                provider=ComposeProviderSelection(
+                    "openai",
+                    "gpt-4o-mini",
+                ),
+                style_profile_id=STYLE_ID,
             )
 
     def test_service_has_no_insertion_clipboard_or_action_import(self):

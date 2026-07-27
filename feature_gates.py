@@ -4,25 +4,26 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
 
+from capability_registry import (
+    CAPABILITY_SCHEMA_VERSION,
+    CAPABILITY_REGISTRY,
+    MAX_RUN_ID_LENGTH,
+    CapabilityGrant,
+    CapabilityId,
+    FeatureCapability,
+    UserPermissionId,
+)
 from privacy_controls import notice_accepted
 
 
 ACTION_PERMISSION_SCHEMA_VERSION = 1
-MAX_RUN_ID_LENGTH = 128
-
-
-class ActionCapability(str, Enum):
-    GLOBAL_DICTATION = "global_dictation"
-    SCREEN_AWARE_COMPOSE = "screen_aware_compose"
-    TASK_AGENT = "task_agent"
-    CONNECTOR_READ = "connector_read"
-    CONNECTOR_WRITE = "connector_write"
-    WORKSPACE_CODING = "workspace_coding"
-    DESKTOP_AUTOMATION = "desktop_automation"
+ActionCapability = FeatureCapability
+# Compatibility export for callers from the Phase 0 gate implementation.
+# New code should import CapabilityGrant from capability_registry.
+RunCapabilityGrant = CapabilityGrant
 
 
 _PERMISSION_ATTRIBUTES = MappingProxyType(
@@ -34,6 +35,21 @@ _PERMISSION_ATTRIBUTES = MappingProxyType(
         ActionCapability.CONNECTOR_WRITE: "connector_write_permission",
         ActionCapability.WORKSPACE_CODING: "workspace_coding_permission",
         ActionCapability.DESKTOP_AUTOMATION: "desktop_automation_permission",
+    }
+)
+
+_DEFAULT_RUN_CAPABILITIES = MappingProxyType(
+    {
+        ActionCapability.GLOBAL_DICTATION: (
+            CapabilityId.DICTATION_INSERT_TEXT
+        ),
+        ActionCapability.SCREEN_AWARE_COMPOSE: (
+            CapabilityId.COMPOSE_SCREEN_CONTEXT
+        ),
+        ActionCapability.TASK_AGENT: CapabilityId.TASK_AGENT_RUN,
+        ActionCapability.DESKTOP_AUTOMATION: (
+            CapabilityId.DESKTOP_UIA_ACTION
+        ),
     }
 )
 
@@ -75,39 +91,6 @@ class ActionPermissionConfiguration(Protocol):
     connector_write_permission: bool
     workspace_coding_permission: bool
     desktop_automation_permission: bool
-
-
-@dataclass(frozen=True, slots=True)
-class RunCapabilityGrant:
-    """An explicit set of capabilities bound to one running operation."""
-
-    run_id: str
-    capabilities: frozenset[ActionCapability]
-    permission_schema_version: int = ACTION_PERMISSION_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.run_id, str)
-            or not self.run_id
-            or len(self.run_id) > MAX_RUN_ID_LENGTH
-            or self.run_id.strip() != self.run_id
-            or not self.run_id.isprintable()
-        ):
-            raise ValueError("Run grant ID must be a bounded printable string")
-        if (
-            not isinstance(self.capabilities, frozenset)
-            or not self.capabilities
-            or any(
-                not isinstance(capability, ActionCapability)
-                for capability in self.capabilities
-            )
-        ):
-            raise TypeError(
-                "Run grants require a non-empty ActionCapability frozenset"
-            )
-        version = self.permission_schema_version
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise TypeError("Run grant permission schema version must be an integer")
 
 
 def user_permission_allowed(
@@ -188,8 +171,9 @@ def action_capability_allowed(
     config: ActionPermissionConfiguration,
     capability: ActionCapability,
     *,
-    grant: RunCapabilityGrant | None,
+    grant: CapabilityGrant | None,
     run_id: str,
+    grant_capability: CapabilityId | None = None,
     build_flags: Mapping[
         ActionCapability, BuildFeatureFlag
     ] = DEFAULT_BUILD_FEATURE_FLAGS,
@@ -202,10 +186,26 @@ def action_capability_allowed(
         return False
     if not user_permission_allowed(config, capability):
         return False
-    if grant is None or grant.permission_schema_version != (
-        ACTION_PERMISSION_SCHEMA_VERSION
+    if (
+        grant is None
+        or grant.capability_schema_version != CAPABILITY_SCHEMA_VERSION
     ):
         return False
     if not isinstance(run_id, str) or grant.run_id != run_id:
         return False
-    return capability in grant.capabilities
+    required = (
+        grant_capability
+        if grant_capability is not None
+        else _DEFAULT_RUN_CAPABILITIES.get(capability)
+    )
+    if not isinstance(required, CapabilityId):
+        return False
+    definition = CAPABILITY_REGISTRY.get(required)
+    if (
+        definition is None
+        or definition.feature is not capability
+        or definition.user_permission
+        is not UserPermissionId(capability.value)
+    ):
+        return False
+    return grant.allows(required)
