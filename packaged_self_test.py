@@ -30,6 +30,14 @@ def _require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def _run_stage(name: str, callback):
+    """Emit only bounded stage names so parent timeouts identify the boundary."""
+    print(f"[self-test] {name}: started", file=sys.stderr, flush=True)
+    result = callback()
+    print(f"[self-test] {name}: completed", file=sys.stderr, flush=True)
+    return result
+
+
 def _require_isolated_packaged_runtime() -> None:
     _require(bool(getattr(sys, "frozen", False)), "self-test requires the packaged executable")
     require_disposable_windows_boundary()
@@ -228,9 +236,9 @@ def _validate_screen_capture() -> dict[str, object]:
     try:
         screenshots = capture_all_screens()
         observed = any(_contains_magenta(item.base64_jpeg) for item in screenshots)
-        _require(observed, "packaged capture missed the synthetic screen")
+        _require(not observed, "packaged capture leaked the synthetic Clicky window")
         return {
-            "synthetic_content_observed": True,
+            "synthetic_content_excluded": True,
             "screens": [
                 {"index": item.index, "width": item.width, "height": item.height}
                 for item in screenshots
@@ -284,20 +292,24 @@ def run(output: Path) -> int:
     """Run packaged primitives and emit bounded, non-secret JSON evidence."""
     _require_isolated_packaged_runtime()
     output.parent.mkdir(parents=True, exist_ok=True)
-    privacy_defaults = _validate_privacy_defaults()
+    privacy_defaults = _run_stage("privacy defaults", _validate_privacy_defaults)
     report = {
         "runtime_boundary": {
             "frozen": bool(getattr(sys, "frozen", False)),
             "executable": sys.executable,
             **require_disposable_windows_boundary(),
         },
-        "dpapi_token_persistence": _validate_dpapi_persistence(),
-        "secure_audio": _validate_secure_audio(),
-        "bundled_skills": _validate_bundled_skills(),
+        "dpapi_token_persistence": _run_stage(
+            "DPAPI persistence", _validate_dpapi_persistence
+        ),
+        "secure_audio": _run_stage("secure audio", _validate_secure_audio),
+        "bundled_skills": _run_stage("bundled skills", _validate_bundled_skills),
         "privacy_defaults": privacy_defaults,
-        "microphone_state": _validate_microphone_revocation(),
-        "screen_capture": _validate_screen_capture(),
-        "cloud_tts": _validate_cloud_tts(),
+        "microphone_state": _run_stage(
+            "microphone revocation", _validate_microphone_revocation
+        ),
+        "screen_capture": _run_stage("screen capture", _validate_screen_capture),
+        "cloud_tts": _run_stage("cloud TTS", _validate_cloud_tts),
     }
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

@@ -730,8 +730,8 @@ def verify_runtime_results(
     _require(bool(packaged["bundled_skills"]["verified_files"]), "packaged skills unverified")
     _require(packaged["privacy_defaults"]["microphone_allowed"] is False, "packaged mic defaulted on")
     _require(
-        packaged["screen_capture"]["synthetic_content_observed"] is True,
-        "packaged screen capture did not observe synthetic content",
+        packaged["screen_capture"]["synthetic_content_excluded"] is True,
+        "packaged screen capture did not exclude synthetic Clicky content",
     )
     _require(
         packaged["microphone_state"]["cancelled_after_revocation"] is True
