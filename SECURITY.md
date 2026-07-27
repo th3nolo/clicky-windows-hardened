@@ -239,6 +239,12 @@ PublisherDisplayName copied from Partner Center Product identity. Guessed or
 validation-only identities are refused for Store input. Microsoft Store
 submission, certification, and signing are user-interactive gates.
 
+Login startup is disabled by default in both packaging designs. The classic
+reference installer uses an unchecked per-user startup shortcut, and the MSIX
+manifest declares a disabled startup task. Clicky does not create an autorun
+registry value; its tray command only opens the fixed Windows Startup Apps page
+so the user can make the change in Windows.
+
 Consumer Malwarebytes scanning is a manual review gate, not a cryptographically authenticated automated attestation. Record the artifact SHA-256, scanner/product version, scan time, result, and exported report or screenshot. VirusTotal reports are supplementary multi-engine evidence and may share uploaded samples with security partners; look up the hash first and upload only artifacts that are safe to disclose.
 
 After certification, obtain the exact Store-delivered signed MSIX rather than

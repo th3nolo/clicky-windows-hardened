@@ -39,6 +39,7 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Local LLM support through an already-installed Ollama or LM Studio server.
 - True Deepgram streaming speech-to-text, explicit cloud-batch modes, and local batch speech-to-text fallbacks.
 - A fixed local Windows voice status when an approved cloud narration request fails.
+- Default-off login startup support for both classic and Microsoft Store installs.
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
 - Optional web search and a local learning journal. Both are off by default.
 
@@ -205,6 +206,11 @@ Store signing, and post-certification exact-byte verification are not automated
 or claimed complete. Unsigned executables, onedir trees, and MSIX packages must
 not be distributed. Never instruct a recipient to bypass SmartScreen or add an
 antivirus exclusion. See [BUILD.md](BUILD.md).
+
+Installing Clicky never enables login startup. The disabled classic installer
+reference uses an unchecked per-user startup-shortcut task, while the MSIX
+manifest declares a disabled Windows startup task. The tray opens Windows
+Startup Apps so the user can review or change that Windows-owned setting.
 
 ## Documentation
 

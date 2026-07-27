@@ -84,6 +84,15 @@ class MsixPackagingTests(unittest.TestCase):
         self.assertIn("developed by th3nolo", text)
         self.assertIn('Name="Windows.Desktop"', text)
         self.assertIn('uap10:RuntimeBehavior="packagedClassicApp"', text)
+        self.assertIn(
+            'xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"',
+            text,
+        )
+        self.assertIn('Category="windows.startupTask"', text)
+        self.assertIn('Executable="Clicky\\Clicky.exe"', text)
+        self.assertIn('EntryPoint="Windows.FullTrustApplication"', text)
+        self.assertIn('TaskId="ClickyStartup"', text)
+        self.assertIn('Enabled="false"', text)
         self.assertIn('uap10:TrustLevel="mediumIL"', text)
         self.assertIn('<rescap:Capability Name="runFullTrust"', text)
         self.assertIn('Executable="Clicky\\Clicky.exe"', text)

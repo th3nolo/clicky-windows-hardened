@@ -110,6 +110,11 @@ installs, submits, or uploads anything. It:
 The legal publisher is Manuel Parra. The product/developer brand is th3nolo.
 Those decisions do not substitute for the exact Store-assigned identity values.
 
+The generated manifest declares the full-trust `ClickyStartup` startup task with
+`Enabled="false"`. Installing the package therefore does not opt the user into
+login startup. Windows Startup Apps remains the user-controlled place to enable
+or disable it.
+
 For a non-Store structural validation only, use `--validation-only`. That mode
 uses a fixed conspicuous local identity, embeds an unsigned validation marker,
 and refuses Store identity arguments. Its output must never be submitted or
