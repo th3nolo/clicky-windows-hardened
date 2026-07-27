@@ -17,7 +17,7 @@ from privacy_controls import PRIVACY_NOTICE_VERSION, notice_accepted
 
 
 class PrivacyConsentDialog(QDialog):
-    """Collect three independent permissions; closing grants nothing."""
+    """Collect four independent permissions; closing grants nothing."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,18 +40,33 @@ class PrivacyConsentDialog(QDialog):
         self.microphone = QCheckBox("Allow microphone access")
         self.microphone.setChecked(bool(cfg.microphone_consent))
         self.microphone.setToolTip(
-            "Clicky keeps a microphone stream open for local wake-word detection. "
-            "After wake or push-to-talk, speech may be sent to your selected cloud "
-            "speech provider."
+            "Clicky keeps a microphone stream open for local wake-word detection "
+            "and captures audio only after wake or push-to-talk."
         )
         layout.addWidget(self.microphone)
         mic_notice = QLabel(
             "The microphone remains open while Clicky is running so the local "
-            "wake-word detector can listen. Cloud transcription is used only "
-            "after wake-word or push-to-talk capture."
+            "wake-word detector can listen. This permission alone does not allow "
+            "Clicky to send speech audio to a cloud provider."
         )
         mic_notice.setWordWrap(True)
         layout.addWidget(mic_notice)
+
+        self.cloud_stt = QCheckBox("Allow cloud speech-to-text")
+        self.cloud_stt.setChecked(bool(cfg.cloud_stt_consent))
+        self.cloud_stt.setToolTip(
+            "When a cloud speech provider is selected, Clicky may send captured "
+            "microphone audio to that provider for transcription."
+        )
+        layout.addWidget(self.cloud_stt)
+        stt_notice = QLabel(
+            "Deepgram live mode streams bounded microphone frames while you "
+            "speak. Batch cloud modes upload the completed capture. Local "
+            "Whisper modes do neither. Granting this permission does not select "
+            "a cloud provider."
+        )
+        stt_notice.setWordWrap(True)
+        layout.addWidget(stt_notice)
 
         self.cloud_tts = QCheckBox("Allow cloud text-to-speech")
         self.cloud_tts.setChecked(bool(cfg.cloud_tts_consent))
@@ -95,9 +110,16 @@ class PrivacyConsentDialog(QDialog):
         buttons.addWidget(save)
         layout.addLayout(buttons)
 
-    def _persist(self, microphone: bool, cloud_tts: bool, screen: bool) -> None:
+    def _persist(
+        self,
+        microphone: bool,
+        cloud_stt: bool,
+        cloud_tts: bool,
+        screen: bool,
+    ) -> None:
         cfg.set_privacy_permissions(
             microphone=microphone,
+            cloud_stt=cloud_stt,
             cloud_tts=cloud_tts,
             screen_capture=screen,
             notice_version=PRIVACY_NOTICE_VERSION,
@@ -105,11 +127,12 @@ class PrivacyConsentDialog(QDialog):
         self.accept()
 
     def _keep_disabled(self) -> None:
-        self._persist(False, False, False)
+        self._persist(False, False, False, False)
 
     def _save(self) -> None:
         self._persist(
             self.microphone.isChecked(),
+            self.cloud_stt.isChecked(),
             self.cloud_tts.isChecked(),
             self.screen_capture.isChecked(),
         )

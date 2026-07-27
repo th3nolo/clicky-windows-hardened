@@ -36,7 +36,7 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
 - Optional web search and a local learning journal. Both are off by default.
 
-The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Edge TTS and web search also require network access. Microphone, cloud text-to-speech, and screen capture each remain disabled until the first-run privacy dialog records an explicit choice.
+The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Cloud speech-to-text, Edge TTS, and web search also require network access. Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture each remain disabled until the first-run privacy dialog records an explicit choice.
 
 ## Hardened defaults
 
@@ -55,7 +55,7 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 - Provider API keys are read from the current process environment only.
 - GitHub Copilot OAuth tokens are encrypted for the current Windows user with DPAPI.
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
-- Microphone access, cloud text-to-speech, and screen capture require independent persisted permission.
+- Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture require independent persisted permission. Microphone permission alone never authorizes cloud transcription.
 - Journal logging and web search are disabled until the user enables them in the tray.
 
 ### Network requests

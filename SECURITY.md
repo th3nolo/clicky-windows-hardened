@@ -97,7 +97,7 @@ Model hashes establish file or artifact identity. They do not establish model qu
 
 ### Privacy defaults
 
-Microphone access, cloud text-to-speech, and screen capture are independently off until the current first-run privacy notice records an explicit choice. Closing the dialog grants nothing. Screen permission covers capture of every monitor and disclosure that cloud LLM providers receive those images; cloud TTS permission covers response text sent to Microsoft Edge TTS, OpenAI, or ElevenLabs.
+Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture are independently off until the current first-run privacy notice records an explicit choice. Closing the dialog grants nothing, and accepting an older notice version grants nothing after the permission model changes. Microphone permission covers local wake-word listening and deliberate capture only; cloud STT permission separately covers captured audio sent to a selected cloud transcription provider. Screen permission covers capture of every monitor and disclosure that cloud LLM providers receive those images; cloud TTS permission covers response text sent to Microsoft Edge TTS, OpenAI, or ElevenLabs.
 
 Temporary local-transcription WAV files are created in a protected per-user directory, removed after use, and swept after a terminated-process crash. Deletion cannot guarantee forensic erasure from SSDs, backups, snapshots, or other same-user processes that read a file while it existed.
 
