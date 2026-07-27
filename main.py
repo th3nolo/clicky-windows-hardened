@@ -362,6 +362,13 @@ def main():
         _setup_keepalive[0] = wiz
     tray.on_run_setup.connect(_run_setup_again)
 
+    def _run_onboarding():
+        from ui.onboarding_demo import show_onboarding_demo
+
+        show_onboarding_demo(cfg.hotkey)
+
+    tray.on_run_onboarding.connect(_run_onboarding)
+
     def _run_privacy_permissions():
         from ui.privacy_consent import request_privacy_permissions
 
@@ -419,9 +426,21 @@ def main():
     tray.on_quit.connect(lambda: (tray.hide_icon(), manager.shutdown(), app.quit()))
 
     # ── Global hotkey ─────────────────────────────────────────────────────────
+    def _on_hotkey_press():
+        from ui.onboarding_demo import route_demo_hotkey_press
+
+        if not route_demo_hotkey_press():
+            manager.on_hotkey_press()
+
+    def _on_hotkey_release():
+        from ui.onboarding_demo import route_demo_hotkey_release
+
+        if not route_demo_hotkey_release():
+            manager.on_hotkey_release()
+
     hotkey = GlobalHotkeyMonitor(
-        on_press=manager.on_hotkey_press,
-        on_release=manager.on_hotkey_release,
+        on_press=_on_hotkey_press,
+        on_release=_on_hotkey_release,
     )
     hotkey.start()
 

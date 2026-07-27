@@ -145,6 +145,12 @@ binding to an allowlisted local Windows `winrt` or `sapi` engine. It never
 passes response content to the local failure voice. The local utterance is
 bounded by a timeout and shares the active turn's cancellation path.
 
+The replayable hotkey and pointing onboarding window uses only synthetic Qt
+content. While it is open, the global push-to-talk hotkey is routed to that
+window before the companion manager, so practice cannot start microphone,
+screen, model, transcript, file, or network work. Closing it restores normal
+hotkey routing.
+
 The Privacy Guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Explicit screen permission is still required, but permission does not make the title heuristic comprehensive.
 
 Clicky applies Windows `WDA_EXCLUDEFROMCAPTURE` affinity to every current-

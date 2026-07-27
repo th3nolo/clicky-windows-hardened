@@ -52,6 +52,7 @@ class TrayManager(QObject):
     on_journal_open       = pyqtSignal()
     on_attach_doc         = pyqtSignal()
     on_run_setup          = pyqtSignal()
+    on_run_onboarding     = pyqtSignal()
     on_privacy_permissions = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
@@ -283,6 +284,8 @@ class TrayManager(QObject):
         vocabulary.triggered.connect(self._prompt_transcription_vocabulary)
         privacy_permissions = setup_menu.addAction("Privacy permissions…")
         privacy_permissions.triggered.connect(self.on_privacy_permissions)
+        onboarding = setup_menu.addAction("Practice hotkey && pointing…")
+        onboarding.triggered.connect(self.on_run_onboarding)
         run_setup = setup_menu.addAction("Run setup wizard again…")
         run_setup.triggered.connect(self.on_run_setup)
         diag = setup_menu.addAction("Save diagnostics report…")
