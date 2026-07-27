@@ -264,6 +264,37 @@ class Draft:
         return len(self.text)
 
 
+@dataclass(frozen=True, slots=True)
+class DraftInsertionApproval:
+    """One explicit preview approval bound to the remembered destination."""
+
+    draft: Draft = field(repr=False)
+    target: TargetLease = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.draft, Draft):
+            raise TypeError("Insertion approval requires a compose draft")
+        if not isinstance(self.target, TargetLease):
+            raise TypeError("Insertion approval requires a target lease")
+        descriptor = self.target.descriptor
+        provenance = self.draft.provenance
+        target_type = f"{descriptor.framework_id}:{descriptor.control_type}"
+        if (
+            descriptor.application_name
+            != provenance.destination_application
+            or descriptor.application_identity
+            != provenance.destination_identity
+            or target_type != provenance.target_type
+        ):
+            raise ValueError(
+                "Insertion approval destination does not match the draft"
+            )
+
+    @property
+    def run_id(self) -> str:
+        return self.draft.provenance.run_id
+
+
 def _validate_screenshot_ids(values: object) -> tuple[str, ...]:
     if (
         not isinstance(values, tuple)

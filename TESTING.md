@@ -224,6 +224,23 @@ contract evidence, not proof of real Windows capture or provider behavior; the
 baseline build flag remains off until the later capture, preview, and
 interactive Windows tasks pass.
 
+In the preview test build, confirm the window is shown without activating or
+replacing the remembered destination. It must show the draft, destination
+application, writing profile, response provider, and exact character count,
+with only **Insert**, **Copy**, **Regenerate**, and **Cancel** controls. Cancel,
+window close, and the five-minute expiry must clear the draft and request no
+action. Copy and Regenerate emit bounded requests to their separately owned
+caller paths; the preview itself must not access the clipboard or provider.
+
+Click Insert with the original disposable destination unchanged and confirm one
+typed approval is emitted after a fresh target-policy observation. Attempt a
+second click and confirm no second approval. Repeat after changing focus,
+control identity, process, executable identity, desktop, policy, or integrity
+level; Insert must become unavailable while the draft remains reviewable.
+These tests prove the preview and approval boundary only. They do not prove a
+real insertion, clipboard operation, window non-activation across Windows UI
+frameworks, or full Compose caller path.
+
 ### Global Dictation session ownership
 
 Use a test build where only Global Dictation is build-available, grant only its
