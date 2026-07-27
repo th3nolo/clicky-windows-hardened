@@ -119,6 +119,23 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             } <= called | staged
         )
 
+    def test_microphone_revocation_uses_public_session_owned_capture(self) -> None:
+        tree = ast.parse((ROOT / "packaged_self_test.py").read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_validate_microphone_revocation"
+        )
+        methods = {
+            node.func.attr
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn("on_hotkey_press", methods)
+        self.assertNotIn("_begin_capture", methods)
+
     def test_distribution_hashes_bracket_all_packaged_execution(self) -> None:
         tree = ast.parse(
             (ROOT / "tools" / "windows_runtime_validation.py").read_text(

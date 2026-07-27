@@ -138,6 +138,7 @@ def _validate_microphone_revocation() -> dict[str, object]:
             self.mode = "standby"
             self.buffer = []
             self.cancel_count = 0
+            self.capture_id = None
 
         def start(self):
             self.running = True
@@ -145,19 +146,36 @@ def _validate_microphone_revocation() -> dict[str, object]:
         def stop(self):
             self.running = False
 
-        def start_recording(self):
+        def start_recording(self, capture_id=None, on_frame=None):
+            if self.capture_id is not None:
+                return False
             self.mode = "recording"
             self.buffer = [b"synthetic speech"]
+            self.capture_id = capture_id
+            if on_frame is not None:
+                on_frame(b"synthetic speech")
+            return True
 
-        def stop_recording(self):
+        def stop_recording(self, capture_id=None):
+            if self.capture_id is None:
+                return b"" if capture_id is None else None
+            if capture_id is not None and capture_id != self.capture_id:
+                return None
             self.mode = "standby"
             self.buffer = []
+            self.capture_id = None
             return b""
 
-        def cancel_recording(self):
+        def cancel_recording(self, capture_id=None):
+            if self.capture_id is None:
+                return False
+            if capture_id is not None and capture_id != self.capture_id:
+                return False
             self.cancel_count += 1
             self.mode = "standby"
             self.buffer = []
+            self.capture_id = None
+            return True
 
         def set_wake_word_enabled(self, _enabled):
             return None
@@ -172,7 +190,7 @@ def _validate_microphone_revocation() -> dict[str, object]:
     try:
         manager = companion_manager.CompanionManager()
         manager.refresh_privacy_permissions()
-        manager._begin_capture()
+        manager.on_hotkey_press()
         _require(manager._listener.mode == "recording", "packaged manager did not record")
         cfg.set_privacy_permissions(
             microphone=False, cloud_tts=True, screen_capture=True,
