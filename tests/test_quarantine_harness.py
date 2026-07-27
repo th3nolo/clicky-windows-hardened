@@ -638,6 +638,47 @@ class CiphertextAndWorkflowTests(unittest.TestCase):
             verifier,
         )
 
+    def test_vendor_submission_export_is_public_key_only_and_fail_closed(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ephemeral-windows-security.yml").read_text(
+            encoding="utf-8"
+        )
+        build = workflow.split("  build-runtime:", 1)[1].split("  verify-evidence:", 1)[0]
+        vendor_upload = workflow.split(
+            "- name: Upload the encrypted vendor-submission sample", 1
+        )[1].split("- name: Remove local plaintext and ciphertext", 1)[0]
+
+        self.assertIn("export_for_vendor_submission:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn(
+            "VENDOR_EXPORT_TARGET_SHA: d8a6a8c462a2c7a70577a17a27a05d9dbafd4504",
+            workflow,
+        )
+        self.assertNotIn("secrets.", build)
+        self.assertIn(
+            'if ("${{ inputs.export_for_vendor_submission }}" -ceq "true" -and',
+            build,
+        )
+        self.assertIn("vendor export must contain exactly one entry", build)
+        self.assertIn("vendor export is not an age ciphertext", build)
+        self.assertIn(
+            "path: ${{ runner.temp }}/clicky-ciphertext/clicky-executable.exe.age",
+            vendor_upload,
+        )
+        self.assertNotIn("*", vendor_upload)
+        self.assertIn("retention-days: 1", vendor_upload)
+        self.assertIn(
+            "if: ${{ !inputs.export_for_vendor_submission && needs.build-runtime.result == 'success' }}",
+            workflow,
+        )
+        self.assertIn(
+            "if: ${{ !inputs.export_for_vendor_submission && needs.verify-evidence.result == 'success' }}",
+            workflow,
+        )
+        self.assertIn(
+            "if: ${{ always() && !inputs.export_for_vendor_submission }}",
+            workflow,
+        )
+
     def test_action_allowlist_matches_workflow(self) -> None:
         policy = (ROOT / "tools" / "check_dependency_policy.py").read_text(encoding="utf-8")
         self.assertIn("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", policy)

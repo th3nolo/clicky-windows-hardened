@@ -11,6 +11,11 @@ on:
         description: One-time ssh-ed25519 or ssh-rsa public key for age encryption
         required: true
         type: string
+      export_for_vendor_submission:
+        description: Retain only encrypted Clicky.exe for vendor false-positive submission
+        required: true
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -42,6 +47,8 @@ env:
   GIT_CONFIG_VALUE_3: ""
   INPUT_TARGET_SHA: ${{ inputs.target_sha }}
   QUARANTINE_ARTIFACT: clicky-quarantine-${{ github.run_id }}-${{ github.run_attempt }}
+  VENDOR_EXPORT_ARTIFACT: clicky-vendor-sample-${{ github.run_id }}-${{ github.run_attempt }}
+  VENDOR_EXPORT_TARGET_SHA: d8a6a8c462a2c7a70577a17a27a05d9dbafd4504
 
 jobs:
   build-runtime:
@@ -75,9 +82,14 @@ jobs:
 
       - name: Validate trusted context and recipient
         shell: pwsh
-        run: >-
-          python trusted/tools/quarantine_harness.py validate-context
-          --recipient-output "$env:RUNNER_TEMP\age-recipient.txt"
+        run: |
+          python trusted/tools/quarantine_harness.py validate-context `
+            --recipient-output "$env:RUNNER_TEMP\age-recipient.txt"
+          if ($LASTEXITCODE -ne 0) { throw "trusted context validation failed" }
+          if ("${{ inputs.export_for_vendor_submission }}" -ceq "true" -and
+              $env:INPUT_TARGET_SHA -cne $env:VENDOR_EXPORT_TARGET_SHA) {
+            throw "vendor export is restricted to the reviewed source-only merge"
+          }
 
       - name: Capture the trusted harness identity before candidate execution
         shell: pwsh
@@ -276,21 +288,24 @@ jobs:
           $cipher = "$env:RUNNER_TEMP\clicky-ciphertext"
           New-Item -ItemType Directory -Path $cipher -ErrorAction Stop | Out-Null
           Assert-AgeIdentity
-          & $age -R $recipient -o "$cipher\clicky-source.zip.age" "$plain\clicky-source.zip"
-          if ($LASTEXITCODE -ne 0) { throw "age failed for source archive" }
-          Assert-AgeIdentity
-          & $age -R $recipient -o "$cipher\clicky-full-dist.zip.age" "$plain\clicky-full-dist.zip"
-          if ($LASTEXITCODE -ne 0) { throw "age failed for distribution archive" }
-          Assert-AgeIdentity
           & $age -R $recipient -o "$cipher\clicky-executable.exe.age" "$plain\clicky-executable.exe"
           if ($LASTEXITCODE -ne 0) { throw "age failed for executable" }
-          Assert-AgeIdentity
-          & $age -R $recipient -o "$cipher\clicky-runtime-evidence.zip.age" "$plain\clicky-runtime-evidence.zip"
-          if ($LASTEXITCODE -ne 0) { throw "age failed for runtime evidence" }
+          if ("${{ inputs.export_for_vendor_submission }}" -cne "true") {
+            Assert-AgeIdentity
+            & $age -R $recipient -o "$cipher\clicky-source.zip.age" "$plain\clicky-source.zip"
+            if ($LASTEXITCODE -ne 0) { throw "age failed for source archive" }
+            Assert-AgeIdentity
+            & $age -R $recipient -o "$cipher\clicky-full-dist.zip.age" "$plain\clicky-full-dist.zip"
+            if ($LASTEXITCODE -ne 0) { throw "age failed for distribution archive" }
+            Assert-AgeIdentity
+            & $age -R $recipient -o "$cipher\clicky-runtime-evidence.zip.age" "$plain\clicky-runtime-evidence.zip"
+            if ($LASTEXITCODE -ne 0) { throw "age failed for runtime evidence" }
+          }
           Assert-AgeIdentity
           Remove-Item -LiteralPath $plain -Recurse -Force
 
       - name: Prove the upload directory is ciphertext-only and bounded
+        if: ${{ !inputs.export_for_vendor_submission }}
         shell: pwsh
         run: |
           function Assert-TrustedHarness {
@@ -302,11 +317,58 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ciphertext boundary verification failed" }
           Assert-TrustedHarness
 
+      - name: Prove the vendor upload contains one bounded ciphertext
+        if: ${{ inputs.export_for_vendor_submission }}
+        shell: pwsh
+        run: |
+          $cipher = "$env:RUNNER_TEMP\clicky-ciphertext"
+          $entries = @(Get-ChildItem -LiteralPath $cipher -Force)
+          if ($entries.Count -ne 1) { throw "vendor export must contain exactly one entry" }
+          $entry = $entries[0]
+          if ($entry.Name -cne "clicky-executable.exe.age") {
+            throw "vendor export contains an unexpected filename"
+          }
+          if ($entry.PSIsContainer -or $entry.LinkType -or
+              ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "vendor export is not a plain ciphertext file"
+          }
+          if ($entry.Length -le 0 -or $entry.Length -gt 134217728) {
+            throw "vendor ciphertext size is outside the reviewed bound"
+          }
+          $stream = [IO.File]::OpenRead($entry.FullName)
+          try {
+            $header = [byte[]]::new(22)
+            if ($stream.Read($header, 0, $header.Length) -ne $header.Length) {
+              throw "vendor ciphertext header is truncated"
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $magic = [Text.Encoding]::ASCII.GetString($header)
+          if (-not $magic.StartsWith("age-encryption.org/v1")) {
+            throw "vendor export is not an age ciphertext"
+          }
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.FullName).Hash.ToLowerInvariant()
+          Write-Output "VENDOR_CIPHERTEXT_SHA256=$digest"
+
       - name: Upload only encrypted quarantine files
+        if: ${{ !inputs.export_for_vendor_submission }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.QUARANTINE_ARTIFACT }}
           path: ${{ runner.temp }}/clicky-ciphertext/*.age
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Upload the encrypted vendor-submission sample
+        if: ${{ inputs.export_for_vendor_submission }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.VENDOR_EXPORT_ARTIFACT }}
+          path: ${{ runner.temp }}/clicky-ciphertext/clicky-executable.exe.age
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -329,6 +391,7 @@ jobs:
   verify-evidence:
     name: Verify evidence (age key only)
     needs: build-runtime
+    if: ${{ !inputs.export_for_vendor_submission && needs.build-runtime.result == 'success' }}
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
@@ -442,6 +505,7 @@ jobs:
   scan-exact-files:
     name: Scan exact opaque files (age and VT keys)
     needs: verify-evidence
+    if: ${{ !inputs.export_for_vendor_submission && needs.verify-evidence.result == 'success' }}
     runs-on: windows-2022
     timeout-minutes: 110
     permissions:
@@ -560,7 +624,7 @@ jobs:
 
   cleanup-artifact:
     name: Delete encrypted artifact
-    if: always()
+    if: ${{ always() && !inputs.export_for_vendor_submission }}
     needs:
       - build-runtime
       - verify-evidence
