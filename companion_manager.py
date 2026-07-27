@@ -503,7 +503,9 @@ class CompanionManager(QObject):
                 )
             elif provider == "openai":
                 from audio.stt.openai_stt import OpenAISTT
-                self._stt = OpenAISTT()
+                self._stt = OpenAISTT(
+                    vocabulary=cfg.transcription_vocabulary
+                )
             elif provider == "whisper_cpp":
                 from audio.stt.whisper_cpp_stt import WhisperCppSTT
                 self._stt = WhisperCppSTT()
