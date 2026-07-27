@@ -27,11 +27,33 @@ for /f "delims=" %%F in ('dir /b /a "%OUTPUT%" 2^>nul') do (
 )
 > "%LOG%" echo Clicky Windows Sandbox validation started
 
-for %%F in (clicky-source.zip source-commit.txt source-archive-sha256.txt uv.exe uv-sha256.txt python-runtime.zip python-runtime-sha256.txt windows-sandbox-validate.cmd) do (
+for %%F in (clicky-source.zip source-commit.txt source-archive-sha256.txt release-mode.txt uv.exe uv-sha256.txt python-runtime.zip python-runtime-sha256.txt windows-sandbox-validate.cmd) do (
     if not exist "%INPUT%\%%F" (
         >> "%LOG%" echo [FAIL] Required reviewed input is missing: %%F
         goto :finish
     )
+)
+
+set /p RELEASE_MODE=<"%INPUT%\release-mode.txt"
+if /I not "!RELEASE_MODE!"=="local" (
+    if /I not "!RELEASE_MODE!"=="store" (
+        >> "%LOG%" echo [FAIL] Release mode must be local or store.
+        goto :finish
+    )
+)
+set /p EXPECTED_SOURCE_COMMIT=<"%INPUT%\source-commit.txt"
+echo !EXPECTED_SOURCE_COMMIT!| findstr.exe /R /X "[0-9a-f][0-9a-f]*" >nul
+if errorlevel 1 (
+    >> "%LOG%" echo [FAIL] Source commit format is invalid.
+    goto :finish
+)
+if "!EXPECTED_SOURCE_COMMIT:~39,1!"=="" (
+    >> "%LOG%" echo [FAIL] Source commit is not 40 characters.
+    goto :finish
+)
+if not "!EXPECTED_SOURCE_COMMIT:~40,1!"=="" (
+    >> "%LOG%" echo [FAIL] Source commit is not 40 characters.
+    goto :finish
 )
 
 set "ACTUAL_SOURCE_SHA256="
@@ -169,12 +191,36 @@ if errorlevel 1 goto :finish
 "%UV%" run --frozen --no-sync --python "%PYTHON%" python -W error -m compileall -q ai audio screen skills tools ui companion_manager.py config.py main.py packaged_self_test.py >> "%LOG%" 2>&1
 if errorlevel 1 goto :finish
 
->> "%LOG%" echo [5/7] Building unsigned local-test artifact
+>> "%LOG%" echo [5/7] Building unsigned !RELEASE_MODE! artifact
 call build.bat >> "%LOG%" 2>&1
 if errorlevel 1 goto :finish
+if /I "!RELEASE_MODE!"=="store" (
+    if not exist "%WORK%\dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (
+        >> "%LOG%" echo [FAIL] Local marker is missing before Store conversion.
+        goto :finish
+    )
+    if exist "%WORK%\dist\Clicky\UNSIGNED-STORE-SUBMISSION-INPUT.txt" (
+        >> "%LOG%" echo [FAIL] Store marker unexpectedly exists before conversion.
+        goto :finish
+    )
+    if exist "%WORK%\dist\Clicky\SOURCE-COMMIT.txt" (
+        >> "%LOG%" echo [FAIL] Source marker unexpectedly exists before conversion.
+        goto :finish
+    )
+    copy /y "%WORK%\packaging\UNSIGNED-STORE-SUBMISSION-INPUT.txt" "%WORK%\dist\Clicky\UNSIGNED-STORE-SUBMISSION-INPUT.txt" >nul
+    if errorlevel 1 goto :finish
+    copy /y "%INPUT%\source-commit.txt" "%WORK%\dist\Clicky\SOURCE-COMMIT.txt" >nul
+    if errorlevel 1 goto :finish
+    del /q "%WORK%\dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt"
+    if errorlevel 1 goto :finish
+)
 
 >> "%LOG%" echo [6/7] Running Windows runtime controls
-"%UV%" run --frozen --no-sync --python "%PYTHON%" python tools\windows_runtime_validation.py --output "%OUTPUT%\runtime-validation.json" --distribution-archive "%OUTPUT%\clicky-unsigned-onedir.zip" --executable-copy "%OUTPUT%\Clicky-unsigned.exe" >> "%LOG%" 2>&1
+if /I "!RELEASE_MODE!"=="store" (
+    "%UV%" run --frozen --no-sync --python "%PYTHON%" python tools\windows_runtime_validation.py --release-kind store --source-commit "!EXPECTED_SOURCE_COMMIT!" --output "%OUTPUT%\runtime-validation.json" --distribution-archive "%OUTPUT%\clicky-unsigned-onedir.zip" --executable-copy "%OUTPUT%\Clicky-unsigned.exe" >> "%LOG%" 2>&1
+) else (
+    "%UV%" run --frozen --no-sync --python "%PYTHON%" python tools\windows_runtime_validation.py --release-kind local --output "%OUTPUT%\runtime-validation.json" --distribution-archive "%OUTPUT%\clicky-unsigned-onedir.zip" --executable-copy "%OUTPUT%\Clicky-unsigned.exe" >> "%LOG%" 2>&1
+)
 if errorlevel 1 goto :finish
 
 >> "%LOG%" echo [7/7] Recording source and artifact identity

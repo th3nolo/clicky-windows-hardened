@@ -1,0 +1,6 @@
+MICROSOFT STORE SUBMISSION INPUT
+
+This unsigned inner onedir is not an independently distributable release.
+Preserve these exact bytes as the input to the outer Store MSIX.
+Release authenticity is established only by the exact Store-delivered
+package and its independently verified package signature.

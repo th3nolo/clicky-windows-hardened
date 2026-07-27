@@ -164,9 +164,10 @@ commit-bound onedir that is only an input to future Microsoft Store packaging.
 Unsigned executables, onedir trees, and MSIX packages must not be distributed or
 sideloaded.
 
-A future release requires a completed Windows Sandbox runtime gate, passing
-post-run host verification, and exact-hash static scans of the commit-bound
-source archive, exported full distribution, and exported executable with
+A future release requires the final onedir to be built once by the reviewed
+Windows Sandbox `-StoreReleaseCandidate` path, passing post-run host
+verification, and exact-hash static scans of the commit-bound source archive,
+exported full distribution, and exported executable with
 Malwarebytes and VirusTotal. Any malicious or suspicious verdict blocks release;
 unsupported engines and scan failures must be recorded as non-votes rather than
 hidden by repackaging the artifact.

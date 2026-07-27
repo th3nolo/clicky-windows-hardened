@@ -590,7 +590,10 @@ class BatchCommand:
 # security review of the complete diff. Update this digest in the same reviewed
 # commit; never change it only to make CI pass.
 EXPECTED_BUILD_SCRIPT_SHA256 = (
-    "8fc1a1421e3ac783a842fbef0e8af3300b0f471a5542e8f2de97ac07c8d0ede2"
+    "6c28f0292aa98487a853e201c38d0556466f804c237d7e0dacf51528afbcb5f7"
+)
+EXPECTED_STORE_MARKER_SHA256 = (
+    "313db1ba95e3dd039f63f7e786c3de6e1090499f53051515893781d36652191d"
 )
 
 
@@ -1386,9 +1389,21 @@ def check_packaging_policy() -> None:
             fail(f"build.bat is missing Store input gate: {fragment}")
 
     manifest_template = ROOT / "packaging" / "AppxManifest.xml.in"
+    store_marker_template = (
+        ROOT / "packaging" / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+    )
     msix_tool = ROOT / "tools" / "build_msix.py"
-    if not manifest_template.is_file() or not msix_tool.is_file():
-        fail("reviewed MSIX template and packaging tool are required")
+    if (
+        not manifest_template.is_file()
+        or not store_marker_template.is_file()
+        or not msix_tool.is_file()
+    ):
+        fail("reviewed MSIX templates and packaging tool are required")
+    if (
+        hashlib.sha256(store_marker_template.read_bytes()).hexdigest()
+        != EXPECTED_STORE_MARKER_SHA256
+    ):
+        fail("Store input marker must retain its exact reviewed text")
     manifest_text = manifest_template.read_text(encoding="utf-8")
     for fragment in (
         "{{IDENTITY_NAME}}",

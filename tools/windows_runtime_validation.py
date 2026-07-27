@@ -3,7 +3,7 @@
 This script uses synthetic data and never requires real credentials, audio, or
 screen content. Run it only inside the reviewed Windows Sandbox launcher or the
 trusted GitHub-hosted workflow after the frozen environment and unsigned local-
-test build have been created.
+test or Store-input build has been created.
 """
 
 from __future__ import annotations
@@ -39,6 +39,10 @@ from validation_boundary import require_disposable_windows_boundary
 CRASH_EXIT_CODE = 73
 _EDGE_TTS_HOST = "speech.platform.bing.com"
 _VIRUSTOTAL_MAX_FILE_BYTES = 650_000_000
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_STORE_MARKER_TEMPLATE = (
+    ROOT / "packaging" / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -736,11 +740,55 @@ def _authenticode_status(executable: Path) -> dict[str, object]:
     return payload
 
 
-def _validate_unsigned_application(root: Path) -> dict[str, object]:
+def _validate_release_markers(
+    distribution: Path,
+    *,
+    release_kind: str,
+    source_commit: str | None,
+) -> None:
+    local_marker = distribution / "UNSIGNED-LOCAL-TEST-ONLY.txt"
+    store_marker = distribution / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+    commit_marker = distribution / "SOURCE-COMMIT.txt"
+    if release_kind == "local":
+        _require(source_commit is None, "local validation forbids a source commit")
+        _require(local_marker.is_file(), "unsigned local-test marker is missing")
+        _require(
+            not store_marker.exists() and not commit_marker.exists(),
+            "local artifact contains Store release markers",
+        )
+        return
+    _require(release_kind == "store", "unsupported release kind")
+    _require(
+        source_commit is not None
+        and _COMMIT_RE.fullmatch(source_commit) is not None,
+        "Store validation requires the exact source commit",
+    )
+    _require(not local_marker.exists(), "Store input retains the local-test marker")
+    _require(store_marker.is_file(), "unsigned Store-input marker is missing")
+    _require(
+        store_marker.read_bytes() == _STORE_MARKER_TEMPLATE.read_bytes(),
+        "Store-input marker differs from the reviewed text",
+    )
+    _require(commit_marker.is_file(), "Store source-commit marker is missing")
+    _require(
+        commit_marker.read_text(encoding="ascii").strip() == source_commit,
+        "Store source-commit marker differs from the requested commit",
+    )
+
+
+def _validate_unsigned_application(
+    root: Path,
+    *,
+    release_kind: str,
+    source_commit: str | None,
+) -> dict[str, object]:
     executable = ROOT / "dist" / "Clicky" / "Clicky.exe"
     _require(executable.is_file(), "PyInstaller did not produce Clicky.exe")
-    marker = executable.parent / "UNSIGNED-LOCAL-TEST-ONLY.txt"
-    _require(marker.is_file(), "unsigned local-test marker is missing")
+    _validate_release_markers(
+        executable.parent,
+        release_kind=release_kind,
+        source_commit=source_commit,
+    )
     _require(
         (executable.parent / "_internal" / "skills" / "manifest.json").is_file(),
         "bundled skill integrity manifest is missing from the application",
@@ -1098,7 +1146,14 @@ def _export_distribution(
     }
 
 
-def run(output: Path, archive_output: Path, executable_output: Path) -> None:
+def run(
+    output: Path,
+    archive_output: Path,
+    executable_output: Path,
+    *,
+    release_kind: str = "local",
+    source_commit: str | None = None,
+) -> None:
     _require(os.name == "nt", "Windows runtime validation requires Windows")
     boundary = require_disposable_windows_boundary()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1109,7 +1164,11 @@ def run(output: Path, archive_output: Path, executable_output: Path) -> None:
         audio_crash_cleanup = _validate_crash_cleanup(root)
         privacy_controls = _validate_privacy_controls(root)
         dpapi = _validate_dpapi()
-        unsigned_application = _validate_unsigned_application(root)
+        unsigned_application = _validate_unsigned_application(
+            root,
+            release_kind=release_kind,
+            source_commit=source_commit,
+        )
         post_execution = _tree_identity(distribution)
         _require(
             post_execution == pristine,
@@ -1131,6 +1190,8 @@ def run(output: Path, archive_output: Path, executable_output: Path) -> None:
         report = {
             "python": sys.version,
             "executable": sys.executable,
+            "release_kind": release_kind,
+            "source_commit": source_commit,
             "runtime_boundary": boundary,
             "audio_crash_cleanup": audio_crash_cleanup,
             "privacy_controls": privacy_controls,
@@ -1159,6 +1220,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--distribution-archive", type=Path)
     parser.add_argument("--executable-copy", type=Path)
+    parser.add_argument("--release-kind", choices=("local", "store"), default="local")
+    parser.add_argument("--source-commit")
     parser.add_argument("--crash-child", nargs=2, metavar=("DATA_DIR", "MARKER"))
     parser.add_argument("--cleanup-child", metavar="DATA_DIR")
     args = parser.parse_args()
@@ -1174,7 +1237,13 @@ def main() -> int:
         parser.error("--distribution-archive is required")
     if args.executable_copy is None:
         parser.error("--executable-copy is required")
-    run(args.output, args.distribution_archive, args.executable_copy)
+    run(
+        args.output,
+        args.distribution_archive,
+        args.executable_copy,
+        release_kind=args.release_kind,
+        source_commit=args.source_commit,
+    )
     return 0
 
 

@@ -9,7 +9,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$GitExe,
 
-    [string]$OutputRoot
+    [string]$OutputRoot,
+
+    [switch]$StoreReleaseCandidate
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,6 +142,7 @@ $commit = (& $GitExe @gitBase rev-parse --verify "HEAD^{commit}").ToString().Tri
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch "^[0-9a-f]{40}$") {
     throw "Could not resolve the exact source commit."
 }
+$releaseMode = if ($StoreReleaseCandidate) { "store" } else { "local" }
 
 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
 $finalRunRoot = Join-Path $outputRootPath "windows-sandbox-$timestamp-$($commit.Substring(0, 12))"
@@ -183,6 +186,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $inputDirectory "source-archive-sha256.txt"), "$sourceHash`n", $ascii)
     [IO.File]::WriteAllText((Join-Path $inputDirectory "uv-sha256.txt"), "$ExpectedUvSha256`n", $ascii)
     [IO.File]::WriteAllText((Join-Path $inputDirectory "python-runtime-sha256.txt"), "$ExpectedPythonRuntimeSha256`n", $ascii)
+    [IO.File]::WriteAllText((Join-Path $inputDirectory "release-mode.txt"), "$releaseMode`n", $ascii)
 
     $finalInputDirectory = Join-Path $finalRunRoot "input"
     $finalResultsDirectory = Join-Path $finalRunRoot "results"
@@ -229,6 +233,7 @@ Write-Output "Commit: $commit"
 Write-Output "Source archive SHA-256: $sourceHash"
 Write-Output "uv SHA-256: $ExpectedUvSha256"
 Write-Output "Python runtime SHA-256: $ExpectedPythonRuntimeSha256"
+Write-Output "Release mode: $releaseMode"
 Write-Output "Results directory: $(Join-Path $finalRunRoot "results")"
 Write-Output "Sandbox configuration: $(Join-Path $finalRunRoot "clicky-hardened-validation.wsb")"
 } finally {

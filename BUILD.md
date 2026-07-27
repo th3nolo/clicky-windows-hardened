@@ -22,8 +22,8 @@ Run from a normal, non-administrator PowerShell or Command Prompt:
 build.bat
 ~~~
 
-That command is local-test-only. After every source change is committed and the
-worktree is clean, create the one immutable Store input exactly once with:
+That command is local-test-only. `store-rc` is the clean-tree, commit-bound
+manual construction entry point:
 
 ~~~bat
 build.bat store-rc
@@ -34,6 +34,13 @@ records the exact 40-character commit in `SOURCE-COMMIT.txt` and writes
 `UNSIGNED-STORE-SUBMISSION-INPUT.txt`. Preserve that complete `dist\Clicky`
 directory. Do not rebuild it between runtime validation, static scanning,
 adjudication, MSIX packaging, and Store submission.
+
+The actual release-bound candidate must be built once inside the reviewed
+Windows Sandbox flow using `prepare-windows-sandbox.ps1
+-StoreReleaseCandidate`. That path builds from the authenticated commit archive,
+applies the same exact Store marker and commit binding before packaged execution,
+validates the resulting tree, and exports it once. Do not run `build.bat
+store-rc` again after that exported candidate exists.
 
 The script performs these operations:
 

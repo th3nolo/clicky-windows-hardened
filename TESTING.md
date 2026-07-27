@@ -96,8 +96,13 @@ $gitExe = "C:\Program Files\Git\cmd\git.exe"
 .\tools\prepare-windows-sandbox.ps1 `
   -PythonRuntimeArchive $pythonArchive `
   -UvExe $uvExe `
-  -GitExe $gitExe
+  -GitExe $gitExe `
+  -StoreReleaseCandidate
 ~~~
+
+`-StoreReleaseCandidate` is mandatory for the one release-bound build. It
+records `store` in the authenticated read-only input. Omit it only for a
+disposable local smoke-validation run that cannot become Store input.
 
 The preparer refuses inherited `GIT_*` variables, executable FSMonitor configuration, replace refs, grafts, object alternates, a dirty tree, or any hook path other than the repository-local `NUL`. It verifies Git objects, runs replacement-disabled commands through the authenticated absolute Git path, archives the exact HEAD commit, and extracts the bootstrap bytes from that archive. Preparation occurs in a temporary directory and is atomically published only after every check passes.
 
@@ -115,7 +120,7 @@ Launching the generated configuration disables vGPU, host microphone and camera 
 
 The fresh results directory is the only writable host mapping. The bootstrap and host verifier enforce an exact bounded result-file allowlist and reject reparse points and oversized evidence. Windows Sandbox mapped folders do not provide a per-folder disk quota, so a compromised process could still attempt to consume free space before shutdown. Ensure adequate free space and monitor the disposable run; this is a documented residual containment limitation.
 
-Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, and complete Python archive hashes before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; builds the unsigned PyInstaller directory; and runs `tools/windows_runtime_validation.py`. After the runtime controls pass, the harness exports a deterministic archive of the complete distribution and an exact copy of the executable for separate host-side static scanning. The runtime harness verifies:
+Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv, complete Python archive, requested release mode, and exact commit before the first candidate execution; extracts the runtime and source; confirms the bootstrap is byte-identical to the archived script; validates the lock; verifies the commit-tracked CA bundle before passing it explicitly to the live PyPI provenance check; installs only frozen wheels; runs tests and compilation; and builds the unsigned PyInstaller directory. In Store mode it replaces the local-only marker with the exact reviewed Store-input marker and commit file before any packaged execution. `tools/windows_runtime_validation.py` then rejects a missing, mixed, stale, or mismatched release identity. After the runtime controls pass, the harness exports a deterministic archive of that exact unchanged distribution and an exact copy of the executable for separate host-side static scanning. The runtime harness verifies:
 
 - source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
 - denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled

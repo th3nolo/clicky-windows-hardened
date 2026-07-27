@@ -181,13 +181,10 @@ if not defined CLICKY_SHA256 (
 > "dist\Clicky\SHA256SUMS.txt" echo !CLICKY_SHA256!  Clicky.exe
 if /I "%BUILD_MODE%"=="store-rc" (
     > "dist\Clicky\SOURCE-COMMIT.txt" echo !SOURCE_COMMIT!
-    > "dist\Clicky\UNSIGNED-STORE-SUBMISSION-INPUT.txt" (
-        echo MICROSOFT STORE SUBMISSION INPUT
-        echo.
-        echo This unsigned inner onedir is not an independently distributable release.
-        echo Preserve these exact bytes as the input to the outer Store MSIX.
-        echo Release authenticity is established only by the exact Store-delivered
-        echo package and its independently verified package signature.
+    copy /y "packaging\UNSIGNED-STORE-SUBMISSION-INPUT.txt" "dist\Clicky\UNSIGNED-STORE-SUBMISSION-INPUT.txt" >nul
+    if errorlevel 1 (
+        echo [ERROR] Could not copy the reviewed Store-input marker.
+        goto :cleanup
     )
 ) else (
     > "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (

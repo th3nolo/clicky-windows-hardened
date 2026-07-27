@@ -142,10 +142,12 @@ Do not install these packages separately into the reviewed environment. Adding t
 
 ## Build and distribution
 
-`build.bat` creates an unsigned local smoke-test artifact from the frozen lock.
-After all source changes are committed, `build.bat store-rc` creates the one
-clean-tree, commit-bound onedir input for Microsoft Store MSIX packaging. It
-also records the executable SHA-256 and exports a CycloneDX SBOM.
+`build.bat` creates an unsigned local smoke-test artifact from the frozen lock,
+and `build.bat store-rc` is the clean-tree construction entry point. The actual
+release-bound onedir must be built once by the reviewed Windows Sandbox
+`-StoreReleaseCandidate` path so the authenticated commit, runtime evidence,
+exported full tree, executable SHA-256, and CycloneDX SBOM all describe the same
+immutable bytes used for Microsoft Store MSIX packaging.
 
 There is no public release. The release design uses legal publisher Manuel Parra
 and developed-by brand th3nolo, but Store packaging still requires the three

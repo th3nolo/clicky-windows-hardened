@@ -43,7 +43,16 @@ class MsixPackagingTests(unittest.TestCase):
             if store
             else "UNSIGNED-LOCAL-TEST-ONLY.txt"
         )
-        (distribution / marker).write_text("unsigned\n", encoding="utf-8")
+        if store:
+            (distribution / marker).write_bytes(
+                (
+                    Path(__file__).resolve().parents[1]
+                    / "packaging"
+                    / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+                ).read_bytes()
+            )
+        else:
+            (distribution / marker).write_text("unsigned\n", encoding="utf-8")
         return distribution
 
     def test_manifest_uses_full_trust_desktop_identity_and_brand(self):
@@ -217,6 +226,25 @@ class MsixPackagingTests(unittest.TestCase):
                     publisher_display_name="Manuel Parra",
                     version="1.2.0.0",
                     source_commit="c" * 40,
+                    validation_only=False,
+                    makeappx_sha256=MAKEAPPX_SHA256,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            distribution = self.make_distribution(root, store=True)
+            (
+                distribution / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+            ).write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(MsixPackagingError, "reviewed text"):
+                prepare_staging(
+                    distribution=distribution,
+                    staging=root / "tampered-stage",
+                    identity_name="Partner.Clicky",
+                    publisher="CN=Manuel Parra",
+                    publisher_display_name="Manuel Parra",
+                    version="1.2.0.0",
+                    source_commit=COMMIT,
                     validation_only=False,
                     makeappx_sha256=MAKEAPPX_SHA256,
                 )

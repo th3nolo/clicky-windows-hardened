@@ -416,6 +416,13 @@ class PackagingPolicyTests(unittest.TestCase):
             (root / "packaging" / "AppxManifest.xml.in").write_bytes(
                 (ROOT / "packaging" / "AppxManifest.xml.in").read_bytes()
             )
+            (root / "packaging" / "UNSIGNED-STORE-SUBMISSION-INPUT.txt").write_bytes(
+                (
+                    ROOT
+                    / "packaging"
+                    / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+                ).read_bytes()
+            )
             (root / "tools").mkdir()
             (root / "tools" / "build_msix.py").write_bytes(
                 (ROOT / "tools" / "build_msix.py").read_bytes()
