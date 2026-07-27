@@ -107,7 +107,13 @@ message; response content is not sent to that fallback and barge-in cancels it.
   image-input support, and sends no conversation history, clipboard, document,
   web, or destination-identity data. Its bounded result contains plain draft
   text and content-free provenance only; it has no insertion, send, submit,
-  click, or run authority. The baseline build flag remains unavailable.
+  click, or run authority. Its non-activating preview retains the remembered
+  target lease, names the destination application, provider, writing profile,
+  and character count, and offers only Insert, Copy, Regenerate, and Cancel.
+  Insert creates a one-use typed approval only after target revalidation; the
+  preview itself imports no insertion or clipboard implementation. Cancel,
+  close, and expiry clear the draft without requesting an action. The baseline
+  build flag remains unavailable.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.
