@@ -56,6 +56,7 @@ class TrayManager(QObject):
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
+    on_set_transcription_vocabulary = pyqtSignal(list)
     on_set_response_language = pyqtSignal(str)  # "" = auto-detect, else ISO code
     on_set_custom_instructions = pyqtSignal(str)
 
@@ -271,6 +272,8 @@ class TrayManager(QObject):
         setup_menu = menu.addMenu("Setup && Diagnostics")
         self._build_mic_submenu(setup_menu)
         self._build_stt_submenu(setup_menu, providers)
+        vocabulary = setup_menu.addAction("Transcription vocabulary…")
+        vocabulary.triggered.connect(self._prompt_transcription_vocabulary)
         privacy_permissions = setup_menu.addAction("Privacy permissions…")
         privacy_permissions.triggered.connect(self.on_privacy_permissions)
         run_setup = setup_menu.addAction("Run setup wizard again…")
@@ -353,6 +356,70 @@ class TrayManager(QObject):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._custom_instructions = editor.toPlainText().strip()
             self.on_set_custom_instructions.emit(self._custom_instructions)
+
+    def _prompt_transcription_vocabulary(self):
+        from audio.stt.vocabulary import (
+            MAX_TERM_CHARACTERS,
+            MAX_USER_TERMS,
+            SHIPPED_TERMS,
+        )
+
+        dialog = QDialog(None)
+        dialog.setWindowTitle("Transcription vocabulary")
+        dialog.setMinimumSize(500, 390)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #1e1e24; }
+            QLabel { color: #e8e8ec; font-size: 13px; }
+            QTextEdit {
+                background-color: #26262e; color: #f0f0f4;
+                border: 1px solid #3a3a44; border-radius: 8px;
+                padding: 10px; font-size: 13px;
+            }
+            QPushButton {
+                background-color: #3a3a44; color: #f0f0f4;
+                border: none; border-radius: 6px; padding: 8px 18px;
+            }
+            QPushButton#primary { background-color: #7c5cff; }
+        """)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 16)
+        title = QLabel("Approved transcription terms")
+        title.setStyleSheet("font-size: 15px; font-weight: 600; color: #ffffff;")
+        layout.addWidget(title)
+        explanation = QLabel(
+            "Enter one term or short phrase per line. Saving explicitly "
+            "approves these terms for supporting speech providers only. "
+            "Clicky never derives terms from windows, screenshots, clipboard, "
+            "documents, or conversations.\n\n"
+            f"Shipped term: {', '.join(SHIPPED_TERMS)}. "
+            f"Maximum {MAX_USER_TERMS} custom terms and "
+            f"{MAX_TERM_CHARACTERS} characters per term."
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("color: #a8a8b4; font-size: 12px;")
+        layout.addWidget(explanation)
+        editor = QTextEdit()
+        editor.setAcceptRichText(False)
+        editor.document().setMaximumBlockCount(MAX_USER_TERMS + 1)
+        editor.setPlainText("\n".join(cfg.transcription_vocabulary))
+        layout.addWidget(editor, stretch=1)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(dialog.reject)
+        save = QPushButton("Save approved terms")
+        save.setObjectName("primary")
+        save.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            terms = [
+                line
+                for line in editor.toPlainText().splitlines()
+                if line.strip()
+            ]
+            self.on_set_transcription_vocabulary.emit(terms)
 
     def _build_language_submenu(self, parent_menu: QMenu):
         """Lets the user pin Clicky's reply language instead of relying on

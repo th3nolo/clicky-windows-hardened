@@ -26,6 +26,7 @@ from audio.stt.streaming import (
     StreamingSTTState,
     TranscriptCallback,
 )
+from audio.stt.vocabulary import approved_vocabulary
 
 
 DEEPGRAM_STREAMING_URL = "wss://api.deepgram.com/v1/listen"
@@ -43,25 +44,6 @@ RECEIVE_TIMEOUT_SECONDS = 12.0
 FINALIZE_TIMEOUT_SECONDS = 8.0
 CLOSE_TIMEOUT_SECONDS = 3.0
 _QUEUE_END = object()
-
-
-def sanitize_vocabulary(terms: Sequence[str]) -> tuple[str, ...]:
-    """Return bounded, printable, deduplicated terms for provider prompting."""
-
-    clean: list[str] = []
-    seen: set[str] = set()
-    for value in terms[:64]:
-        if not isinstance(value, str):
-            continue
-        term = " ".join(value.split()).strip()
-        if not term or len(term) > 64 or any(ord(char) < 32 for char in term):
-            continue
-        folded = term.casefold()
-        if folded in seen:
-            continue
-        seen.add(folded)
-        clean.append(term)
-    return tuple(clean)
 
 
 class DeepgramStreamingSession(StreamingSTTSession):
@@ -85,7 +67,7 @@ class DeepgramStreamingSession(StreamingSTTSession):
         self._api_key = api_key.strip()
         self._cloud_consent = cloud_consent is True
         self._loop = loop
-        self._vocabulary = sanitize_vocabulary(vocabulary)
+        self._vocabulary = approved_vocabulary(vocabulary)
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_error = on_error

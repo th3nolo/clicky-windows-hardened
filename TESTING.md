@@ -164,6 +164,18 @@ Use a test Deepgram account and synthetic spoken phrases. Grant microphone and c
 
 Interrupt live finalization with a new push-to-talk turn and verify the first WebSocket closes, its late partial/final messages never appear, and exactly one replacement capture owns the microphone. Exercise provider rejection, disconnect, connection/finalization timeout, and queue saturation; each must show an error without reconnecting or selecting another provider. Finally choose a labeled local-batch mode and confirm it performs no cloud-STT request.
 
+### Approved transcription vocabulary
+
+Open **Setup & Diagnostics → Transcription vocabulary**, enter a distinctive
+synthetic term, and save. Confirm the Deepgram live WebSocket and Deepgram batch
+request contain the shipped `Clicky` term plus the approved term exactly once.
+Verify OpenAI and both local STT modes receive no vocabulary parameter.
+
+Try more than 63 terms, a term longer than 64 characters, and control characters;
+confirm saving fails explicitly. Put distinctive synthetic text in a window
+title, screenshot, clipboard, attached document, and prior conversation without
+adding it in the editor. Confirm none of those values appears in any STT request.
+
 ### Push-to-talk cancellation
 
 While Clicky is thinking and again while it is speaking, press and hold the push-to-talk shortcut. Confirm the prior generation and audio stop, exactly one new capture enters Listening, rapid release/repress remains responsive, and no text, drawing, point, error, or Idle state from the cancelled turn appears afterward.

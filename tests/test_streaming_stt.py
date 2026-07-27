@@ -11,6 +11,7 @@ import aiohttp
 from yarl import URL
 
 from audio.stt import deepgram_streaming as deepgram
+from audio.stt.vocabulary import approved_vocabulary
 from audio.stt.streaming import (
     StreamingSTTCapacityError,
     StreamingSTTConsentError,
@@ -317,8 +318,8 @@ class DeepgramStreamingTests(unittest.TestCase):
     def test_vocabulary_is_sanitized_deduplicated_and_bounded(self):
         terms = [" Clicky ", "clicky", "two\n words", "x" * 65, "\x00bad"]
         terms.extend(f"term-{index}" for index in range(100))
-        clean = deepgram.sanitize_vocabulary(terms)
-        self.assertEqual(clean[:2], ("Clicky", "two words"))
+        clean = approved_vocabulary(terms)
+        self.assertEqual(clean[:2], ("Clicky", "term-0"))
         self.assertLessEqual(len(clean), 64)
         self.assertTrue(all(0 < len(term) <= 64 for term in clean))
 
