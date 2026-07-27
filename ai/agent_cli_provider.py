@@ -1,4 +1,4 @@
-"""Bounded adapters for already-installed official coding-agent CLIs.
+"""Bounded adapters for already-installed read-only response-provider CLIs.
 
 The adapters never install an executable, copy a cached login token, place
 prompts on a command line, or inherit unrelated provider secrets. Each request
@@ -59,11 +59,12 @@ def _bounded_prompt(
     system_prompt: str,
 ) -> str:
     if not isinstance(user_text, str) or not isinstance(system_prompt, str):
-        raise ValueError("Agent prompts must be text")
+        raise ValueError("Response-provider prompts must be text")
     sections = [
         system_prompt,
         (
-            "\nCODING AGENT BOUNDARY: Answer only from the supplied prompt and "
+            "\nREAD-ONLY RESPONSE PROVIDER BOUNDARY: Answer only from the "
+            "supplied prompt and "
             "attached images. Do not inspect unrelated local files, run shell "
             "commands, modify files, contact tools, or claim an action occurred."
         ),
@@ -76,13 +77,17 @@ def _bounded_prompt(
     sections.append(f"\nUSER:\n{user_text}")
     prompt = "".join(sections)
     if len(prompt) > MAX_PROMPT_CHARS:
-        raise ValueError("Agent prompt exceeds Clicky's reviewed size limit")
+        raise ValueError(
+            "Response-provider prompt exceeds Clicky's reviewed size limit"
+        )
     return prompt
 
 
 def _write_images(directory: Path, screenshots_b64: List[str]) -> list[Path]:
     if len(screenshots_b64) > MAX_SCREENSHOTS:
-        raise ValueError("Too many screenshots for one coding-agent request")
+        raise ValueError(
+            "Too many screenshots for one read-only response request"
+        )
     paths = []
     total = 0
     for index, encoded in enumerate(screenshots_b64):
@@ -230,10 +235,11 @@ def _qwen_final(event: dict) -> str:
 class AgentCLIProvider(BaseLLMProvider):
     def __init__(self, provider_id: str):
         if provider_id not in AGENT_PROVIDER_EXECUTABLES:
-            raise ValueError("Unknown coding-agent provider")
+            raise ValueError("Unknown read-only response provider")
         if not coding_agent_allowed(cfg):
             raise PermissionError(
-                "Coding-agent execution is disabled in Privacy permissions."
+                "Read-only response-provider execution is disabled in "
+                "Privacy permissions."
             )
         executable = executable_path(provider_id)
         if executable is None:
@@ -303,9 +309,13 @@ class AgentCLIProvider(BaseLLMProvider):
         model: str | None = None,
     ) -> AsyncIterator[str]:
         if not model or not valid_model_id(model):
-            raise ValueError("Select a validated coding-agent model first")
+            raise ValueError(
+                "Select a validated read-only response-provider model first"
+            )
         if self._provider_id == "codex_agent" and model != "codex-default":
-            raise ValueError("Unsupported Codex agent model selection")
+            raise ValueError(
+                "Unsupported Codex response-provider model selection"
+            )
         prompt = _bounded_prompt(user_text, history, system_prompt)
         process = None
         stderr_task = None
@@ -353,7 +363,8 @@ class AgentCLIProvider(BaseLLMProvider):
                     while True:
                         if overflow.is_set():
                             raise RuntimeError(
-                                "Coding agent exceeded its diagnostic-output limit"
+                                "Response provider exceeded its "
+                                "diagnostic-output limit"
                             )
                         try:
                             line = await asyncio.wait_for(
@@ -369,7 +380,8 @@ class AgentCLIProvider(BaseLLMProvider):
                         total_stdout += len(line)
                         if total_stdout > MAX_AGENT_STDOUT_BYTES:
                             raise RuntimeError(
-                                "Coding agent exceeded its response-output limit"
+                                "Response provider exceeded its "
+                                "response-output limit"
                             )
                         try:
                             event = json.loads(line)
@@ -393,7 +405,7 @@ class AgentCLIProvider(BaseLLMProvider):
                     await stderr_task
                 if overflow.is_set():
                     raise RuntimeError(
-                        "Coding agent exceeded its diagnostic-output limit"
+                        "Response provider exceeded its diagnostic-output limit"
                     )
                 if return_code != 0:
                     raise RuntimeError(
@@ -413,7 +425,9 @@ class AgentCLIProvider(BaseLLMProvider):
             except TimeoutError as exc:
                 if process is not None:
                     await _terminate(process)
-                raise TimeoutError("Coding agent exceeded its runtime limit") from exc
+                raise TimeoutError(
+                    "Response provider exceeded its runtime limit"
+                ) from exc
             except Exception:
                 if process is not None:
                     await _terminate(process)

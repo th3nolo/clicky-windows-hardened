@@ -1,8 +1,9 @@
 """Reviewed provider identities, endpoints, and user-facing metadata.
 
 Credentials and executable locations are deliberately not stored here. Cloud
-secrets remain process-environment inputs owned by :mod:`config`, while coding
-agents must already be installed and discoverable on PATH.
+secrets remain process-environment inputs owned by :mod:`config`, while
+read-only response-provider CLIs must already be installed and discoverable on
+PATH.
 """
 
 from __future__ import annotations
@@ -57,8 +58,8 @@ PROVIDER_LABELS = {
     "copilot": "GitHub Copilot",
     "ollama": "Ollama",
     "lmstudio": "LM Studio",
-    "codex_agent": "Codex agent",
-    "qwen_code_agent": "Qwen Code agent",
+    "codex_agent": "Codex — read-only response provider",
+    "qwen_code_agent": "Qwen Code — read-only response provider",
     **{
         provider_id: spec.label
         for provider_id, spec in OPENAI_COMPATIBLE_SPECS.items()

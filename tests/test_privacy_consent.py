@@ -184,7 +184,15 @@ class PrivacyWiringTests(unittest.TestCase):
         self.assertIn('QCheckBox("Allow cloud speech-to-text")', source)
         self.assertIn("cloud_stt=cloud_stt", source)
         self.assertIn("self.cloud_stt.isChecked()", source)
-        self.assertIn("Allow explicitly selected external coding agents", source)
+        self.assertIn(
+            "Allow Codex and Qwen Code read-only response providers",
+            source,
+        )
+        self.assertIn("These are response providers, not Task Agents.", source)
+        self.assertIn(
+            "files, run tools, or perform external actions through Clicky.",
+            source,
+        )
         self.assertIn("coding_agent=coding_agent", source)
         self.assertIn("self.coding_agent.isChecked()", source)
 

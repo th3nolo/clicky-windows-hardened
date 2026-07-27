@@ -100,20 +100,21 @@ class PrivacyConsentDialog(QDialog):
         layout.addWidget(screen_notice)
 
         self.coding_agent = QCheckBox(
-            "Allow explicitly selected external coding agents"
+            "Allow Codex and Qwen Code read-only response providers"
         )
         self.coding_agent.setChecked(bool(cfg.coding_agent_consent))
         self.coding_agent.setToolTip(
             "Allows Clicky to start an already-installed Codex or Qwen Code "
-            "process only after you select that provider and ask a question."
+            "process only to return a response after you select that provider."
         )
         layout.addWidget(self.coding_agent)
         coding_agent_notice = QLabel(
-            "Coding agents are separate local executables that can contact their "
-            "configured cloud service and may inspect files through their own "
-            "read-only tools. Clicky never installs them, copies their login "
-            "tokens, or starts them merely to discover providers. Runs use an "
-            "isolated temporary working directory and restrictive agent flags."
+            "These are response providers, not Task Agents. They can contact "
+            "their configured cloud service to return text, but cannot edit "
+            "files, run tools, or perform external actions through Clicky. "
+            "Clicky never installs them, copies their login tokens, or starts "
+            "them merely to discover providers. Runs use an isolated temporary "
+            "working directory and restrictive flags."
         )
         coding_agent_notice.setWordWrap(True)
         layout.addWidget(coding_agent_notice)
