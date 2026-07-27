@@ -196,6 +196,34 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
+### Screen-Aware Compose contract
+
+Use a test build where only Screen-Aware Compose is build-available. Grant its
+action permission but not screen capture and invoke it; confirm no capture or
+provider call occurs. Grant screen capture, select one to four synthetic
+screens, and choose a reviewed model whose cached capabilities explicitly
+include image input. Confirm capture starts only after the invocation and
+contains exactly those screens. Unknown models and text-only models must fail
+closed before capture.
+
+Focus a disposable editable destination and invoke Compose. Before capture and
+again before provider generation, switch the focused control, process, window,
+desktop, integrity level, or target policy. Confirm the operation stops without
+a provider request, destination mutation, or clipboard write. With a stable
+target, confirm the provider receives only the spoken instruction, authorized
+JPEGs, response language, output bound, destination control type, and selected
+style-profile ID. It must receive empty history and no clipboard, documents,
+web results, window title, executable identity, or unrelated Clicky state.
+
+Return a synthetic valid draft, an oversized response, action-control syntax,
+and a provider failure. Only the valid case may create a typed draft. Confirm
+the draft contains text plus content-free provenance and exposes no insertion,
+send, submit, click, run, or execute operation. All failure cases must leave the
+destination and clipboard unchanged. These checked-in tests are source-level
+contract evidence, not proof of real Windows capture or provider behavior; the
+baseline build flag remains off until the later capture, preview, and
+interactive Windows tasks pass.
+
 ### Global Dictation session ownership
 
 Use a test build where only Global Dictation is build-available, grant only its
