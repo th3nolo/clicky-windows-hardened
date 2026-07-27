@@ -85,6 +85,13 @@ message; response content is not sent to that fallback and barge-in cancels it.
   Automation runtime ID, focus, desktop, and process integrity level. Password,
   protected, read-only, disabled, sensitive, elevated, secure-desktop, Clicky,
   changed, and unverifiable targets fail closed before a commit token exists.
+  The insertion broker chooses at most one ordered adapter. UIA `SetValue`
+  requires an explicit whole-value replacement intent and exact readback;
+  Unicode input and clipboard paste are never called verified without a
+  readable postcondition. Clipboard fallback requires separate approval and
+  a Clicky-owned window handle; it restores only an unchanged, exactly
+  restorable text snapshot. Unsupported controls remain unchanged and expose a
+  one-use preview-copy action.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.

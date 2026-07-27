@@ -207,8 +207,8 @@ dictation is finalizing, start tutor push-to-talk and confirm the dictation
 session becomes cancelled and a late final transcript cannot advance toward
 insertion. Repeat with Escape during capture and finalization. Confirm no
 screenshot, LLM, style profile, web, connector, read-only response-provider, or
-Task Agent call occurs. This task defines ownership only: the baseline flag
-remains off and no text insertion is available yet.
+Task Agent call occurs. The baseline flag remains off and end-to-end dictation
+is not release-enabled.
 
 ### Global Dictation secure target
 
@@ -224,8 +224,27 @@ Windows Security and administrator tools, a disabled/read-only control, an
 elevated target, and the secure desktop. Each must fail closed. Repeat after
 making the UI Automation runtime ID, executable identity, foreground window,
 focus, editability, or process integrity lookup unavailable; an unknown value
-must never become an allowed target. This source gate does not yet attempt
-input; truthful adapters and live app compatibility evidence land separately.
+must never become an allowed target. The secure-target gate itself never
+attempts input; it hands a lease to the separately tested insertion broker.
+
+### Global Dictation truthful insertion
+
+With a synthetic current commit and ordinary disposable target, confirm one
+session can call at most one mutation adapter. For an explicit whole-value
+replacement, expose a writable UIA ValuePattern and verify `verified_inserted`
+appears only when immediate readback exactly matches the requested value.
+Without that explicit intent, confirm the adapter is skipped.
+
+For insertion at the selection, confirm Unicode `SendInput` reports
+`attempted_unverified` when it succeeds and never `verified_inserted` without a
+readable postcondition. Disable it and confirm clipboard paste is unavailable
+until separately approved and supplied a valid Clicky-owned UI window handle.
+Before paste, change the clipboard after its snapshot and again after Clicky's
+temporary value; confirm Clicky neither pastes stale content nor restores over
+a newer clipboard value. Exercise an unsupported control and confirm it stays
+unchanged until the user chooses the one-use copy action. Reuse the commit,
+race cancellation, and force each adapter to fail; no case may try a second
+mutation adapter silently.
 
 ### Live speech-to-text
 
