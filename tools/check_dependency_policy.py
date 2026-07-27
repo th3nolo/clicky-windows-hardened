@@ -46,7 +46,6 @@ MAX_CA_BUNDLE_BYTES = 1024 * 1024
 MAX_CERTIFI_LICENSE_BYTES = 64 * 1024
 BANNED_PACKAGES = {"evdev", "langdetect", "pynput"}
 UNUSED_DIRECT_PACKAGES = {
-    "aiohttp",
     "ddgs",
     "elevenlabs",
     "ollama",

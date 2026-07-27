@@ -48,6 +48,7 @@ hidden = [
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",
+    "audio.stt.deepgram_streaming",
     "audio.stt.openai_stt",
     "audio.stt.faster_whisper_stt",
     "audio.stt.whisper_cpp_stt",
@@ -79,6 +80,7 @@ for pkg in (
     "openai",
     "httpx",
     "httpcore",
+    "aiohttp",
     "certifi",
     # Pointing + drawing accuracy stack (v1.2.0)
     "uiautomation",             # UIA tree walker (needs its bundled DLL)
