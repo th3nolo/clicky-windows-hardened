@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from dictation.policy import TargetLease
 from feature_gates import RunCapabilityGrant
 from turn_coordinator import TurnSession
 
@@ -76,6 +77,7 @@ class DictationCommit:
     run_id: str
     turn: TurnSession
     grant: RunCapabilityGrant
+    target: TargetLease = field(repr=False)
     transcript: str = field(repr=False)
 
 
@@ -84,6 +86,7 @@ class DictationSession:
     run_id: str
     turn: TurnSession
     grant: RunCapabilityGrant
+    target: TargetLease = field(repr=False)
     state: DictationState = DictationState.CAPTURING
     final_transcript: str | None = field(default=None, repr=False)
     result_code: str | None = None

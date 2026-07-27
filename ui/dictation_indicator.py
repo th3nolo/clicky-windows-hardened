@@ -45,7 +45,14 @@ class DictationIndicator(QLabel):
         ):
             self.hide()
             return
-        self.setText(_STATE_LABELS[snapshot.state])
+        label = _STATE_LABELS[snapshot.state]
+        if (
+            snapshot.state is DictationState.FAILED
+            and isinstance(snapshot.result_code, str)
+            and snapshot.result_code.startswith("blocked_")
+        ):
+            label = "Dictation · Blocked"
+        self.setText(label)
         self.adjustSize()
         screen = self.screen()
         if screen is not None:

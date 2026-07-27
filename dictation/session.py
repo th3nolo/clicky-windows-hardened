@@ -14,6 +14,12 @@ from dictation.models import (
     validate_final_transcript,
     validate_result_code,
 )
+from dictation.policy import (
+    TargetDecision,
+    blocked_result_code,
+    user_visible_reason,
+)
+from dictation.targeting import SecureTargetGuard
 from feature_gates import (
     ACTION_PERMISSION_SCHEMA_VERSION,
     DEFAULT_BUILD_FEATURE_FLAGS,
@@ -32,6 +38,14 @@ from turn_coordinator import TurnCoordinator
 StateCallback = Callable[[DictationSnapshot], object]
 
 
+class DictationTargetBlocked(RuntimeError):
+    """Safe user-facing target denial without UI text or dictated content."""
+
+    def __init__(self, decision: TargetDecision) -> None:
+        self.decision = decision
+        super().__init__(user_visible_reason(decision.reason))
+
+
 class DictationConfiguration(ActionPermissionConfiguration, Protocol):
     microphone_consent: bool
 
@@ -43,12 +57,14 @@ class DictationSessionCoordinator:
         self,
         turns: TurnCoordinator,
         *,
+        targets: SecureTargetGuard | None = None,
         on_state: StateCallback | None = None,
         build_flags: Mapping[
             ActionCapability, BuildFeatureFlag
         ] = DEFAULT_BUILD_FEATURE_FLAGS,
     ) -> None:
         self._turns = turns
+        self._targets = targets
         self._on_state = on_state
         self._build_flags = build_flags
         self._lock = threading.RLock()
@@ -80,6 +96,11 @@ class DictationSessionCoordinator:
             raise PermissionError(
                 "Global Dictation is unavailable or not permitted"
             )
+        if self._targets is None:
+            raise RuntimeError("Secure dictation target inspection is unavailable")
+        target_decision = self._targets.capture()
+        if not target_decision.allowed or target_decision.lease is None:
+            raise DictationTargetBlocked(target_decision)
         turn = self._turns.start_capture()
         if turn is None:
             return None
@@ -107,6 +128,7 @@ class DictationSessionCoordinator:
             run_id=run_id,
             turn=turn,
             grant=grant,
+            target=target_decision.lease,
         )
         with self._lock:
             self._active = session
@@ -156,6 +178,30 @@ class DictationSessionCoordinator:
         self,
         session: DictationSession,
     ) -> DictationCommit | None:
+        def ready() -> bool:
+            with self._lock:
+                return (
+                    self._active is session
+                    and session.state is DictationState.READY_TO_COMMIT
+                    and session.final_transcript is not None
+                )
+
+        current, is_ready = self._turns.run_if_current(
+            session.turn,
+            ready,
+        )
+        if not current or not is_ready:
+            return None
+        if self._targets is None:
+            self.fail(session, "blocked_inspector_error")
+            return None
+        target_decision = self._targets.revalidate(session.target)
+        if not target_decision.allowed or target_decision.lease is None:
+            self.fail(
+                session,
+                blocked_result_code(target_decision.reason),
+            )
+            return None
         commit: list[DictationCommit] = []
 
         def prepare() -> None:
@@ -166,12 +212,14 @@ class DictationSessionCoordinator:
                     or session.final_transcript is None
                 ):
                     return
+                session.target = target_decision.lease
                 session.transition(DictationState.COMMITTING)
                 commit.append(
                     DictationCommit(
                         run_id=session.run_id,
                         turn=session.turn,
                         grant=session.grant,
+                        target=session.target,
                         transcript=session.final_transcript,
                     )
                 )

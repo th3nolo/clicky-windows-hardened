@@ -80,7 +80,11 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state
   indicator contains no transcript text, and only a final transcript can
-  advance toward a future insertion adapter.
+  advance toward a future insertion adapter. Hotkey-down binds the focused
+  editable control by process, executable-path digest, top-level window, UI
+  Automation runtime ID, focus, desktop, and process integrity level. Password,
+  protected, read-only, disabled, sensitive, elevated, secure-desktop, Clicky,
+  changed, and unverifiable targets fail closed before a commit token exists.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.

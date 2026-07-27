@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import os
 import tempfile
@@ -12,6 +13,13 @@ from pathlib import Path
 from unittest import mock
 
 from dictation.models import DictationState
+from dictation.policy import (
+    TargetDecision,
+    TargetDescriptor,
+    TargetLease,
+    TargetReason,
+    TargetStatus,
+)
 from dictation.session import DictationSessionCoordinator
 from feature_gates import (
     ACTION_PERMISSION_SCHEMA_VERSION,
@@ -23,6 +31,59 @@ from turn_coordinator import TurnCoordinator, TurnPhase
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def ordinary_target(**changes):
+    values = {
+        "process_id": 4000,
+        "application_name": "notepad.exe",
+        "application_identity": hashlib.sha256(
+            b"c:\\windows\\notepad.exe"
+        ).hexdigest(),
+        "top_level_hwnd": 100,
+        "runtime_id": (42, 7),
+        "control_type": "EditControl",
+        "framework_id": "Win32",
+        "editable": True,
+        "enabled": True,
+        "read_only": False,
+        "password": False,
+        "protected": False,
+        "has_keyboard_focus": True,
+        "foreground_hwnd": 100,
+        "focused_runtime_id": (42, 7),
+        "clicky_process_id": 9000,
+        "clicky_integrity": 0x2000,
+        "target_integrity": 0x2000,
+        "desktop_name": "Default",
+        "sensitive_surface": False,
+    }
+    values.update(changes)
+    return TargetDescriptor(**values)
+
+
+class AllowingTargets:
+    def __init__(self):
+        self.lease = TargetLease(ordinary_target())
+        self.capture_calls = 0
+        self.revalidation_calls = 0
+
+    def capture(self):
+        self.capture_calls += 1
+        return TargetDecision(
+            TargetStatus.ALLOWED,
+            TargetReason.ALLOWED,
+            self.lease,
+        )
+
+    def revalidate(self, lease):
+        self.revalidation_calls += 1
+        self.asserted_lease = lease
+        return TargetDecision(
+            TargetStatus.ALLOWED,
+            TargetReason.ALLOWED,
+            self.lease,
+        )
 
 
 def build_flags():
@@ -70,8 +131,10 @@ class DictationSessionTests(unittest.TestCase):
     def setUp(self):
         self.turns = TurnCoordinator()
         self.states = []
+        self.targets = AllowingTargets()
         self.dictation = DictationSessionCoordinator(
             self.turns,
+            targets=self.targets,
             on_state=self.states.append,
             build_flags=build_flags(),
         )
@@ -86,6 +149,7 @@ class DictationSessionTests(unittest.TestCase):
                 self.dictation.begin_capture(config)
             self.assertEqual(self.turns.active, tutor)
             self.assertEqual(self.turns.phase, TurnPhase.PROCESSING)
+        self.assertEqual(self.targets.capture_calls, 0)
 
     def test_dictation_and_tutor_capture_are_mutually_exclusive(self):
         session = self.dictation.begin_capture(configured())
@@ -106,6 +170,7 @@ class DictationSessionTests(unittest.TestCase):
             turns = TurnCoordinator()
             coordinator = DictationSessionCoordinator(
                 turns,
+                targets=AllowingTargets(),
                 build_flags=build_flags(),
             )
             session = coordinator.begin_capture(configured())
