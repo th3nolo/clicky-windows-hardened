@@ -35,6 +35,7 @@ _PREFERENCE_STRING_LIMITS = {
     "elevenlabs_voice_id": 256,
     "hotkey": 128,
     "stt_provider": 32,
+    "stt_fallback_provider": 32,
 }
 _PREFERENCE_BOOL_KEYS = {
     "journal_enabled",
@@ -379,6 +380,9 @@ class Config:
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
     )
+    stt_fallback_provider_preference: str = field(
+        default_factory=lambda: _preference("stt_fallback_provider", "")
+    )
     transcription_vocabulary: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             _preference("transcription_vocabulary", [])
@@ -541,7 +545,44 @@ class Config:
                 "credential or choose a local provider."
             )
         self.stt_provider_preference = normalized
-        _save_preferences(stt_provider=normalized)
+        if (
+            self.stt_fallback_provider_preference.strip().lower()
+            == normalized
+        ):
+            self.stt_fallback_provider_preference = ""
+            _save_preferences(
+                stt_provider=normalized,
+                stt_fallback_provider="",
+            )
+        else:
+            _save_preferences(stt_provider=normalized)
+
+    def stt_fallback_provider(self) -> str:
+        from audio.stt.readiness import LOCAL_FALLBACK_PROVIDERS
+
+        normalized = self.stt_fallback_provider_preference.strip().lower()
+        if (
+            normalized not in LOCAL_FALLBACK_PROVIDERS
+            or normalized == self.stt_provider()
+        ):
+            return ""
+        return normalized
+
+    def set_stt_fallback_provider(self, name: str) -> None:
+        from audio.stt.readiness import LOCAL_FALLBACK_PROVIDERS
+
+        normalized = (name or "").strip().lower()
+        if normalized and normalized not in LOCAL_FALLBACK_PROVIDERS:
+            raise ValueError(
+                "Speech fallback may be off or use one reviewed local batch "
+                "provider. Cross-cloud fallback is not allowed."
+            )
+        if normalized and normalized == self.stt_provider():
+            raise ValueError(
+                "The fallback must differ from the selected speech provider."
+            )
+        self.stt_fallback_provider_preference = normalized
+        _save_preferences(stt_fallback_provider=normalized)
 
     def set_transcription_vocabulary(self, terms) -> tuple[str, ...]:
         from audio.stt.vocabulary import validate_user_terms
@@ -565,6 +606,8 @@ class Config:
 
     def describe(self) -> dict:
         """Human-readable summary of active providers for the setup panel."""
+        from audio.stt.readiness import fallback_label
+
         return {
             "llm": self.llm_provider(),
             "stt": self.stt_provider(),
@@ -575,6 +618,7 @@ class Config:
                 if self.stt_provider() in ("deepgram_batch", "openai")
                 else "local batch"
             ),
+            "stt_fallback": fallback_label(self.stt_fallback_provider()),
             "tts": self.tts_provider(),
             "search": self.search_provider(),
             "ollama_model": self.ollama_model,

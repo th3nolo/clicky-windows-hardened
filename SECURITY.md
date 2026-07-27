@@ -175,9 +175,11 @@ process-environment credential only in the authorization header, and bounds
 frame size and rate, queue depth, session bytes and duration, provider-message
 size, transcript size, and every connection/finalization timeout. A disconnect,
 timeout, capacity failure, or provider error is surfaced explicitly. The live
-session does not reconnect and does not silently invoke batch or local STT.
-Partial and final transcript UI updates carry the turn sequence so queued
-updates from an interrupted turn are rejected.
+session does not reconnect. Speech fallback is off by default and cannot target
+another cloud provider. Only after the user selects one pre-provisioned local
+batch recognizer in the readiness window may Clicky visibly retry that turn's
+same bounded PCM locally. Partial and final transcript UI updates carry the
+turn sequence so queued updates from an interrupted turn are rejected.
 
 Monitor routing joins physical MSS rectangles, Win32 display identities, and Qt
 logical rectangles before a capture is accepted. Clicky does not use list

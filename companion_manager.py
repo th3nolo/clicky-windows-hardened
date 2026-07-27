@@ -290,6 +290,8 @@ class CompanionManager(QObject):
         # Providers (lazy)
         self._llm: Optional[BaseLLMProvider] = None
         self._stt = None
+        self._fallback_stt = None
+        self._fallback_stt_name = ""
         self._streaming_stt: dict[int, object] = {}
         self._streaming_open: dict[int, concurrent.futures.Future] = {}
         self._tts = None
@@ -494,23 +496,44 @@ class CompanionManager(QObject):
                     "Deepgram live mode requires an active streaming session; "
                     "Clicky will not silently fall back to batch transcription."
                 )
-            if provider == "deepgram_batch":
-                from audio.stt.deepgram_stt import DeepgramSTT
-                self._stt = DeepgramSTT(
-                    vocabulary=cfg.transcription_vocabulary
-                )
-            elif provider == "openai":
-                from audio.stt.openai_stt import OpenAISTT
-                self._stt = OpenAISTT(
-                    vocabulary=cfg.transcription_vocabulary
-                )
-            elif provider == "whisper_cpp":
-                from audio.stt.whisper_cpp_stt import WhisperCppSTT
-                self._stt = WhisperCppSTT()
-            else:
-                from audio.stt.faster_whisper_stt import FasterWhisperSTT
-                self._stt = FasterWhisperSTT()
+            self._stt = self._create_batch_stt(provider)
         return self._stt
+
+    @staticmethod
+    def _create_batch_stt(provider: str):
+        if provider == "deepgram_batch":
+            from audio.stt.deepgram_stt import DeepgramSTT
+
+            return DeepgramSTT(
+                vocabulary=cfg.transcription_vocabulary
+            )
+        if provider == "openai":
+            from audio.stt.openai_stt import OpenAISTT
+
+            return OpenAISTT(
+                vocabulary=cfg.transcription_vocabulary
+            )
+        if provider == "whisper_cpp":
+            from audio.stt.whisper_cpp_stt import WhisperCppSTT
+
+            return WhisperCppSTT()
+        if provider == "faster_whisper":
+            from audio.stt.faster_whisper_stt import FasterWhisperSTT
+
+            return FasterWhisperSTT()
+        raise RuntimeError(f"Unsupported batch speech provider: {provider}")
+
+    def _get_fallback_stt(self):
+        provider = cfg.stt_fallback_provider()
+        if not provider or provider == cfg.stt_provider():
+            return None
+        if (
+            self._fallback_stt is None
+            or self._fallback_stt_name != provider
+        ):
+            self._fallback_stt = self._create_batch_stt(provider)
+            self._fallback_stt_name = provider
+        return self._fallback_stt
 
     def _new_streaming_stt(self, session: TurnSession):
         if cfg.stt_provider() != "deepgram":
@@ -786,19 +809,16 @@ class CompanionManager(QObject):
         try:
             # 1. Transcribe — bounded so a hung/loading local STT model can
             # never freeze the UI on "Thinking..." forever
-            if session.sequence in self._streaming_stt:
-                transcript = await asyncio.wait_for(
-                    self._finalize_streaming_stt(session),
-                    timeout=25,
+            transcript, used_stt_provider = (
+                await self._transcribe_with_configured_fallback(
+                    pcm,
+                    session,
                 )
-            else:
-                transcript = await asyncio.wait_for(
-                    self._get_stt().transcribe(pcm), timeout=90,
-                )
+            )
             if not self._turns.is_current(session):
                 return
             _log.info("voice transcription completed (provider=%s)",
-                      cfg.stt_provider())
+                      used_stt_provider)
             if not transcript.strip():
                 return
             self._emit_turn_signal(
@@ -1276,6 +1296,67 @@ class CompanionManager(QObject):
             if pointing_held:
                 self._emit_turn_signal(session, self.sig_point_release)
             self._finish_turn(session)
+
+    async def _transcribe_with_configured_fallback(
+        self,
+        pcm: bytes,
+        session: TurnSession,
+    ) -> tuple[str, str]:
+        """Use the selected STT, then only an explicitly selected local one."""
+
+        selected = cfg.stt_provider()
+        try:
+            if session.sequence in self._streaming_stt:
+                transcript = await asyncio.wait_for(
+                    self._finalize_streaming_stt(session),
+                    timeout=25,
+                )
+            else:
+                transcript = await asyncio.wait_for(
+                    self._get_stt().transcribe(pcm),
+                    timeout=90,
+                )
+            return transcript, selected
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if not self._turns.is_current(session):
+                raise asyncio.CancelledError
+            fallback_name = cfg.stt_fallback_provider()
+            if not fallback_name or fallback_name == selected:
+                raise RuntimeError(
+                    "Speech input failed and automatic fallback is off. Open "
+                    "Setup & Diagnostics → Speech readiness & fallback to "
+                    "inspect the selected provider or explicitly allow a "
+                    "local-only fallback."
+                ) from None
+            from audio.stt.readiness import provider_label
+
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                f"{provider_label(selected)} failed. Retrying the captured "
+                f"audio with your approved local {provider_label(fallback_name)} "
+                "fallback; no additional cloud provider will receive it.",
+            )
+            try:
+                fallback = self._get_fallback_stt()
+                if fallback is None:
+                    raise RuntimeError("local fallback is unavailable")
+                transcript = await asyncio.wait_for(
+                    fallback.transcribe(pcm),
+                    timeout=90,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise RuntimeError(
+                    f"Both {provider_label(selected)} and the approved local "
+                    f"{provider_label(fallback_name)} fallback failed. Open "
+                    "Setup & Diagnostics → Speech readiness & fallback for "
+                    "the local model status."
+                ) from None
+            return transcript, fallback_name
 
     async def _reply_local(self, msg: str, session: TurnSession):
         """Show + speak a message that doesn't need an LLM round-trip."""
@@ -1846,6 +1927,22 @@ class CompanionManager(QObject):
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
         self._stt = None
+        self._fallback_stt = None
+        self._fallback_stt_name = ""
+        return True
+
+    def set_stt_fallback_provider(self, name: str) -> bool:
+        """Persist an explicit local-only fallback, or disable fallback."""
+
+        try:
+            cfg.set_stt_fallback_provider(name)
+        except (OSError, ValueError) as exc:
+            self.sig_error.emit(
+                f"Could not change speech fallback policy: {exc}"
+            )
+            return False
+        self._fallback_stt = None
+        self._fallback_stt_name = ""
         return True
 
     def set_transcription_vocabulary(self, terms) -> tuple[str, ...] | None:

@@ -71,13 +71,15 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
   and external coding-agent execution require independent persisted permission.
   Microphone permission alone never authorizes cloud transcription.
+- Speech fallback is off by default and can target only one explicitly selected,
+  pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.
 
 ### Network requests
 
 Web search accepts HTTPS destinations only. It rejects local, private, link-local, reserved, multicast, and unspecified IP addresses before connecting, repeats the check for every redirect, and verifies the actual connected socket peer. Response types, redirects, and decoded byte counts are bounded. Environment proxies are not used.
 
-Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect or silently fall back after a provider failure.
+Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect. Fallback is off by default. If the user explicitly selects one verified local batch fallback in the readiness window, Clicky visibly retries the same captured PCM locally after a selected-provider failure. It never falls across cloud providers.
 
 Additional OpenAI-compatible providers use fixed reviewed destinations:
 
