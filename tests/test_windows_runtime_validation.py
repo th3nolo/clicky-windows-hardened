@@ -4,11 +4,60 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from tools import windows_runtime_validation as runtime
+
+
+class ReleaseMarkerTests(unittest.TestCase):
+    def test_local_release_refuses_store_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            distribution = Path(temporary)
+            (distribution / "UNSIGNED-LOCAL-TEST-ONLY.txt").write_text(
+                "local\n",
+                encoding="utf-8",
+            )
+            runtime._validate_release_markers(
+                distribution,
+                release_kind="local",
+                source_commit=None,
+            )
+            (distribution / "SOURCE-COMMIT.txt").write_text(
+                "a" * 40 + "\n",
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(AssertionError, "Store release markers"):
+                runtime._validate_release_markers(
+                    distribution,
+                    release_kind="local",
+                    source_commit=None,
+                )
+
+    def test_store_release_binds_exact_commit_and_marker(self) -> None:
+        commit = "b" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            distribution = Path(temporary)
+            marker = distribution / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+            marker.write_bytes(runtime._STORE_MARKER_TEMPLATE.read_bytes())
+            (distribution / "SOURCE-COMMIT.txt").write_text(
+                commit + "\n",
+                encoding="ascii",
+            )
+            runtime._validate_release_markers(
+                distribution,
+                release_kind="store",
+                source_commit=commit,
+            )
+            marker.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "reviewed text"):
+                runtime._validate_release_markers(
+                    distribution,
+                    release_kind="store",
+                    source_commit=commit,
+                )
 
 
 class WindowsPowerShellBoundaryTests(unittest.TestCase):

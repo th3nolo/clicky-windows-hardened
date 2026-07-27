@@ -28,6 +28,9 @@ from assets.make_icon import make_frame
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "packaging" / "AppxManifest.xml.in"
+STORE_MARKER_TEMPLATE = (
+    ROOT / "packaging" / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
+)
 VALIDATION_IDENTITY = "th3nolo.Clicky.Validation"
 VALIDATION_PUBLISHER = "CN=Clicky Local Validation"
 VALIDATION_PUBLISHER_DISPLAY = "Manuel Parra"
@@ -331,6 +334,8 @@ def prepare_staging(
         raise MsixPackagingError(
             "Store packaging requires the dedicated unsigned Store input"
         )
+    elif store_marker.read_bytes() != STORE_MARKER_TEMPLATE.read_bytes():
+        raise MsixPackagingError("Store input marker differs from the reviewed text")
 
     staging.mkdir()
     input_identity = _copy_distribution(distribution, staging / "Clicky")

@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_RELEASE_MODE_RE = re.compile(r"^(?:local|store)$")
 _ALLOWED_RUNTIME_BOUNDARIES = frozenset({"windows-sandbox", "github-hosted-windows"})
 _EXPECTED_UV_SHA256 = "cd628b46729d01ad110146a647a633a6e5de0e091d73db46afaeee6fcb4ba648"
 _EXPECTED_PYTHON_RUNTIME_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
@@ -29,6 +30,7 @@ _EXPECTED_INPUTS = {
     "clicky-source.zip",
     "python-runtime-sha256.txt",
     "python-runtime.zip",
+    "release-mode.txt",
     "source-archive-sha256.txt",
     "source-commit.txt",
     "uv-sha256.txt",
@@ -49,6 +51,7 @@ _INPUT_LIMITS = {
     "clicky-source.zip": 32 * 1024 * 1024,
     "python-runtime-sha256.txt": 256,
     "python-runtime.zip": 16 * 1024 * 1024,
+    "release-mode.txt": 32,
     "source-archive-sha256.txt": 256,
     "source-commit.txt": 256,
     "uv-sha256.txt": 256,
@@ -506,6 +509,10 @@ def _validate_prepared_inputs(
 
     commit = _read_single_line(input_directory / "source-commit.txt", _COMMIT_RE)
     _require(commit == expected_commit, "staged source commit does not match HEAD")
+    release_kind = _read_single_line(
+        input_directory / "release-mode.txt",
+        _RELEASE_MODE_RE,
+    )
     archive_path = input_directory / "clicky-source.zip"
     archive_hash = _sha256(archive_path)
     stated_hash = _read_single_line(
@@ -526,7 +533,11 @@ def _validate_prepared_inputs(
         archived_validator == (input_directory / "windows-sandbox-validate.cmd").read_bytes(),
         "staged validator differs from the commit archive",
     )
-    return {"commit": commit, "source_archive_sha256": archive_hash}
+    return {
+        "commit": commit,
+        "source_archive_sha256": archive_hash,
+        "release_kind": release_kind,
+    }
 
 
 def verify_prepared(
@@ -586,11 +597,16 @@ def verify_runtime_results(
     pass_line: str,
     expected_boundary: str,
     expected_workflow_commit: str | None = None,
+    expected_release_kind: str = "local",
 ) -> dict[str, object]:
     """Verify bounded runtime evidence shared by either disposable Windows gate."""
     _require(
         expected_boundary in _ALLOWED_RUNTIME_BOUNDARIES,
         f"unsupported runtime boundary: {expected_boundary}",
+    )
+    _require(
+        expected_release_kind in {"local", "store"},
+        "unsupported release kind",
     )
     _require(_COMMIT_RE.fullmatch(expected_commit) is not None, "invalid expected commit")
     if expected_boundary == "github-hosted-windows":
@@ -637,6 +653,15 @@ def verify_runtime_results(
     _require("Traceback (most recent call last)" not in log, "sandbox log contains a traceback")
 
     report = json.loads((results / "runtime-validation.json").read_text(encoding="utf-8"))
+    _require(
+        report["release_kind"] == expected_release_kind,
+        "runtime release kind differs from the prepared input",
+    )
+    _require(
+        report["source_commit"]
+        == (expected_commit if expected_release_kind == "store" else None),
+        "runtime release commit differs from the prepared input",
+    )
     boundary = report["runtime_boundary"]
     _require(boundary["kind"] == expected_boundary, "source runtime boundary differs")
     if expected_boundary == "github-hosted-windows":
@@ -761,6 +786,7 @@ def verify_runtime_results(
     )
     return {
         "commit": source_commit,
+        "release_kind": expected_release_kind,
         "source_archive_sha256": expected_source_archive_sha256,
         "clicky_exe_sha256": executable_hash,
         "distribution_archive_sha256": archive_hash,
@@ -789,6 +815,7 @@ def verify(
         log_name="sandbox-validation.log",
         pass_line="[PASS] Windows Sandbox validation completed.",
         expected_boundary="windows-sandbox",
+        expected_release_kind=prepared["release_kind"],
     )
 
 def _independent_archive_hash(repo_root: Path, git_exe: Path, commit: str) -> str:

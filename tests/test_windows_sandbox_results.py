@@ -54,6 +54,10 @@ class WindowsSandboxResultTests(unittest.TestCase):
         (input_directory / "source-archive-sha256.txt").write_text(
             source_archive_hash + "\n", encoding="ascii"
         )
+        (input_directory / "release-mode.txt").write_text(
+            "local\n",
+            encoding="ascii",
+        )
 
         wsb = rf"""<Configuration>
   <VGpu>Disable</VGpu>
@@ -116,6 +120,8 @@ class WindowsSandboxResultTests(unittest.TestCase):
             distribution_archive.read_bytes()
         ).hexdigest()
         report = {
+            "release_kind": "local",
+            "source_commit": None,
             "runtime_boundary": {"kind": "windows-sandbox"},
             "audio_crash_cleanup": {"leftover_removed": True},
             "privacy_controls": {
@@ -201,6 +207,22 @@ class WindowsSandboxResultTests(unittest.TestCase):
                 summary["clicky_exe_sha256"],
                 hashlib.sha256(b"MZ fixture executable").hexdigest(),
             )
+
+    def test_accepts_store_candidate_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root, commit, archive_hash, hashes = self._fixture(Path(tmp))
+            (run_root / "input" / "release-mode.txt").write_text(
+                "store\n",
+                encoding="ascii",
+            )
+            report_path = run_root / "results" / "runtime-validation.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["release_kind"] = "store"
+            report["source_commit"] = commit
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self._reviewed_hashes(hashes):
+                summary = verifier.verify(run_root, commit, archive_hash)
+            self.assertEqual(summary["release_kind"], "store")
 
     def test_rejects_hard_linked_result_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,6 +578,43 @@ class WindowsSandboxResultTests(unittest.TestCase):
 
 
 class SandboxBootstrapSafetyTests(unittest.TestCase):
+    def test_preparer_binds_explicit_release_mode_into_read_only_input(self) -> None:
+        preparer = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "prepare-windows-sandbox.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("[switch]$StoreReleaseCandidate", preparer)
+        self.assertIn(
+            '$releaseMode = if ($StoreReleaseCandidate) { "store" } else { "local" }',
+            preparer,
+        )
+        self.assertIn(
+            'Join-Path $inputDirectory "release-mode.txt"',
+            preparer,
+        )
+
+    def test_store_conversion_precedes_runtime_and_uses_reviewed_marker(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "windows-sandbox-validate.cmd"
+        ).read_text(encoding="utf-8")
+        copy_marker = (
+            'copy /y "%WORK%\\packaging\\UNSIGNED-STORE-SUBMISSION-INPUT.txt" '
+            '"%WORK%\\dist\\Clicky\\UNSIGNED-STORE-SUBMISSION-INPUT.txt"'
+        )
+        remove_local = (
+            'del /q "%WORK%\\dist\\Clicky\\UNSIGNED-LOCAL-TEST-ONLY.txt"'
+        )
+        runtime_call = "python tools\\windows_runtime_validation.py --release-kind store"
+        self.assertIn(copy_marker, script)
+        self.assertIn(remove_local, script)
+        self.assertIn(runtime_call, script)
+        self.assertLess(script.index(copy_marker), script.index(runtime_call))
+        self.assertLess(script.index(remove_local), script.index(runtime_call))
+        self.assertNotIn("call build.bat store-rc", script)
+
     def test_preparer_logon_command_matches_verifier_expectation(self) -> None:
         preparer = (
             Path(__file__).resolve().parents[1]
