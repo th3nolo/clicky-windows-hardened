@@ -20,6 +20,7 @@ from skills.schema import (
     DeclarativeTool,
     InvocationMode,
     OAuthScopeId,
+    declarative_skill_source_digest,
     parse_declarative_skill,
 )
 
@@ -383,6 +384,19 @@ class DeclarativeSkillSchemaTests(unittest.TestCase):
             "undeclared input",
         ):
             _parse(candidate)
+
+    def test_source_digest_is_stable_for_unordered_authority_sets(self):
+        first_payload = _definition()
+        second_payload = copy.deepcopy(first_payload)
+        second_payload["capabilities"].reverse()
+
+        first = _parse(first_payload)
+        second = _parse(second_payload)
+
+        self.assertEqual(
+            declarative_skill_source_digest(first),
+            declarative_skill_source_digest(second),
+        )
 
 
 if __name__ == "__main__":

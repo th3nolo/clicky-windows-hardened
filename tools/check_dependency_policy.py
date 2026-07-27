@@ -79,7 +79,9 @@ EXPECTED_ACTIONS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "astral-sh/setup-uv": "08807647e7069bb48b6ef5acd8ec9567f424441b",
 }
-BUNDLED_SKILL_INFRASTRUCTURE = frozenset({"schema.py"})
+BUNDLED_SKILL_INFRASTRUCTURE = frozenset(
+    {"registry.py", "schema.py"}
+)
 
 
 @dataclass(frozen=True)
@@ -616,6 +618,96 @@ def check_bundled_skills() -> None:
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != expected:
             fail(f"bundled skill {filename} does not match its manifest digest")
+
+
+def check_bundled_declarative_skills() -> None:
+    """Bind every packaged data-only skill to one embedded digest anchor."""
+
+    directory = ROOT / "skills" / "declarative"
+    manifest_path = directory / "manifest.json"
+    if (
+        not directory.is_dir()
+        or directory.is_symlink()
+        or manifest_path.is_symlink()
+        or manifest_path.stat().st_size > 64 * 1024
+    ):
+        fail("bundled Declarative Skill manifest is missing or unsafe")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"files", "version"}
+        or payload.get("version") != 1
+    ):
+        fail("bundled Declarative Skill manifest must use version 1")
+    manifest = payload.get("files")
+    if not isinstance(manifest, dict):
+        fail("bundled Declarative Skill manifest files must be an object")
+    bundled = {
+        path.name: path
+        for path in directory.glob("*.skill.json")
+    }
+    actual_names = {path.name for path in directory.iterdir()}
+    if actual_names != {"manifest.json", *bundled}:
+        fail("bundled Declarative Skill directory has unlisted content")
+    if set(manifest) != set(bundled):
+        fail(
+            "bundled Declarative Skill manifest must cover every definition"
+        )
+
+    registry_path = ROOT / "skills" / "registry.py"
+    registry_tree = ast.parse(
+        registry_path.read_text(encoding="utf-8"),
+        filename=str(registry_path),
+    )
+    anchors = [
+        node.value
+        for node in registry_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_BUNDLED_DECLARATIVE_SKILL_DIGESTS"
+            for target in node.targets
+        )
+    ]
+    if len(anchors) != 1:
+        fail(
+            "Declarative Skills need one embedded digest trust anchor"
+        )
+    anchor_call = anchors[0]
+    if not (
+        isinstance(anchor_call, ast.Call)
+        and isinstance(anchor_call.func, ast.Name)
+        and anchor_call.func.id == "MappingProxyType"
+        and len(anchor_call.args) == 1
+        and not anchor_call.keywords
+    ):
+        fail(
+            "Declarative Skill trust anchor must be an immutable mapping"
+        )
+    try:
+        embedded = ast.literal_eval(anchor_call.args[0])
+    except (ValueError, TypeError):
+        fail("Declarative Skill trust anchor must contain static digests")
+    if embedded != manifest:
+        fail(
+            "Declarative Skill manifest differs from its embedded anchor"
+        )
+
+    for filename, path in bundled.items():
+        digest = manifest.get(filename)
+        if (
+            Path(filename).name != filename
+            or not filename.endswith(".skill.json")
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            fail("bundled Declarative Skill manifest entry is invalid")
+        if path.is_symlink() or path.stat().st_size > 256 * 1024:
+            fail(f"bundled Declarative Skill {filename} is unsafe")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            fail(
+                f"bundled Declarative Skill {filename} digest differs"
+            )
 
 
 def check_legacy_manifests() -> None:
@@ -1375,6 +1467,10 @@ def check_packaging_policy() -> None:
                     fail("clicky.spec added data files must be string pairs")
                 packaged_data.add((value[0], value[1]))
     required_skill_data = {
+        (
+            "skills/declarative/manifest.json",
+            "skills/declarative",
+        ),
         ("skills/example_self_mode.py", "skills"),
         ("skills/manifest.json", "skills"),
     }
@@ -1621,6 +1717,7 @@ def main(argv: list[str] | None = None) -> int:
     check_trust_bundle_lock(locked_releases)
     check_sbom(runtime)
     check_bundled_skills()
+    check_bundled_declarative_skills()
     check_legacy_manifests()
     check_build_script()
     check_packaging_policy()

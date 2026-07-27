@@ -242,6 +242,14 @@ class SkillApprovalTests(unittest.TestCase):
                      mock.patch.object(skills, "_BUNDLED_SKILL_DIGESTS", {"safe.py": bundled_digest}):
                     loaded = skills.load_all()
                     self.assertEqual([s["name"] for s in loaded], ["Bundled"])
+                    self.assertEqual(
+                        loaded[0]["_developer_origin"],
+                        "bundled",
+                    )
+                    self.assertEqual(
+                        loaded[0]["_developer_source_digest"],
+                        bundled_digest,
+                    )
                     self.assertFalse(marker.exists())
 
                     (user / "allowlist.json").write_text(json.dumps({
@@ -257,6 +265,14 @@ class SkillApprovalTests(unittest.TestCase):
                     }))
                     loaded = skills.load_all()
                     self.assertEqual([s["name"] for s in loaded], ["Bundled", "User"])
+                    self.assertEqual(
+                        loaded[1]["_developer_origin"],
+                        "user_approved",
+                    )
+                    self.assertEqual(
+                        loaded[1]["_developer_source_digest"],
+                        digest,
+                    )
                     self.assertTrue(marker.exists())
             finally:
                 skills.__file__ = original_file

@@ -30,7 +30,9 @@ _MAX_ALLOWLIST_BYTES = 64 * 1024
 _BUNDLED_MANIFEST_NAME = "manifest.json"
 # Package infrastructure is imported normally and covered by the application
 # package.  It must never be compiled and executed as a Developer Python Skill.
-_BUNDLED_INFRASTRUCTURE_MODULES = frozenset({"schema.py"})
+_BUNDLED_INFRASTRUCTURE_MODULES = frozenset(
+    {"registry.py", "schema.py"}
+)
 # This immutable trust anchor is embedded in the PyInstaller executable/PYZ.
 # The external manifest is retained for transparency, but cannot authorize a
 # different sidecar skill even if both files are replaced together.
@@ -149,7 +151,12 @@ def load_all() -> list[dict]:
     _loaded = []
 
     for skill_path, source, digest in _verified_bundled_skill_sources():
-        _try_import(skill_path, source=source, digest=digest)
+        _try_import(
+            skill_path,
+            source=source,
+            digest=digest,
+            origin="bundled",
+        )
 
     user_dir = _user_skills_dir()
     approvals = _approved_user_skills()
@@ -170,12 +177,23 @@ def load_all() -> list[dict]:
             if not hmac.compare_digest(actual, expected):
                 continue
             # Execute the exact bytes that were hashed, avoiding a second read.
-            _try_import(skill_path, source=source, digest=actual)
+            _try_import(
+                skill_path,
+                source=source,
+                digest=actual,
+                origin="user_approved",
+            )
 
     return _loaded
 
 
-def _try_import(path: Path, *, source: bytes | None = None, digest: str = "") -> None:
+def _try_import(
+    path: Path,
+    *,
+    source: bytes | None = None,
+    digest: str = "",
+    origin: str = "unknown",
+) -> None:
     module_name = f"clicky_skill_{path.stem}_{digest[:12] or 'bundled'}"
     try:
         if source is None:
@@ -202,6 +220,12 @@ def _try_import(path: Path, *, source: bytes | None = None, digest: str = "") ->
             return
         skill.setdefault("description", "")
         skill["_compiled"] = re.compile(skill["trigger"], re.IGNORECASE)
+        # Registry/UI metadata never claims that hash approval makes Python
+        # safe.  The handler remains arbitrary code with the user's authority.
+        skill["_developer_skill"] = True
+        skill["_developer_source_filename"] = path.name
+        skill["_developer_source_digest"] = digest
+        skill["_developer_origin"] = origin
         _loaded.append(skill)
     except Exception as exc:
         sys.modules.pop(module_name, None)
