@@ -47,6 +47,7 @@ hidden = [
     "ai.hybrid_pointer",
     "ai.figure_detector",
     "memory.style_profiles",
+    "skills.schema",
 
     # First-run setup wizard
     "ui.setup_wizard",
