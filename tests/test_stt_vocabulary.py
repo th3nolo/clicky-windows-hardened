@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from audio.stt import deepgram_stt
+from audio.stt import deepgram_stt, openai_stt
 from audio.stt.vocabulary import (
     MAX_USER_TERMS,
     SHIPPED_TERMS,
@@ -116,6 +116,25 @@ class FakeHttpClient:
         return FakeResponse()
 
 
+class FakeOpenAITranscriptions:
+    def __init__(self):
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return " approved transcript "
+
+
+class FakeOpenAIClient:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.audio = mock.Mock()
+        self.audio.transcriptions = FakeOpenAITranscriptions()
+        type(self).instances.append(self)
+
+
 class VocabularyProviderTests(unittest.TestCase):
     def test_deepgram_batch_sends_only_approved_terms(self):
         FakeHttpClient.instances = []
@@ -146,9 +165,37 @@ class VocabularyProviderTests(unittest.TestCase):
             ["Clicky", "Approved Term"],
         )
 
+    def test_openai_batch_sends_only_approved_terms_as_prompt(self):
+        FakeOpenAIClient.instances = []
+
+        async def exercise():
+            with mock.patch.object(
+                openai_stt, "AsyncOpenAI", FakeOpenAIClient
+            ), mock.patch.object(
+                openai_stt, "pcm16_to_wav", return_value=b"synthetic-wav"
+            ):
+                provider = openai_stt.OpenAISTT(
+                    vocabulary=(
+                        "Clicky",
+                        "Approved Term",
+                        "approved term",
+                        "\x00rejected",
+                    )
+                )
+                transcript = await provider.transcribe(bytes(320))
+            return transcript
+
+        self.assertEqual(asyncio.run(exercise()), "approved transcript")
+        request = (
+            FakeOpenAIClient.instances[0]
+            .audio.transcriptions.calls[0]
+        )
+        self.assertEqual(request["prompt"], "Clicky, Approved Term")
+        self.assertEqual(request["model"], "whisper-1")
+        self.assertEqual(request["response_format"], "text")
+
     def test_unsupported_providers_do_not_read_or_send_vocabulary(self):
         for relative in (
-            "audio/stt/openai_stt.py",
             "audio/stt/faster_whisper_stt.py",
             "audio/stt/whisper_cpp_stt.py",
         ):

@@ -190,10 +190,11 @@ validated image-input support.
 Transcription vocabulary contains the shipped `Clicky` term plus only terms the
 user entered and saved in the dedicated editor. Custom terms are normalized,
 deduplicated, limited to 63 entries and 64 printable characters each, and stored
-in the allowlisted non-secret preference file. Only Deepgram live and batch
-requests receive the bounded list. Other STT providers ignore it. Clicky never
-mines vocabulary from window titles, screenshots, clipboard content, attached
-documents, conversation history, or transcripts.
+in the allowlisted non-secret preference file. Deepgram live and batch requests
+receive the bounded terms as provider keywords; OpenAI batch transcription
+receives the same terms through its supported prompt field. Other STT providers
+ignore them. Clicky never mines vocabulary from window titles, screenshots,
+clipboard content, attached documents, conversation history, or transcripts.
 
 ## Release and executable policy
 

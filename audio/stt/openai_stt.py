@@ -1,16 +1,20 @@
 import io
+from collections.abc import Sequence
+
 from openai import AsyncOpenAI
 
 from audio.stt.base_stt import BaseSTT
 from audio.capture import pcm16_to_wav
+from audio.stt.vocabulary import approved_vocabulary
 from config import cfg
 
 
 class OpenAISTT(BaseSTT):
     """OpenAI Whisper API — upload-based, high accuracy."""
 
-    def __init__(self):
+    def __init__(self, vocabulary: Sequence[str] = ()) -> None:
         self._client = AsyncOpenAI(api_key=cfg.openai_api_key)
+        self._vocabulary = approved_vocabulary(vocabulary)
 
     async def transcribe(self, pcm_bytes: bytes, sample_rate: int = 16000) -> str:
         wav_bytes = pcm16_to_wav(pcm_bytes, sample_rate)
@@ -20,5 +24,6 @@ class OpenAISTT(BaseSTT):
             model="whisper-1",
             file=audio_file,
             response_format="text",
+            prompt=", ".join(self._vocabulary),
         )
         return result.strip() if isinstance(result, str) else result.text.strip()
