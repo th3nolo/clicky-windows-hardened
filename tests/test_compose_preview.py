@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QPushButton
 
+from capability_registry import CapabilityId
 from compose.models import (
     Draft,
     DraftInsertionApproval,
@@ -106,7 +107,10 @@ class ComposePreviewTests(unittest.TestCase):
         self.grant = RunCapabilityGrant(
             "compose-preview-1",
             frozenset(
-                {ActionCapability.SCREEN_AWARE_COMPOSE}
+                {
+                    CapabilityId.COMPOSE_SCREEN_CONTEXT,
+                    CapabilityId.STYLE_PROFILE_USE,
+                }
             ),
         )
         self.panel = ComposePreviewPanel(self.guard)

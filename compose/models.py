@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 
 from ai.model_selection import valid_model_id
 from ai.provider_catalog import ALL_PROVIDER_IDS
+from capability_registry import CapabilityGrant, CapabilityId
 from dictation.policy import TargetLease
-from feature_gates import ActionCapability, RunCapabilityGrant
 
 
 MAX_INSTRUCTION_CHARS = 8_192
@@ -113,7 +113,7 @@ class ComposeInvocation:
     """Explicit user invocation before any screenshot capture occurs."""
 
     run_id: str
-    grant: RunCapabilityGrant
+    grant: CapabilityGrant
     instruction: str = field(repr=False)
     target: TargetLease = field(repr=False)
     authorized_screenshot_ids: tuple[str, ...]
@@ -123,7 +123,7 @@ class ComposeInvocation:
     max_output_chars: int = DEFAULT_DRAFT_CHARS
 
     def __post_init__(self) -> None:
-        if not isinstance(self.grant, RunCapabilityGrant):
+        if not isinstance(self.grant, CapabilityGrant):
             raise TypeError("Compose invocation requires a run grant")
         if self.grant.run_id != self.run_id:
             raise ValueError("Compose run grant does not match the invocation")
@@ -144,6 +144,13 @@ class ComposeInvocation:
             raise TypeError("Compose invocation requires a provider selection")
         _validate_response_language(self.response_language)
         _validate_profile_id(self.style_profile_id)
+        if (
+            self.style_profile_id is not None
+            and not self.grant.allows(CapabilityId.STYLE_PROFILE_USE)
+        ):
+            raise ValueError(
+                "Compose writing-style use requires its run capability"
+            )
         _validate_output_limit(self.max_output_chars)
 
 
@@ -187,7 +194,7 @@ class ComposeRequest:
     """Authorized provider request plus the remembered destination lease."""
 
     run_id: str
-    grant: RunCapabilityGrant
+    grant: CapabilityGrant
     instruction: str = field(repr=False)
     target: TargetLease = field(repr=False)
     screenshots: tuple[ComposeScreenshot, ...] = field(repr=False)
@@ -323,7 +330,7 @@ class Draft:
 def validate_draft_review_context(
     draft: Draft,
     target: TargetLease,
-    grant: RunCapabilityGrant,
+    grant: CapabilityGrant,
 ) -> None:
     """Validate preview context without creating insertion authority."""
 
@@ -331,12 +338,16 @@ def validate_draft_review_context(
         raise TypeError("Draft review requires a compose draft")
     if not isinstance(target, TargetLease):
         raise TypeError("Draft review requires a target lease")
-    if not isinstance(grant, RunCapabilityGrant):
+    if not isinstance(grant, CapabilityGrant):
         raise TypeError("Draft review requires a run grant")
     if (
         grant.run_id != draft.provenance.run_id
-        or ActionCapability.SCREEN_AWARE_COMPOSE
+        or CapabilityId.COMPOSE_SCREEN_CONTEXT
         not in grant.capabilities
+        or (
+            draft.provenance.style_profile_id is not None
+            and not grant.allows(CapabilityId.STYLE_PROFILE_USE)
+        )
     ):
         raise ValueError("Draft review requires the matching compose run grant")
     descriptor = target.descriptor
@@ -356,7 +367,7 @@ class DraftInsertionApproval:
 
     draft: Draft = field(repr=False)
     target: TargetLease = field(repr=False)
-    grant: RunCapabilityGrant = field(repr=False)
+    grant: CapabilityGrant = field(repr=False)
 
     def __post_init__(self) -> None:
         validate_draft_review_context(

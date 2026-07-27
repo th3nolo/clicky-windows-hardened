@@ -6,6 +6,7 @@ import hashlib
 import types
 import unittest
 
+from capability_registry import CapabilityId
 from compose.insertion import ComposeInsertionService
 from compose.models import (
     Draft,
@@ -178,7 +179,10 @@ def approval(guard: Guard, *, run_id="compose-insert-1"):
     grant = RunCapabilityGrant(
         run_id,
         frozenset(
-            {ActionCapability.SCREEN_AWARE_COMPOSE}
+            {
+                CapabilityId.COMPOSE_SCREEN_CONTEXT,
+                CapabilityId.STYLE_PROFILE_USE,
+            }
         ),
     )
     return DraftInsertionApproval(
@@ -355,7 +359,7 @@ class ComposeInsertionTests(unittest.TestCase):
         approved = approval(guard)
         wrong = RunCapabilityGrant(
             approved.run_id,
-            frozenset({ActionCapability.GLOBAL_DICTATION}),
+            frozenset({CapabilityId.DICTATION_INSERT_TEXT}),
         )
 
         with self.assertRaisesRegex(

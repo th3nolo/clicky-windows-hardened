@@ -34,6 +34,7 @@ jobs:
           python -m unittest -v
           tests.test_action_feature_gates
           tests.test_audio_temp_privacy
+          tests.test_capability_registry
           tests.test_capture_exclusion
           tests.test_compose_insertion
           tests.test_compose_service

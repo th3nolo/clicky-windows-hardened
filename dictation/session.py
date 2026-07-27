@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 
+from capability_registry import CapabilityGrant, CapabilityId
 from dictation.models import (
     DictationCommit,
     DictationSession,
@@ -21,12 +22,10 @@ from dictation.policy import (
 )
 from dictation.targeting import SecureTargetGuard
 from feature_gates import (
-    ACTION_PERMISSION_SCHEMA_VERSION,
     DEFAULT_BUILD_FEATURE_FLAGS,
     ActionCapability,
     ActionPermissionConfiguration,
     BuildFeatureFlag,
-    RunCapabilityGrant,
     action_capability_allowed,
     build_feature_available,
     user_permission_allowed,
@@ -106,12 +105,11 @@ class DictationSessionCoordinator:
         if turn is None:
             return None
         run_id = f"dictation-{turn.sequence}"
-        grant = RunCapabilityGrant(
+        grant = CapabilityGrant(
             run_id=run_id,
             capabilities=frozenset(
-                {capability}
+                {CapabilityId.DICTATION_INSERT_TEXT}
             ),
-            permission_schema_version=ACTION_PERMISSION_SCHEMA_VERSION,
         )
         if not action_capability_allowed(
             config,
