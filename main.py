@@ -144,6 +144,10 @@ def main():
 
     # Response streaming
     manager.sig_response_chunk.connect(panel.append_response_chunk)
+    manager.sig_transcript_begin.connect(panel.begin_transcript)
+    manager.sig_transcript_partial.connect(panel.update_partial_transcript)
+    manager.sig_transcript_final.connect(panel.update_final_transcript)
+    manager.sig_transcript_end.connect(panel.end_transcript)
 
     # Audio level → cursor waveform (+ panel meter)
     manager.sig_audio_level.connect(panel.set_audio_level)
@@ -302,6 +306,17 @@ def main():
     tray.on_ollama_set_model.connect(manager.set_ollama_model)
     tray.on_ollama_refresh.connect(manager.refresh_ollama_models)
     tray.on_set_mic_device.connect(manager.set_mic_device)
+    def _set_stt_provider(name: str):
+        if not manager.set_stt_provider(name):
+            return
+        tray.rebuild_menu()
+        selected = cfg.describe()
+        tray.show_notification(
+            "Speech input changed",
+            f"{selected['stt']} — {selected['stt_mode']}",
+        )
+
+    tray.on_set_stt_provider.connect(_set_stt_provider)
     tray.on_set_response_language.connect(manager.set_response_language)
     tray.on_set_custom_instructions.connect(manager.set_custom_instructions)
 

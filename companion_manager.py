@@ -24,6 +24,7 @@ from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
 from audio.tts.base_tts import DisabledTTSProvider
 from privacy_controls import (
+    cloud_stt_allowed,
     cloud_tts_allowed,
     microphone_allowed,
     screen_capture_allowed,
@@ -247,6 +248,10 @@ class CompanionManager(QObject):
     sig_state_changed       = pyqtSignal(object)          # AppState
     sig_response_chunk      = pyqtSignal(str)
     sig_response_done       = pyqtSignal(str)
+    sig_transcript_begin    = pyqtSignal(int)
+    sig_transcript_partial  = pyqtSignal(int, str)
+    sig_transcript_final    = pyqtSignal(int, str)
+    sig_transcript_end      = pyqtSignal(int)
     sig_audio_level         = pyqtSignal(float)
     sig_point_at            = pyqtSignal(float, float, str)
     sig_point_hold          = pyqtSignal(bool)            # True → dwell forever until release
@@ -277,6 +282,8 @@ class CompanionManager(QObject):
         # Providers (lazy)
         self._llm: Optional[BaseLLMProvider] = None
         self._stt = None
+        self._streaming_stt: dict[int, object] = {}
+        self._streaming_open: dict[int, concurrent.futures.Future] = {}
         self._tts = None
         self._privacy_tts_notice_emitted = False
 
@@ -493,6 +500,11 @@ class CompanionManager(QObject):
         if self._stt is None:
             provider = cfg.stt_provider()
             if provider == "deepgram":
+                raise RuntimeError(
+                    "Deepgram live mode requires an active streaming session; "
+                    "Clicky will not silently fall back to batch transcription."
+                )
+            if provider == "deepgram_batch":
                 from audio.stt.deepgram_stt import DeepgramSTT
                 self._stt = DeepgramSTT()
             elif provider == "openai":
@@ -505,6 +517,76 @@ class CompanionManager(QObject):
                 from audio.stt.faster_whisper_stt import FasterWhisperSTT
                 self._stt = FasterWhisperSTT()
         return self._stt
+
+    def _new_streaming_stt(self, session: TurnSession):
+        if cfg.stt_provider() != "deepgram":
+            return None
+        if not cloud_stt_allowed(cfg):
+            raise PermissionError(
+                "Deepgram live transcription is disabled until cloud "
+                "speech-to-text permission is granted in Privacy permissions."
+            )
+        if self._loop is None or not self._loop.is_running():
+            raise RuntimeError(
+                "The live transcription worker is still starting. Try again."
+            )
+        from audio.stt.deepgram_streaming import DeepgramStreamingSession
+
+        stream = DeepgramStreamingSession(
+            api_key=cfg.deepgram_api_key,
+            cloud_consent=True,
+            loop=self._loop,
+            on_partial=lambda text: self._emit_turn_signal(
+                session,
+                self.sig_transcript_partial,
+                session.sequence,
+                text,
+            ),
+        )
+        self._streaming_stt[session.sequence] = stream
+        open_future = asyncio.run_coroutine_threadsafe(stream.open(), self._loop)
+        self._streaming_open[session.sequence] = open_future
+        self._turns.bind_task(
+            session,
+            open_future,
+            name="streaming-open",
+        )
+        self._turns.bind_cancel(
+            session,
+            "streaming-stt",
+            lambda: self._cancel_streaming_stt(session.sequence),
+        )
+        return stream
+
+    def _cancel_streaming_stt(self, sequence: int) -> None:
+        open_future = self._streaming_open.pop(sequence, None)
+        if open_future is not None and not open_future.done():
+            open_future.cancel()
+        stream = self._streaming_stt.pop(sequence, None)
+        loop = self._loop
+        if stream is None or loop is None or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(stream.cancel(), loop)
+        except RuntimeError:
+            pass
+
+    async def _finalize_streaming_stt(self, session: TurnSession) -> str:
+        stream = self._streaming_stt.get(session.sequence)
+        if stream is None:
+            raise RuntimeError("The live transcription session is unavailable.")
+        open_future = self._streaming_open.get(session.sequence)
+        try:
+            if open_future is not None:
+                await asyncio.wrap_future(open_future)
+            if not self._turns.is_current(session):
+                raise asyncio.CancelledError
+            return await stream.finalize()
+        finally:
+            self._streaming_open.pop(session.sequence, None)
+            self._streaming_stt.pop(session.sequence, None)
+            self._turns.unbind_cancel(session, "streaming-open")
+            self._turns.unbind_cancel(session, "streaming-stt")
 
     def _get_tts(self):
         if not cloud_tts_allowed(cfg):
@@ -584,9 +666,31 @@ class CompanionManager(QObject):
                 "Privacy permissions to enable it."
             )
             return False
+        provider = cfg.stt_provider()
+        if (
+            provider in ("deepgram", "deepgram_batch", "openai")
+            and not cloud_stt_allowed(cfg)
+        ):
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                "The selected cloud speech provider is disabled until cloud "
+                "speech-to-text permission is granted in Privacy permissions. "
+                "Clicky did not send microphone audio.",
+            )
+            return False
         try:
-            started = self._listener.start_recording(session.sequence)
+            streaming = self._new_streaming_stt(session)
+        except Exception as exc:
+            self._emit_turn_signal(session, self.sig_error, str(exc))
+            return False
+        try:
+            started = self._listener.start_recording(
+                session.sequence,
+                on_frame=streaming.send_frame if streaming is not None else None,
+            )
         except Exception as e:
+            self._cancel_streaming_stt(session.sequence)
             _log.exception("mic start failed")
             self._emit_turn_signal(session, self.sig_error,
                 f"Couldn't open the microphone: {e}\n"
@@ -594,6 +698,7 @@ class CompanionManager(QObject):
             )
             return False
         if not started:
+            self._cancel_streaming_stt(session.sequence)
             return False
         self._turns.bind_cancel(
             session,
@@ -601,6 +706,12 @@ class CompanionManager(QObject):
             lambda: self._listener.cancel_recording(session.sequence),
         )
         self._turns.bind_cancel(session, "playback", self._cancel_outputs)
+        self._turns.bind_cancel(
+            session,
+            "transcript-ui",
+            lambda: self.sig_transcript_end.emit(session.sequence),
+        )
+        self.sig_transcript_begin.emit(session.sequence)
         self._emit_state(AppState.LISTENING, session)
         return self._turns.is_current(session)
 
@@ -647,15 +758,27 @@ class CompanionManager(QObject):
         try:
             # 1. Transcribe — bounded so a hung/loading local STT model can
             # never freeze the UI on "Thinking..." forever
-            transcript = await asyncio.wait_for(
-                self._get_stt().transcribe(pcm), timeout=90,
-            )
+            if session.sequence in self._streaming_stt:
+                transcript = await asyncio.wait_for(
+                    self._finalize_streaming_stt(session),
+                    timeout=25,
+                )
+            else:
+                transcript = await asyncio.wait_for(
+                    self._get_stt().transcribe(pcm), timeout=90,
+                )
             if not self._turns.is_current(session):
                 return
             _log.info("voice transcription completed (provider=%s)",
-                      cfg.llm_provider())
+                      cfg.stt_provider())
             if not transcript.strip():
                 return
+            self._emit_turn_signal(
+                session,
+                self.sig_transcript_final,
+                session.sequence,
+                transcript,
+            )
 
             # ── Voice commands — short-circuit before LLM ──
             if is_stop(transcript):
@@ -1393,7 +1516,13 @@ class CompanionManager(QObject):
         return ran
 
     def _finish_turn(self, session: TurnSession) -> bool:
-        return self._turns.complete(session, self._set_idle_state)
+        self._cancel_streaming_stt(session.sequence)
+
+        def finish_ui() -> None:
+            self.sig_transcript_end.emit(session.sequence)
+            self._set_idle_state()
+
+        return self._turns.complete(session, finish_ui)
 
     def _cancel_outputs(self) -> None:
         try:
@@ -1522,6 +1651,19 @@ class CompanionManager(QObject):
                 self._listener.start()
             except Exception as e:
                 self.sig_error.emit(f"Could not start mic: {e}")
+
+    def set_stt_provider(self, name: str) -> bool:
+        """Switch live/cloud-batch/local transcription explicitly."""
+        try:
+            cfg.set_stt_provider(name)
+        except (OSError, ValueError) as exc:
+            self.sig_error.emit(f"Could not change speech input mode: {exc}")
+            return False
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
+        self._stt = None
+        return True
 
     def refresh_privacy_permissions(self) -> None:
         """Apply persisted choices immediately without restarting Clicky."""

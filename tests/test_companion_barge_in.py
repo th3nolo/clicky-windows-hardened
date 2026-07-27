@@ -1,12 +1,15 @@
 import asyncio
+import threading
 import time
 import types
 import unittest
 from unittest import mock
 
 import numpy as np
+from PyQt6.QtCore import Qt
 
 import companion_manager as manager_module
+from audio.stt import deepgram_streaming as streaming_module
 from audio.ambient_listener import AmbientListener
 from companion_manager import CompanionManager
 from turn_coordinator import TurnPhase
@@ -18,12 +21,14 @@ class _FakeListener:
         self.active = None
         self.start_count = 0
         self.cancelled = []
+        self.on_frame = None
 
     def start(self):
         return None
 
     def stop(self):
         self.active = None
+        self.on_frame = None
 
     def start_recording(self, capture_id=None, on_frame=None):
         if self.active is not None:
@@ -32,12 +37,14 @@ class _FakeListener:
             raise RuntimeError("capture already active")
         self.active = capture_id
         self.start_count += 1
+        self.on_frame = on_frame
         return True
 
     def stop_recording(self, capture_id=None):
         if self.active != capture_id:
             return None
         self.active = None
+        self.on_frame = None
         return bytes(6400)
 
     def cancel_recording(self, capture_id=None):
@@ -47,7 +54,12 @@ class _FakeListener:
             return False
         self.cancelled.append(self.active)
         self.active = None
+        self.on_frame = None
         return True
+
+    def emit_frame(self, frame):
+        if self.on_frame is not None:
+            self.on_frame(frame)
 
     def set_wake_word_enabled(self, enabled):
         return None
@@ -62,8 +74,42 @@ class _Cancellable:
         self.events.append(self.name)
 
 
+class _FakeStreamingSession:
+    instances = []
+    result_text = "stop"
+
+    def __init__(self, **kwargs):
+        self.on_partial = kwargs.get("on_partial")
+        self.frames = []
+        self.opened = threading.Event()
+        self.finalized = threading.Event()
+        self.cancelled = threading.Event()
+        type(self).instances.append(self)
+
+    async def open(self):
+        self.opened.set()
+
+    def send_frame(self, frame):
+        self.frames.append(frame)
+
+    async def finalize(self):
+        self.finalized.set()
+        return self.result_text
+
+    async def cancel(self):
+        self.cancelled.set()
+
+
+class _BlockingStreamingSession(_FakeStreamingSession):
+    async def finalize(self):
+        self.finalized.set()
+        await asyncio.sleep(30)
+        return self.result_text
+
+
 class CompanionBargeInTests(unittest.TestCase):
     def setUp(self):
+        _FakeStreamingSession.instances.clear()
         self.listener_patch = mock.patch.object(
             manager_module, "AmbientListener", _FakeListener
         )
@@ -172,6 +218,119 @@ class CompanionBargeInTests(unittest.TestCase):
         self.assertIn(capture.sequence, self.manager._listener.cancelled)
         self.assertIsNone(self.manager._turns.active)
         self.assertEqual(self.manager._state, AppState.IDLE)
+
+    def test_deepgram_mode_streams_live_frames_without_batch_fallback(self):
+        partials = []
+        finals = []
+        self.manager.sig_transcript_partial.connect(
+            lambda sequence, text: partials.append((sequence, text)),
+            type=Qt.ConnectionType.DirectConnection,
+        )
+        self.manager.sig_transcript_final.connect(
+            lambda sequence, text: finals.append((sequence, text)),
+            type=Qt.ConnectionType.DirectConnection,
+        )
+
+        with (
+            mock.patch.object(
+                manager_module.cfg, "stt_provider", return_value="deepgram"
+            ),
+            mock.patch.object(
+                manager_module.cfg, "deepgram_api_key", "secret"
+            ),
+            mock.patch.object(
+                manager_module, "cloud_stt_allowed", return_value=True
+            ),
+            mock.patch.object(
+                streaming_module,
+                "DeepgramStreamingSession",
+                _FakeStreamingSession,
+            ),
+            mock.patch.object(
+                self.manager,
+                "_get_stt",
+                side_effect=AssertionError("batch STT must not run"),
+            ),
+        ):
+            self.manager.on_hotkey_press()
+            capture = self.manager._turns.active
+            stream = _FakeStreamingSession.instances[0]
+            self.manager._listener.emit_frame(bytes(960))
+            stream.on_partial("hello")
+            self.manager.on_hotkey_release()
+
+            self.assertTrue(stream.finalized.wait(timeout=2))
+            deadline = time.monotonic() + 2
+            while self.manager._turns.active is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        self.assertEqual(stream.frames, [bytes(960)])
+        self.assertEqual(partials, [(capture.sequence, "hello")])
+        self.assertEqual(finals, [(capture.sequence, "stop")])
+        self.assertIsNone(self.manager._turns.active)
+
+    def test_cloud_provider_never_starts_without_cloud_stt_consent(self):
+        errors = []
+        self.manager.sig_error.connect(errors.append)
+        with (
+            mock.patch.object(
+                manager_module.cfg, "stt_provider", return_value="deepgram"
+            ),
+            mock.patch.object(
+                manager_module, "cloud_stt_allowed", return_value=False
+            ),
+            mock.patch.object(
+                streaming_module,
+                "DeepgramStreamingSession",
+                _FakeStreamingSession,
+            ),
+        ):
+            self.manager.on_hotkey_press()
+
+        self.assertEqual(_FakeStreamingSession.instances, [])
+        self.assertEqual(self.manager._listener.start_count, 0)
+        self.assertTrue(any("did not send microphone audio" in item for item in errors))
+
+    def test_barge_in_cancels_live_session_and_rejects_stale_partial(self):
+        partials = []
+        self.manager.sig_transcript_partial.connect(
+            lambda sequence, text: partials.append((sequence, text)),
+            type=Qt.ConnectionType.DirectConnection,
+        )
+        with (
+            mock.patch.object(
+                manager_module.cfg, "stt_provider", return_value="deepgram"
+            ),
+            mock.patch.object(
+                manager_module.cfg, "deepgram_api_key", "secret"
+            ),
+            mock.patch.object(
+                manager_module, "cloud_stt_allowed", return_value=True
+            ),
+            mock.patch.object(
+                streaming_module,
+                "DeepgramStreamingSession",
+                _BlockingStreamingSession,
+            ),
+        ):
+            self.manager.on_hotkey_press()
+            first_turn = self.manager._turns.active
+            first_stream = _FakeStreamingSession.instances[0]
+            self.manager.on_hotkey_release()
+            self.assertTrue(first_stream.finalized.wait(timeout=2))
+
+            self.manager.on_hotkey_press()
+            second_turn = self.manager._turns.active
+            second_stream = _FakeStreamingSession.instances[1]
+            first_stream.on_partial("stale")
+            second_stream.on_partial("fresh")
+
+            self.assertTrue(first_stream.cancelled.wait(timeout=2))
+            self.manager.stop()
+
+        self.assertNotEqual(first_turn, second_turn)
+        self.assertNotIn((first_turn.sequence, "stale"), partials)
+        self.assertIn((second_turn.sequence, "fresh"), partials)
 
 
 class AmbientListenerCaptureIdentityTests(unittest.TestCase):
