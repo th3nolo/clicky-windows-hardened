@@ -41,6 +41,7 @@ jobs:
           tests.test_provider_security
           tests.test_quarantine_harness
           tests.test_security_hardening
+          tests.test_stt_vocabulary_contract
           tests.test_turn_coordinator
           tests.test_validation_boundary
           tests.test_windows_runtime_validation
