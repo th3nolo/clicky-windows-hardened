@@ -241,6 +241,18 @@ def _reject_duplicates(value: Any, *, label: str) -> Any:
     return value
 
 
+def _normalize_json_sequence(
+    value: Any,
+    *,
+    frozen: bool = False,
+) -> Any:
+    """Convert only JSON's array representation to an immutable container."""
+
+    if isinstance(value, list):
+        return frozenset(value) if frozen else tuple(value)
+    return value
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -260,7 +272,9 @@ class InvocationDefinition(_StrictModel):
     @field_validator("phrases", mode="before")
     @classmethod
     def reject_duplicate_phrases(cls, value: Any) -> Any:
-        return _reject_duplicates(value, label="Invocation phrases")
+        return _normalize_json_sequence(
+            _reject_duplicates(value, label="Invocation phrases")
+        )
 
     @field_validator("phrases")
     @classmethod
@@ -394,6 +408,11 @@ class SkillOutputDefinition(_StrictModel):
         max_length=MAX_OUTPUT_FIELDS,
     )
 
+    @field_validator("fields", mode="before")
+    @classmethod
+    def normalize_fields(cls, value: Any) -> Any:
+        return _normalize_json_sequence(value)
+
     @field_validator("media_type")
     @classmethod
     def validate_media_type(cls, value: str) -> str:
@@ -467,8 +486,11 @@ class WorkflowStep(_StrictModel):
     step_id: str
     tool: DeclarativeTool
     capability: CapabilityId
-    depends_on: tuple[str, ...] = ()
-    arguments: tuple[StepArgumentBinding, ...] = ()
+    depends_on: tuple[str, ...] = Field(default=(), max_length=MAX_STEPS)
+    arguments: tuple[StepArgumentBinding, ...] = Field(
+        default=(),
+        max_length=32,
+    )
     output_id: str
     connector: ConnectorId | None = None
     approval_id: str | None = None
@@ -486,7 +508,14 @@ class WorkflowStep(_StrictModel):
     @field_validator("depends_on", mode="before")
     @classmethod
     def reject_duplicate_dependencies(cls, value: Any) -> Any:
-        return _reject_duplicates(value, label="Step dependencies")
+        return _normalize_json_sequence(
+            _reject_duplicates(value, label="Step dependencies")
+        )
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def normalize_arguments(cls, value: Any) -> Any:
+        return _normalize_json_sequence(value)
 
     @field_validator("depends_on")
     @classmethod
@@ -553,7 +582,10 @@ class ConnectorRequirement(_StrictModel):
     @field_validator("capabilities", "oauth_scopes", mode="before")
     @classmethod
     def reject_duplicate_values(cls, value: Any) -> Any:
-        return _reject_duplicates(value, label="Connector requirements")
+        return _normalize_json_sequence(
+            _reject_duplicates(value, label="Connector requirements"),
+            frozen=True,
+        )
 
     @model_validator(mode="after")
     def validate_connector_scope(self) -> Self:
@@ -603,7 +635,12 @@ class ApprovalRequirement(_StrictModel):
     @field_validator("preview_references", mode="before")
     @classmethod
     def reject_duplicate_references(cls, value: Any) -> Any:
-        return _reject_duplicates(value, label="Approval preview references")
+        return _normalize_json_sequence(
+            _reject_duplicates(
+                value,
+                label="Approval preview references",
+            )
+        )
 
     @field_validator("preview_references")
     @classmethod
@@ -746,7 +783,21 @@ class DeclarativeSkillDefinition(_StrictModel):
     @field_validator("capabilities", mode="before")
     @classmethod
     def reject_duplicate_capabilities(cls, value: Any) -> Any:
-        return _reject_duplicates(value, label="Skill capabilities")
+        return _normalize_json_sequence(
+            _reject_duplicates(value, label="Skill capabilities"),
+            frozen=True,
+        )
+
+    @field_validator(
+        "inputs",
+        "steps",
+        "connectors",
+        "approvals",
+        mode="before",
+    )
+    @classmethod
+    def normalize_model_sequences(cls, value: Any) -> Any:
+        return _normalize_json_sequence(value)
 
     @model_validator(mode="after")
     def validate_definition(self) -> Self:
