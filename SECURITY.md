@@ -140,6 +140,14 @@ to the requested or foreground-window monitor. Unknown display numbers,
 ambiguous hardware identities, or topology changes fail explicitly. Per-monitor
 v2 awareness is declared in both startup code and the executable manifest.
 
+Model selections are bounded, syntax-validated non-secret preferences stored
+separately for Claude, OpenAI, Gemini, Copilot, Ollama, and LM Studio. A saved
+cloud model is restored only when its exact ID remains in the validated model
+list. Removed IDs can fall back only to reviewed low-cost aliases; Copilot
+requires an explicit zero multiplier from its model metadata. Without an
+eligible fallback, Clicky blocks the request and asks for a visible selection
+instead of using a provider default or the first list entry.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.

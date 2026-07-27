@@ -13,7 +13,10 @@ _PREFERENCES_VERSION = 1
 _MAX_PREFERENCES_BYTES = 64 * 1024
 _PREFERENCE_STRING_LIMITS = {
     "active_llm": 32,
+    "claude_model": 256,
     "openai_default_model": 256,
+    "gemini_model": 256,
+    "copilot_model": 256,
     "ollama_model": 256,
     "ollama_vision_model": 256,
     "ollama_text_model": 256,
@@ -234,6 +237,15 @@ class Config:
     openai_default_model: str = field(
         default_factory=lambda: _preference("openai_default_model", "")
     )
+    claude_model: str = field(
+        default_factory=lambda: _preference("claude_model", "")
+    )
+    gemini_model: str = field(
+        default_factory=lambda: _preference("gemini_model", "")
+    )
+    copilot_model: str = field(
+        default_factory=lambda: _preference("copilot_model", "")
+    )
     ollama_model: str = field(
         default_factory=lambda: _preference("ollama_model", "llama3.2-vision")
     )
@@ -354,6 +366,42 @@ class Config:
             return
         self.active_llm = normalized
         _save_preferences(active_llm=normalized)
+
+    def selected_model(self, provider: str) -> str:
+        attributes = {
+            "claude": "claude_model",
+            "openai": "openai_default_model",
+            "gemini": "gemini_model",
+            "copilot": "copilot_model",
+            "ollama": "ollama_model",
+            "lmstudio": "lmstudio_model",
+        }
+        attribute = attributes.get((provider or "").strip().lower())
+        if attribute is None:
+            return ""
+        value = getattr(self, attribute, "")
+        from ai.model_selection import valid_model_id
+
+        return value if valid_model_id(value) else ""
+
+    def set_selected_model(self, provider: str, model_id: str) -> None:
+        provider = (provider or "").strip().lower()
+        attributes = {
+            "claude": ("claude_model", "claude_model"),
+            "openai": ("openai_default_model", "openai_default_model"),
+            "gemini": ("gemini_model", "gemini_model"),
+            "copilot": ("copilot_model", "copilot_model"),
+            "ollama": ("ollama_model", "ollama_model"),
+            "lmstudio": ("lmstudio_model", "lmstudio_model"),
+        }
+        target = attributes.get(provider)
+        from ai.model_selection import valid_model_id
+
+        if target is None or not valid_model_id(model_id):
+            raise ValueError("Invalid provider model selection")
+        attribute, preference = target
+        setattr(self, attribute, model_id)
+        _save_preferences(**{preference: model_id})
 
     def stt_provider(self) -> str:
         forced = self.stt_provider_preference.strip().lower()

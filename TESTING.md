@@ -192,6 +192,19 @@ explicitly without drawing or clicking on another display.
 2. Launch in a disposable environment and close the app without making a provider request.
 3. Inspect `%LOCALAPPDATA%\Clicky\preferences.json` and application logs.
 4. Confirm the marker is absent.
+
+### Per-provider model restoration
+
+Choose distinct models for two or more providers, restart Clicky, and switch
+between them. Confirm each provider restores only its own exact saved ID. Replace
+one cached model list with a list that omits its saved ID and includes the
+reviewed low-cost fallback; confirm the panel and tray visibly report the
+fallback before a request is sent.
+
+Repeat with a model list containing only higher-cost or unknown-cost choices.
+Confirm no model is selected automatically and Clicky blocks the request until
+the user makes an explicit choice. For Copilot, confirm automatic fallback occurs
+only when the selected record reports multiplier zero.
 5. Place the same marker in `.env` and confirm Clicky does not load it. Remove the file afterward.
 
 Never perform this test with a real key.

@@ -56,6 +56,8 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 - Provider API keys are read from the current process environment only.
 - GitHub Copilot OAuth tokens are encrypted for the current Windows user with DPAPI.
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
+- The selected model is stored independently for each provider. Saved IDs are
+  restored only while they remain in that provider's validated model list.
 - Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture require independent persisted permission. Microphone permission alone never authorizes cloud transcription.
 - Journal logging and web search are disabled until the user enables them in the tray.
 
@@ -72,6 +74,12 @@ as “screen 2” are routed only to that screen; otherwise the foreground-windo
 screen is selected, with the primary screen as the sole deterministic fallback.
 Disagreement between MSS, Win32, and Qt monitor identity aborts capture instead of
 silently substituting the first screenshot.
+
+If a provider removes a saved model, Clicky visibly selects only a reviewed
+low-cost model that is still present in the validated provider list. Copilot
+fallbacks additionally require a reported zero billing multiplier. If no such
+fallback exists, requests remain blocked until the user explicitly chooses an
+available model; list order is never treated as a cost signal.
 
 ### Local code and models
 
