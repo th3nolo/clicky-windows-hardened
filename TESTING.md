@@ -230,6 +230,10 @@ explicitly without drawing or clicking on another display.
 2. Launch in a disposable environment and close the app without making a provider request.
 3. Inspect `%LOCALAPPDATA%\Clicky\preferences.json` and application logs.
 4. Confirm the marker is absent.
+5. Place the same marker in `.env` and confirm Clicky does not load it. Remove
+   the file afterward.
+
+Never perform this test with a real key.
 
 ### Per-provider model restoration
 
@@ -243,9 +247,32 @@ Repeat with a model list containing only higher-cost or unknown-cost choices.
 Confirm no model is selected automatically and Clicky blocks the request until
 the user makes an explicit choice. For Copilot, confirm automatic fallback occurs
 only when the selected record reports multiplier zero.
-5. Place the same marker in `.env` and confirm Clicky does not load it. Remove the file afterward.
 
-Never perform this test with a real key.
+Repeat with Kimi Code, MiniMax Token Plan, DeepSeek, Qwen standard, Codex agent,
+and Qwen Code agent. Confirm preferences remain separate. Kimi, MiniMax, and
+DeepSeek may use only their reviewed safe aliases automatically; Qwen standard
+and Qwen Code must visibly require a selection when no saved model is valid.
+Select a text-only model and confirm Clicky sends no screenshot bytes while
+showing the no-vision label.
+
+### Coding-agent boundary
+
+In a disposable Windows account with synthetic prompts:
+
+1. Leave coding-agent permission disabled and confirm neither agent appears in
+   the provider menu and no `codex` or `qwen` process starts.
+2. Grant the permission without selecting an agent; again confirm no process
+   starts.
+3. Select Codex agent and submit a synthetic turn. Confirm the command uses an
+   ephemeral run, ignored user config/rules, read-only sandbox, a temporary
+   working directory, and stdin for the prompt.
+4. Interrupt the turn and confirm the owned agent process exits and no late
+   response reaches the UI.
+5. Select Qwen Code with a synthetic Coding Plan key in a test account. Confirm
+   the child environment contains only the fixed international plan endpoint,
+   plan key, and selected allowlisted model—not unrelated provider secrets.
+6. Confirm temporary screenshot files are absent after success, failure,
+   timeout, and interruption.
 
 ### GitHub Copilot token storage
 

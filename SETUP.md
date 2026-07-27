@@ -57,6 +57,11 @@ Clicky does not read `.env` or `.env.local`. The example file is informational a
 $env:ANTHROPIC_API_KEY = "..."
 $env:OPENAI_API_KEY = "..."
 $env:GOOGLE_API_KEY = "..."
+$env:KIMI_CODE_API_KEY = "..."
+$env:MINIMAX_API_KEY = "..."
+$env:DEEPSEEK_API_KEY = "..."
+$env:DASHSCOPE_API_KEY = "..."
+$env:BAILIAN_CODING_PLAN_API_KEY = "..."
 $env:DEEPGRAM_API_KEY = "..."
 $env:ELEVENLABS_API_KEY = "..."
 $env:TAVILY_API_KEY = "..."
@@ -75,6 +80,26 @@ Use **Tray → Model → Sign in to GitHub Copilot**. The device code is shown t
 ~~~
 
 The token is encrypted with Windows DPAPI for the current user. A legacy plaintext `github_token.json` is migrated only after the encrypted value is verified, then removal is attempted. DPAPI-protected files do not work under another Windows user.
+
+## Optional coding agents
+
+Clicky never installs Codex or Qwen Code. If an agent backend is required,
+install the official CLI separately, review its version and distribution, and
+make its executable available on `PATH`.
+
+For Codex, complete the official CLI's ChatGPT login yourself. Clicky delegates
+authentication to Codex and never reads or copies its cached token.
+
+For Qwen Code, set only the international Alibaba Coding Plan key:
+
+~~~powershell
+$env:BAILIAN_CODING_PLAN_API_KEY = "sk-sp-..."
+~~~
+
+Clicky overrides Qwen Code's endpoint with
+`https://coding-intl.dashscope.aliyuncs.com/v1` and requires an explicit model
+from the reviewed Coding Plan list. `DASHSCOPE_API_KEY` is a separate
+standard-rate Qwen credential and never substitutes for the plan key.
 
 ## Local Ollama models
 
@@ -130,11 +155,18 @@ A missing or mismatched digest disables that local model instead of downloading 
 
 ## Privacy defaults
 
-On first launch, microphone access, cloud text-to-speech, and screen capture are independent unchecked permissions. Closing the dialog grants nothing. Choosing **Keep all disabled** records an intentional denial; reopen it through **Tray → Setup & Diagnostics → Privacy permissions**.
+On first launch, microphone access, cloud speech-to-text, cloud text-to-speech,
+screen capture, and external coding-agent execution are independent unchecked
+permissions. Closing the dialog grants nothing. Choosing **Keep all disabled**
+records an intentional denial; reopen it through **Tray → Setup & Diagnostics
+→ Privacy permissions**.
 
 - Microphone permission allows the continuous local wake-word stream and push-to-talk capture.
 - Cloud TTS permission sends assistant response text to Microsoft Edge TTS, OpenAI, or ElevenLabs, depending on the selected provider.
 - Screen permission captures every monitor. Images stay local with Ollama or LM Studio and are sent to the selected cloud AI provider otherwise. The window-title Privacy Guard is heuristic only.
+- Coding-agent permission allows Clicky to start a separately installed Codex
+  or Qwen Code process only after that agent is selected and the user submits a
+  turn. These tools have their own cloud and local-file security boundaries.
 - Temporary WAV files use a private per-user directory and are removed after use; a startup sweep removes crash leftovers from terminated processes.
 
 Web search and journal logging also start off. Enable either feature explicitly from the tray only after reviewing its data flow.

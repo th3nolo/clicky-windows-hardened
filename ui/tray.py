@@ -130,8 +130,15 @@ class TrayManager(QObject):
         # Model switcher submenu
         switch_menu = menu.addMenu(f"Model: {providers['llm']}")
         active = providers['llm']
+        from ai.provider_catalog import provider_label
+
         for name in cfg.available_llm_providers():
-            label = f"● {name}" if name == active else f"  {name}"
+            display_name = provider_label(name)
+            label = (
+                f"● {display_name}"
+                if name == active
+                else f"  {display_name}"
+            )
             act = switch_menu.addAction(label)
             act.triggered.connect(lambda _=False, n=name: self.on_switch_provider.emit(n))
         switch_menu.addSeparator()

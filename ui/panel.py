@@ -15,6 +15,7 @@ from ui.design import (
     FONT_TITLE, FONT_STATUS, FONT_RESPONSE, FONT_LABEL,
     SURFACE, TEXT_SECONDARY, BORDER, ANIM_FAST_MS
 )
+from ai.provider_catalog import PROVIDER_LABELS, REGISTRY_MODEL_PROVIDERS
 from config import cfg
 
 
@@ -94,14 +95,6 @@ class WaveformWidget(QWidget):
             painter.drawRoundedRect(x, y, bar_w, bar_h, bar_w // 2, bar_w // 2)
         painter.end()
 
-
-PROVIDER_LABELS = {
-    "claude":  "Claude",
-    "openai":  "GPT-4o",
-    "gemini":  "Gemini",
-    "copilot": "Copilot",
-    "ollama":  f"Ollama ({cfg.ollama_model})",
-}
 
 class ProviderBadge(QLabel):
     """Small pill showing active provider."""
@@ -299,12 +292,12 @@ class CompanionPanel(QWidget):
                     )
             except Exception:
                 records = []
-        elif provider in ("claude", "openai", "gemini"):
+        elif provider in REGISTRY_MODEL_PROVIDERS:
             try:
                 from ai.model_registry import cached_models
                 records = normalized_model_records(cached_models(provider))
                 for m in records:
-                    label = m["id"]
+                    label = m.get("label") or m["id"]
                     if not m.get("vision"):
                         label += "  (no vision)"
                     self._model_combo.addItem(label, userData=m["id"])
@@ -321,7 +314,7 @@ class CompanionPanel(QWidget):
                 self._model_combo.addItem(local_model, userData=local_model)
 
         saved = cfg.selected_model(provider)
-        if provider in ("claude", "openai", "gemini", "copilot"):
+        if provider in REGISTRY_MODEL_PROVIDERS or provider == "copilot":
             resolution = resolve_model(provider, records, saved)
         elif saved:
             from ai.model_selection import ModelResolution
@@ -344,7 +337,7 @@ class CompanionPanel(QWidget):
         if resolution.status == "stale-fallback":
             message = (
                 f"Saved {provider} model '{resolution.previous_model}' is "
-                f"unavailable. Using reviewed low-cost fallback "
+                f"unavailable. Using reviewed safe fallback "
                 f"'{resolution.model_id}'."
             )
         elif resolution.status == "selection-required":
@@ -354,7 +347,7 @@ class CompanionPanel(QWidget):
                 else ""
             )
             message = (
-                f"No reviewed low-cost {provider} fallback is available."
+                f"No reviewed safe {provider} fallback is available."
                 f"{previous} Select a model before asking Clicky."
             )
         else:

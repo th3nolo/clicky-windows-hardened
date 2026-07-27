@@ -481,27 +481,11 @@ class CompanionManager(QObject):
     def _get_llm(self) -> BaseLLMProvider:
         if self._llm is None:
             provider = cfg.llm_provider()
-            if provider == "claude":
-                from ai.claude_provider import ClaudeProvider
-                self._llm = ClaudeProvider()
-            elif provider == "openai":
-                from ai.openai_provider import OpenAIProvider
-                self._llm = OpenAIProvider()
-            elif provider == "gemini":
-                from ai.gemini_provider import GeminiProvider
-                self._llm = GeminiProvider()
-            elif provider == "copilot":
-                from ai.github_copilot_provider import GitHubCopilotProvider
-                self._llm = GitHubCopilotProvider()
-            elif provider == "lmstudio":
-                from ai.lmstudio_provider import LMStudioProvider
-                self._llm = LMStudioProvider()
-            else:
+            if provider == "ollama":
                 _require_local_ollama()
-                from ai import ollama_bootstrap
-                ollama_bootstrap.require_configured_model_identities()
-                from ai.ollama_provider import OllamaProvider
-                self._llm = OllamaProvider()
+            from ai.provider_factory import create_llm_provider
+
+            self._llm = create_llm_provider(provider)
         return self._llm
 
     def _get_stt(self):
@@ -1120,12 +1104,45 @@ class CompanionManager(QObject):
             # Use per-app history so context doesn't bleed between apps
             history = self._app_memory.setdefault(ak, [])
 
+            provider_images = images_b64
+            provider = cfg.llm_provider()
+            try:
+                from ai.model_selection import model_supports_vision
+                from ai.provider_catalog import REGISTRY_MODEL_PROVIDERS
+
+                if provider in REGISTRY_MODEL_PROVIDERS:
+                    from ai.model_registry import cached_models
+
+                    supports_vision = model_supports_vision(
+                        self._current_model,
+                        cached_models(provider),
+                    )
+                elif provider == "copilot":
+                    from ai.github_copilot_provider import cached_models
+
+                    supports_vision = model_supports_vision(
+                        self._current_model,
+                        cached_models(),
+                    )
+                else:
+                    supports_vision = True
+            except Exception:
+                supports_vision = False
+            if not supports_vision:
+                provider_images = []
+                system += (
+                    "\n\nSELECTED MODEL HAS NO VALIDATED IMAGE INPUT: Clicky did "
+                    "not send screenshot pixels to this model. Use only the "
+                    "textual screen map, OCR, and detected-figure context above; "
+                    "do not claim direct visual inspection.\n"
+                )
+
             # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
             full_response = ""
             display_buf = ""
             async for chunk in self._get_llm().stream_response(
                 user_text=transcript,
-                screenshots_b64=images_b64,
+                screenshots_b64=provider_images,
                 history=history,
                 system_prompt=system,
                 model=self._current_model,
@@ -1644,7 +1661,9 @@ class CompanionManager(QObject):
         from ai.model_selection import model_is_available, valid_model_id
 
         provider = cfg.llm_provider()
-        if provider in ("claude", "openai", "gemini"):
+        from ai.provider_catalog import REGISTRY_MODEL_PROVIDERS
+
+        if provider in REGISTRY_MODEL_PROVIDERS:
             from ai.model_registry import cached_models
 
             valid = model_is_available(model, cached_models(provider))
@@ -1672,7 +1691,7 @@ class CompanionManager(QObject):
         return True
 
     def set_active_provider(self, name: str):
-        """Runtime switch between claude / openai / copilot / gemini / ollama."""
+        """Switch the active provider and refresh only its reviewed model source."""
         cfg.set_active_llm(name)
         self._llm = None           # force re-init on next query
         self._current_model = None
@@ -1686,14 +1705,16 @@ class CompanionManager(QObject):
                     self._submit(self._refresh_copilot_models())
             except Exception:
                 pass
-        elif name in ("claude", "openai", "gemini"):
+        else:
             try:
+                from ai.provider_catalog import REFRESHABLE_MODEL_PROVIDERS
                 from ai.model_registry import cache_is_stale as _stale
-                if _stale(name):
+
+                if name in REFRESHABLE_MODEL_PROVIDERS and _stale(name):
                     self._submit(self._refresh_one_model_list(name))
             except Exception:
                 pass
-        elif name == "ollama":
+        if name == "ollama":
             # Surface installed models in the tray immediately
             self.refresh_ollama_models()
 

@@ -1,7 +1,7 @@
 """
-Live model discovery + caching for Claude, OpenAI, and Gemini.
+Live model discovery and caching for reviewed direct cloud providers.
 
-Each provider exposes a "list models" endpoint we hit on demand:
+The original providers expose these model-list endpoints:
   • Anthropic:  GET /v1/models                    (key in x-api-key)
   • OpenAI:     GET /v1/models                    (key in Authorization)
   • Gemini:     GET /v1beta/models                (key in x-goog-api-key)
@@ -10,8 +10,9 @@ Cached per-provider to %LOCALAPPDATA%\\Clicky\\models_<provider>.json with a
 30-day TTL — long enough that you don't refetch constantly, short enough
 that new model releases land within a month without manual refresh.
 
-GitHub Copilot has its own (separate) implementation in github_copilot_provider.py
-because Copilot's flow is more complex (token exchange + per-seat filtering).
+Kimi Code, MiniMax Token Plan, DeepSeek, and Qwen use the fixed endpoints in
+provider_catalog.py. GitHub Copilot has its own implementation in
+github_copilot_provider.py because its flow is more complex.
 """
 
 from __future__ import annotations
@@ -25,10 +26,12 @@ from typing import Optional
 
 import httpx
 
+from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
 from config import cfg
 
 
 CACHE_TTL_SECONDS = 30 * 24 * 60 * 60   # 30 days
+MAX_MODEL_RESPONSE_BYTES = 1024 * 1024
 
 
 # Curated fallback lists — used when the live endpoint is unreachable AND
@@ -49,6 +52,79 @@ _FALLBACKS: dict[str, list[dict]] = {
         {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": True},
         {"id": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "vision": True},
         {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "vision": True},
+    ],
+    "kimi_code": [
+        {
+            "id": "kimi-for-coding",
+            "label": "Kimi for Coding",
+            "vision": False,
+        },
+        {
+            "id": "kimi-for-coding-highspeed",
+            "label": "Kimi for Coding High-Speed",
+            "vision": False,
+        },
+        {"id": "k3", "label": "Kimi K3", "vision": False},
+    ],
+    "minimax_plan": [
+        {"id": "MiniMax-M2.7", "label": "MiniMax M2.7", "vision": False},
+        {
+            "id": "MiniMax-M2.7-highspeed",
+            "label": "MiniMax M2.7 High-Speed",
+            "vision": False,
+        },
+    ],
+    "deepseek": [
+        {"id": "deepseek-chat", "label": "DeepSeek Chat", "vision": False},
+        {
+            "id": "deepseek-reasoner",
+            "label": "DeepSeek Reasoner",
+            "vision": False,
+        },
+    ],
+    "qwen": [
+        {"id": "qwen3.5-plus", "label": "Qwen 3.5 Plus", "vision": True},
+        {
+            "id": "qwen3-coder-next",
+            "label": "Qwen 3 Coder Next",
+            "vision": False,
+        },
+        {
+            "id": "qwen3-coder-plus",
+            "label": "Qwen 3 Coder Plus",
+            "vision": False,
+        },
+    ],
+    "codex_agent": [
+        {
+            "id": "codex-default",
+            "label": "Codex plan default",
+            "vision": True,
+        },
+    ],
+    "qwen_code_agent": [
+        {
+            "id": "qwen3.7-plus",
+            "label": "Qwen 3.7 Plus",
+            "vision": True,
+        },
+        {"id": "qwen3.6-plus", "label": "Qwen 3.6 Plus", "vision": True},
+        {"id": "qwen3.5-plus", "label": "Qwen 3.5 Plus", "vision": True},
+        {
+            "id": "qwen3-max-2026-01-23",
+            "label": "Qwen 3 Max (2026-01-23)",
+            "vision": False,
+        },
+        {
+            "id": "qwen3-coder-next",
+            "label": "Qwen 3 Coder Next",
+            "vision": False,
+        },
+        {
+            "id": "qwen3-coder-plus",
+            "label": "Qwen 3 Coder Plus",
+            "vision": False,
+        },
     ],
 }
 
@@ -174,10 +250,75 @@ async def _fetch_gemini() -> list[dict]:
     return out
 
 
+def _compatible_vision(provider: str, model_id: str) -> bool:
+    if provider == "qwen":
+        return model_id.startswith(("qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus"))
+    return False
+
+
+async def _fetch_openai_compatible(provider: str) -> list[dict]:
+    spec = OPENAI_COMPATIBLE_SPECS[provider]
+    api_key = getattr(cfg, spec.credential_attribute, None)
+    if not api_key:
+        return []
+    url = f"{spec.base_url.rstrip('/')}/models"
+    async with httpx.AsyncClient(
+        timeout=15,
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
+        async with client.stream(
+            "GET",
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as response:
+            response.raise_for_status()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_MODEL_RESPONSE_BYTES:
+                    raise ValueError("Provider model response exceeds size limit")
+    payload = json.loads(bytes(body))
+    data = payload.get("data", []) if isinstance(payload, dict) else []
+    out = []
+    for record in data:
+        if not isinstance(record, dict):
+            continue
+        model_id = record.get("id")
+        if not isinstance(model_id, str):
+            continue
+        out.append({
+            "id": model_id,
+            "label": model_id,
+            "vision": _compatible_vision(provider, model_id),
+        })
+    return out
+
+
+async def _fetch_kimi_code() -> list[dict]:
+    return await _fetch_openai_compatible("kimi_code")
+
+
+async def _fetch_minimax_plan() -> list[dict]:
+    return await _fetch_openai_compatible("minimax_plan")
+
+
+async def _fetch_deepseek() -> list[dict]:
+    return await _fetch_openai_compatible("deepseek")
+
+
+async def _fetch_qwen() -> list[dict]:
+    return await _fetch_openai_compatible("qwen")
+
+
 _FETCHERS = {
     "claude":  _fetch_claude,
     "openai":  _fetch_openai,
     "gemini":  _fetch_gemini,
+    "kimi_code": _fetch_kimi_code,
+    "minimax_plan": _fetch_minimax_plan,
+    "deepseek": _fetch_deepseek,
+    "qwen": _fetch_qwen,
 }
 
 
@@ -242,7 +383,7 @@ def model_ids(provider: str) -> list[str]:
 
 
 def best_default(provider: str) -> Optional[str]:
-    """Pick only the provider's reviewed low-cost default."""
+    """Pick only the provider's reviewed safe default."""
     from ai.model_selection import resolve_model
 
     return resolve_model(provider, cached_models(provider), "").model_id
@@ -272,4 +413,5 @@ if __name__ == "__main__":
                     print(f"[{prov}] FAILED: {e}")
         asyncio.run(_run())
     else:
-        print("Usage: python -m ai.model_registry [show|refresh] [claude|openai|gemini]")
+        providers = "|".join(_FETCHERS)
+        print(f"Usage: python -m ai.model_registry [show|refresh] [{providers}]")

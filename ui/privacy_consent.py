@@ -17,7 +17,7 @@ from privacy_controls import PRIVACY_NOTICE_VERSION, notice_accepted
 
 
 class PrivacyConsentDialog(QDialog):
-    """Collect four independent permissions; closing grants nothing."""
+    """Collect independent permissions; closing grants nothing."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -99,6 +99,25 @@ class PrivacyConsentDialog(QDialog):
         screen_notice.setWordWrap(True)
         layout.addWidget(screen_notice)
 
+        self.coding_agent = QCheckBox(
+            "Allow explicitly selected external coding agents"
+        )
+        self.coding_agent.setChecked(bool(cfg.coding_agent_consent))
+        self.coding_agent.setToolTip(
+            "Allows Clicky to start an already-installed Codex or Qwen Code "
+            "process only after you select that provider and ask a question."
+        )
+        layout.addWidget(self.coding_agent)
+        coding_agent_notice = QLabel(
+            "Coding agents are separate local executables that can contact their "
+            "configured cloud service and may inspect files through their own "
+            "read-only tools. Clicky never installs them, copies their login "
+            "tokens, or starts them merely to discover providers. Runs use an "
+            "isolated temporary working directory and restrictive agent flags."
+        )
+        coding_agent_notice.setWordWrap(True)
+        layout.addWidget(coding_agent_notice)
+
         buttons = QHBoxLayout()
         keep_disabled = QPushButton("Keep all disabled")
         keep_disabled.clicked.connect(self._keep_disabled)
@@ -116,18 +135,20 @@ class PrivacyConsentDialog(QDialog):
         cloud_stt: bool,
         cloud_tts: bool,
         screen: bool,
+        coding_agent: bool,
     ) -> None:
         cfg.set_privacy_permissions(
             microphone=microphone,
             cloud_stt=cloud_stt,
             cloud_tts=cloud_tts,
             screen_capture=screen,
+            coding_agent=coding_agent,
             notice_version=PRIVACY_NOTICE_VERSION,
         )
         self.accept()
 
     def _keep_disabled(self) -> None:
-        self._persist(False, False, False, False)
+        self._persist(False, False, False, False, False)
 
     def _save(self) -> None:
         self._persist(
@@ -135,6 +156,7 @@ class PrivacyConsentDialog(QDialog):
             self.cloud_stt.isChecked(),
             self.cloud_tts.isChecked(),
             self.screen_capture.isChecked(),
+            self.coding_agent.isChecked(),
         )
 
 

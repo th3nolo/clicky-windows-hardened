@@ -10,10 +10,14 @@ from typing import Iterable, Mapping
 MAX_MODEL_ID_LENGTH = 256
 MAX_MODEL_CHOICES = 256
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
-_REVIEWED_LOW_COST_DEFAULTS = {
+_REVIEWED_SAFE_DEFAULTS = {
     "claude": ("claude-haiku-4-5-20251001",),
     "openai": ("gpt-4o-mini",),
     "gemini": ("gemini-2.5-flash", "gemini-2.0-flash"),
+    "kimi_code": ("kimi-for-coding",),
+    "minimax_plan": ("MiniMax-M2.7",),
+    "deepseek": ("deepseek-chat",),
+    "codex_agent": ("codex-default",),
 }
 
 
@@ -72,7 +76,7 @@ def resolve_model(
     records: Iterable[Mapping[str, object]],
     saved_model: str,
 ) -> ModelResolution:
-    """Restore a valid saved model or choose only a reviewed cheap/free one."""
+    """Restore a saved model or choose only a reviewed safe default."""
 
     models = normalized_model_records(records)
     model_ids = {model["id"] for model in models}
@@ -93,7 +97,7 @@ def resolve_model(
         fallback = next(
             (
                 model_id
-                for model_id in _REVIEWED_LOW_COST_DEFAULTS.get(provider, ())
+                for model_id in _REVIEWED_SAFE_DEFAULTS.get(provider, ())
                 if model_id in model_ids
             ),
             None,
@@ -120,5 +124,17 @@ def model_is_available(
         return False
     return any(
         record["id"] == model_id
+        for record in normalized_model_records(records)
+    )
+
+
+def model_supports_vision(
+    model_id: str,
+    records: Iterable[Mapping[str, object]],
+) -> bool:
+    if not valid_model_id(model_id):
+        return False
+    return any(
+        record["id"] == model_id and record["vision"]
         for record in normalized_model_records(records)
     )
