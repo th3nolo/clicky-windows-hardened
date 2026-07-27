@@ -67,6 +67,12 @@ Web search accepts HTTPS destinations only. It rejects local, private, link-loca
 
 Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect or silently fall back after a provider failure.
 
+The transcription vocabulary editor is an explicit approval boundary. Clicky
+ships only its own product name, accepts at most 63 custom terms of 64 characters
+each, and sends the resulting bounded list only to Deepgram live or batch modes.
+Unsupported providers ignore vocabulary. Clicky does not derive terms from
+window titles, screenshots, clipboard data, documents, or conversations.
+
 Clicky declares per-monitor-v2 DPI awareness before Qt starts. Each captured image
 is labeled with its Windows display number, stable hardware identity when exposed
 by Qt, logical rectangle, scale, and focused/primary role. Explicit requests such

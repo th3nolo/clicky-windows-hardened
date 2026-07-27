@@ -514,7 +514,9 @@ class CompanionManager(QObject):
                 )
             if provider == "deepgram_batch":
                 from audio.stt.deepgram_stt import DeepgramSTT
-                self._stt = DeepgramSTT()
+                self._stt = DeepgramSTT(
+                    vocabulary=cfg.transcription_vocabulary
+                )
             elif provider == "openai":
                 from audio.stt.openai_stt import OpenAISTT
                 self._stt = OpenAISTT()
@@ -544,6 +546,7 @@ class CompanionManager(QObject):
             api_key=cfg.deepgram_api_key,
             cloud_consent=True,
             loop=self._loop,
+            vocabulary=cfg.transcription_vocabulary,
             on_partial=lambda text: self._emit_turn_signal(
                 session,
                 self.sig_transcript_partial,
@@ -1790,6 +1793,18 @@ class CompanionManager(QObject):
             self._turns.cancel_active(self._set_idle_state)
         self._stt = None
         return True
+
+    def set_transcription_vocabulary(self, terms) -> tuple[str, ...] | None:
+        try:
+            approved = cfg.set_transcription_vocabulary(terms)
+        except (OSError, ValueError) as exc:
+            self.sig_error.emit(f"Could not save transcription vocabulary: {exc}")
+            return None
+        # Batch providers retain constructor settings, so discard the cached
+        # instance. An active live session keeps the immutable vocabulary it
+        # opened with; the next capture receives the newly approved terms.
+        self._stt = None
+        return approved
 
     def refresh_privacy_permissions(self) -> None:
         """Apply persisted choices immediately without restarting Clicky."""

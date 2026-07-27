@@ -148,6 +148,14 @@ requires an explicit zero multiplier from its model metadata. Without an
 eligible fallback, Clicky blocks the request and asks for a visible selection
 instead of using a provider default or the first list entry.
 
+Transcription vocabulary contains the shipped `Clicky` term plus only terms the
+user entered and saved in the dedicated editor. Custom terms are normalized,
+deduplicated, limited to 63 entries and 64 printable characters each, and stored
+in the allowlisted non-secret preference file. Only Deepgram live and batch
+requests receive the bounded list. Other STT providers ignore it. Clicky never
+mines vocabulary from window titles, screenshots, clipboard content, attached
+documents, conversation history, or transcripts.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.

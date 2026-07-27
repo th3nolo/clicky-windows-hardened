@@ -321,6 +321,17 @@ def main():
     tray.on_ollama_set_model.connect(manager.set_ollama_model)
     tray.on_ollama_refresh.connect(manager.refresh_ollama_models)
     tray.on_set_mic_device.connect(manager.set_mic_device)
+    def _set_transcription_vocabulary(terms: list):
+        approved = manager.set_transcription_vocabulary(terms)
+        if approved is not None:
+            tray.show_notification(
+                "Transcription vocabulary saved",
+                f"{len(approved)} custom terms approved. "
+                "They are used only by supported speech providers.",
+            )
+    tray.on_set_transcription_vocabulary.connect(
+        _set_transcription_vocabulary
+    )
     def _set_stt_provider(name: str):
         if not manager.set_stt_provider(name):
             return

@@ -37,6 +37,9 @@ _PREFERENCE_BOOL_KEYS = {
     "cloud_tts_consent",
     "screen_capture_consent",
 }
+_PREFERENCE_STRING_LIST_LIMITS = {
+    "transcription_vocabulary": (63, 64),
+}
 _PREFERENCES_LOCK = threading.Lock()
 
 
@@ -63,6 +66,18 @@ def _sanitize_preferences(values) -> dict:
         value = values.get(key)
         if isinstance(value, bool):
             clean[key] = value
+    for key, (count_limit, item_limit) in _PREFERENCE_STRING_LIST_LIMITS.items():
+        value = values.get(key)
+        if isinstance(value, list):
+            candidates = [
+                item
+                for item in value[:count_limit]
+                if isinstance(item, str) and len(item) <= item_limit
+            ]
+            if key == "transcription_vocabulary":
+                from audio.stt.vocabulary import sanitize_user_terms
+
+                clean[key] = list(sanitize_user_terms(candidates))
     notice_version = values.get("privacy_consent_version")
     if (
         isinstance(notice_version, int)
@@ -318,6 +333,11 @@ class Config:
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
     )
+    transcription_vocabulary: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            _preference("transcription_vocabulary", [])
+        )
+    )
 
     def llm_provider(self) -> str:
         """Returns the active LLM provider (runtime override > priority chain).
@@ -444,6 +464,14 @@ class Config:
             )
         self.stt_provider_preference = normalized
         _save_preferences(stt_provider=normalized)
+
+    def set_transcription_vocabulary(self, terms) -> tuple[str, ...]:
+        from audio.stt.vocabulary import validate_user_terms
+
+        approved = validate_user_terms(terms)
+        self.transcription_vocabulary = approved
+        _save_preferences(transcription_vocabulary=list(approved))
+        return approved
 
     def tts_provider(self) -> str:
         if self.elevenlabs_api_key:
