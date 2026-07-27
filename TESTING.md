@@ -237,9 +237,24 @@ typed approval is emitted after a fresh target-policy observation. Attempt a
 second click and confirm no second approval. Repeat after changing focus,
 control identity, process, executable identity, desktop, policy, or integrity
 level; Insert must become unavailable while the draft remains reviewable.
-These tests prove the preview and approval boundary only. They do not prove a
-real insertion, clipboard operation, window non-activation across Windows UI
-frameworks, or full Compose caller path.
+
+Route the typed approval to the Compose insertion service with the matching
+current run grant. Confirm it performs a second target-policy observation and
+uses the same insertion broker and ordered adapters as Global Dictation. One
+approval may cause at most one mutation attempt, including when it is delivered
+to a second service instance. Compose permission without the typed approval,
+Global Dictation permission without Compose permission, a stale/revoked grant,
+or the baseline hard-off build flag must cause no target query or mutation.
+Unsupported Unicode insertion must remain a preview-copy result; the service
+must not silently authorize clipboard fallback. Provider, target, or backend
+failure must preserve the original disposable text, make no retry, and log no
+draft or raw exception.
+
+The checked-in tests prove the preview-to-broker contract with synthetic
+targets and backends. They do not prove real Windows insertion, clipboard
+behavior, window non-activation across Windows UI frameworks, or the complete
+interactive Compose caller path. Keep the feature build-unavailable until the
+representative-application matrix passes.
 
 ### Global Dictation session ownership
 
