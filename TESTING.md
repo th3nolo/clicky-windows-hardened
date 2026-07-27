@@ -120,6 +120,7 @@ Inside the sandbox, `tools/windows-sandbox-validate.cmd` verifies the source, uv
 - source and packaged DPAPI protect/store/read behavior with synthetic data, including a second packaged process
 - denied, granted, actively revoked, and re-granted microphone paths using a stateful synthetic listener while host audio input remains disabled
 - denied and granted manager-controlled screen capture against a known synthetic window, plus the same capture path inside `Clicky.exe`
+- captured-image labels, requested/foreground monitor selection, and physical-to-logical routing for the sandbox monitor topology
 - denied cloud TTS before consent and packaged/source destination evidence after consent, restricted to the pinned Microsoft hostname with DNS-to-TCP peer correlation
 - crash-abandoned WAV cleanup, a hard 24-hour privacy TTL resistant to PID reuse, and locale-independent directory/file ACL evidence
 - native packaged startup, first-run privacy dialog before manager/skill construction, no external pre-consent TCP destination, embedded bundled-skill trust anchoring, and unsigned Authenticode status
@@ -170,6 +171,20 @@ While Clicky is thinking and again while it is speaking, press and hold the push
 ### Clicky-owned window capture exclusion
 
 In the isolated Windows runtime, show a synthetic Clicky top-level window and overlay containing a distinctive magenta block that is absent from the synthetic desktop. Capture through the LLM screenshot path, OCR fallback, and lesson-recorder frame path; confirm the magenta pixels are absent while ordinary desktop test pixels remain. Force `SetWindowDisplayAffinity` failure and repeat through the hide/capture/restore fallback. Also force capture, compositor-flush, and restoration failures and confirm capture aborts while every previously visible Clicky window regains its placement and visibility.
+
+### Monitor identity and mixed DPI
+
+Use four disposable displays at 100%, 125%, 150%, and 200%, including one
+portrait display and at least one negative virtual-desktop origin. Put the
+foreground test window on each display in turn. Confirm an unqualified request
+selects that window's display, an explicit “screen N” request selects only the
+named display, every attached image has the matching screen label, and points,
+OCR boxes, figure boxes, and lesson frames remain on that display.
+
+Reorder the displays and restart Clicky. Confirm hardware-backed stable IDs remain
+attached to the same physical panels even if `DISPLAYN` numbers change. During a
+capture, disconnect or rearrange a display and confirm the operation aborts
+explicitly without drawing or clicking on another display.
 
 ### Provider keys and preferences
 

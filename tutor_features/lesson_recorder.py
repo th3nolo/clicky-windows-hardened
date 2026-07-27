@@ -26,6 +26,12 @@ from screen.capture_exclusion import (
     CaptureExclusionError,
     capture_without_owned_windows,
 )
+from screen.topology import (
+    MonitorTopologyError,
+    discover_monitor_topology,
+    native_monitor_for_device,
+    select_monitor,
+)
 
 FPS = 8
 
@@ -43,6 +49,8 @@ class LessonRecorder:
         self.is_recording = False
         self._on_error = on_error
         self.last_error = ""
+        self._monitor_device_name = ""
+        self._frame_size = (0, 0)
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -57,13 +65,17 @@ class LessonRecorder:
         except ImportError:
             return None
 
+        with mss.mss() as sct:
+            monitor = select_monitor(
+                discover_monitor_topology(sct.monitors[1:])
+            )
+            w, h = monitor.physical.width, monitor.physical.height
+            self._monitor_device_name = monitor.device_name
+            self._frame_size = (w, h)
+
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self._out_dir = Path.home() / "Documents" / "Clicky Lessons" / ts
         self._out_dir.mkdir(parents=True, exist_ok=True)
-
-        with mss.mss() as sct:
-            mon = sct.monitors[1]      # primary
-            w, h = mon["width"], mon["height"]
 
         self._writer = imageio.get_writer(
             str(self._out_dir / "lesson.mp4"),
@@ -117,16 +129,31 @@ class LessonRecorder:
 
     def _loop(self):
         with mss.mss() as sct:
-            mon = sct.monitors[1]
             interval = 1.0 / FPS
             next_t = time.monotonic()
             while not self._stop_evt.is_set():
                 try:
+                    native = native_monitor_for_device(
+                        self._monitor_device_name
+                    )
+                    if (
+                        native.physical.width,
+                        native.physical.height,
+                    ) != self._frame_size:
+                        raise MonitorTopologyError(
+                            "lesson monitor dimensions changed during recording"
+                        )
+                    mon = {
+                        "left": native.physical.left,
+                        "top": native.physical.top,
+                        "width": native.physical.width,
+                        "height": native.physical.height,
+                    }
                     raw = capture_without_owned_windows(lambda: sct.grab(mon))
                     img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                     if self._writer is not None:
                         self._writer.append_data(_to_array(img))
-                except CaptureExclusionError as exc:
+                except (CaptureExclusionError, MonitorTopologyError) as exc:
                     self.last_error = str(exc)
                     if self._on_error is not None:
                         self._on_error(self.last_error)

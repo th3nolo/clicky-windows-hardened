@@ -368,6 +368,7 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
             self.running = False
             self.mode = "standby"
             self.buffer = []
+            self.capture_id = None
             self.wake_word_enabled = False
 
         def start(self):
@@ -378,20 +379,35 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
             self.stop_count += 1
             self.running = False
 
-        def start_recording(self):
+        def start_recording(self, capture_id=None, on_frame=None):
             self.recording_start_count += 1
             self.mode = "recording"
             self.buffer = [b"synthetic speech"]
+            self.capture_id = capture_id
+            if on_frame is not None:
+                on_frame(b"synthetic speech")
+            return True
 
-        def stop_recording(self):
+        def stop_recording(self, capture_id=None):
+            if self.capture_id is None:
+                return b"" if capture_id is None else None
+            if capture_id is not None and capture_id != self.capture_id:
+                return None
             self.mode = "standby"
             self.buffer = []
+            self.capture_id = None
             return b""
 
-        def cancel_recording(self):
+        def cancel_recording(self, capture_id=None):
+            if self.capture_id is None:
+                return False
+            if capture_id is not None and capture_id != self.capture_id:
+                return False
             self.cancel_count += 1
             self.mode = "standby"
             self.buffer = []
+            self.capture_id = None
+            return True
 
         def set_wake_word_enabled(self, enabled):
             self.wake_word_enabled = bool(enabled)
@@ -414,12 +430,12 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
     manager = None
     try:
         manager = companion_manager.CompanionManager()
-        manager._submit = lambda coroutine: coroutine.close()
+        manager._submit = lambda coroutine, _session=None: coroutine.close()
         manager._get_llm = lambda: FakeLLM()
         manager.start()
         _require(not microphone_allowed(cfg), "microphone permission defaulted on")
         _require(manager._listener.start_count == 0, "microphone opened without consent")
-        manager._begin_capture()
+        manager.on_hotkey_press()
         _require(
             manager._listener.recording_start_count == 0,
             "recording path opened without microphone consent",
@@ -430,7 +446,9 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         )
         _require(not cloud_tts_allowed(cfg), "cloud TTS permission defaulted on")
         _require(not screen_capture_allowed(cfg), "screen permission defaulted on")
-        asyncio.run(manager._kickoff_quiz())
+        quiz_session = manager._turns.start_processing()
+        _require(quiz_session is not None, "could not open denied quiz turn")
+        asyncio.run(manager._kickoff_quiz(quiz_session))
         _require(not captures, "manager captured the screen without consent")
 
         cfg.set_privacy_permissions(
@@ -441,7 +459,7 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         )
         manager.refresh_privacy_permissions()
         _require(manager._listener.start_count == 1, "microphone did not start after consent")
-        manager._begin_capture()
+        manager.on_hotkey_press()
         _require(
             manager._listener.recording_start_count == 1
             and manager._listener.mode == "recording",
@@ -498,7 +516,9 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         )
         manager.refresh_privacy_permissions()
         _require(screen_capture_allowed(cfg), "screen permission did not persist")
-        asyncio.run(manager._kickoff_quiz())
+        quiz_session = manager._turns.start_processing()
+        _require(quiz_session is not None, "could not open consented quiz turn")
+        asyncio.run(manager._kickoff_quiz(quiz_session))
         _require(bool(captures), "manager screen path captured no monitors after consent")
         _require(
             not any(

@@ -179,7 +179,7 @@ class WindowCaptureControllerTests(unittest.TestCase):
         main_source = (ROOT / "main.py").read_text(encoding="utf-8")
 
         self.assertIn("capture_without_owned_windows(", screen_source)
-        self.assertIn("capture_without_owned_windows(lambda: sct.grab(mon))", hybrid_source)
+        self.assertNotIn("sct.grab(", hybrid_source)
         self.assertIn("capture_without_owned_windows(lambda: sct.grab(mon))", lesson_source)
         self.assertIn("install_qt_capture_exclusion(app)", main_source)
 

@@ -28,7 +28,8 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 
 - Push-to-talk voice questions through the global hotkey.
 - Push-to-talk barge-in that cancels the owned turn before a replacement capture.
-- Screen capture that excludes Clicky-owned windows, multi-monitor coordinate mapping, and a click-through PyQt overlay.
+- Screen capture that excludes Clicky-owned windows, identity-based multi-monitor
+  routing, mixed-DPI coordinate mapping, and a click-through PyQt overlay.
 - Pointing and drawing instructions produced by supported vision models.
 - Cloud LLM support for Anthropic, OpenAI, Gemini, and GitHub Copilot.
 - Local LLM support through an already-installed Ollama or LM Studio server.
@@ -63,6 +64,14 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 Web search accepts HTTPS destinations only. It rejects local, private, link-local, reserved, multicast, and unspecified IP addresses before connecting, repeats the check for every redirect, and verifies the actual connected socket peer. Response types, redirects, and decoded byte counts are bounded. Environment proxies are not used.
 
 Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect or silently fall back after a provider failure.
+
+Clicky declares per-monitor-v2 DPI awareness before Qt starts. Each captured image
+is labeled with its Windows display number, stable hardware identity when exposed
+by Qt, logical rectangle, scale, and focused/primary role. Explicit requests such
+as “screen 2” are routed only to that screen; otherwise the foreground-window
+screen is selected, with the primary screen as the sole deterministic fallback.
+Disagreement between MSS, Win32, and Qt monitor identity aborts capture instead of
+silently substituting the first screenshot.
 
 ### Local code and models
 
