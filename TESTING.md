@@ -206,6 +206,15 @@ adding it in the editor. Confirm none of those values appears in any STT request
 
 While Clicky is thinking and again while it is speaking, press and hold the push-to-talk shortcut. Confirm the prior generation and audio stop, exactly one new capture enters Listening, rapid release/repress remains responsive, and no text, drawing, point, error, or Idle state from the cancelled turn appears afterward.
 
+### Login startup
+
+Confirm the classic installer reference leaves its per-user startup task
+unchecked and that a freshly installed MSIX reports `ClickyStartup` as disabled.
+Use **Windows startup settings…** from the tray and confirm it opens Windows
+Startup Apps without changing the setting. Enable and disable Clicky there,
+sign out and back in to verify both states, then uninstall and confirm no Clicky
+startup entry or shortcut remains.
+
 ### Clicky-owned window capture exclusion
 
 In the isolated Windows runtime, show a synthetic Clicky top-level window and overlay containing a distinctive magenta block that is absent from the synthetic desktop. Capture through the LLM screenshot path, OCR fallback, and lesson-recorder frame path; confirm the magenta pixels are absent while ordinary desktop test pixels remain. Force `SetWindowDisplayAffinity` failure and repeat through the hide/capture/restore fallback. Also force capture, compositor-flush, and restoration failures and confirm capture aborts while every previously visible Clicky window regains its placement and visibility.

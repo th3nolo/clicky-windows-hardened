@@ -380,6 +380,17 @@ def main():
 
     tray.on_run_onboarding.connect(_run_onboarding)
 
+    def _open_startup_settings():
+        try:
+            os.startfile("ms-settings:startupapps")
+        except Exception as exc:
+            tray.show_notification(
+                "Windows startup settings unavailable",
+                str(exc),
+            )
+
+    tray.on_open_startup_settings.connect(_open_startup_settings)
+
     def _run_privacy_permissions():
         from ui.privacy_consent import request_privacy_permissions
 
