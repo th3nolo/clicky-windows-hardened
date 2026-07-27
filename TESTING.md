@@ -470,6 +470,25 @@ synthetic protected blob created by the first account and confirm
 `decrypt_current_user` raises that same explicit error. This cross-account
 check remains interactive because CI has only one Windows user context.
 
+### Writing-style profile storage
+
+With a fresh `%LOCALAPPDATA%`, listing or exporting writing-style profiles must
+return an empty collection without creating `style_profiles.db`. Create one
+synthetic Work profile and one synthetic Personal profile manually. Inspect the
+database and confirm that only IDs, timestamps, enabled state, payload version,
+and ciphertext are present; names, rules, examples, and executable identities
+must not appear as plaintext bytes.
+
+Confirm create, inspect, update, disable, re-enable, delete, single
+export/import, and complete export/import preserve stable IDs and timestamps.
+Disabled or deleted profiles must not appear in the prompt-facing lookup. A
+profile scoped to the Work executable identity must not appear for the
+Personal identity, and vice versa; an explicitly unscoped profile may appear
+for both. Corrupt ciphertext, unknown schema versions, symlinked databases,
+oversized values, duplicate records, and DPAPI failures must fail closed
+without partial rows or content-bearing diagnostics. Export returns plaintext
+only to its explicit caller and never writes a file on its own.
+
 ### Web search
 
 Keep web search disabled for the baseline. After explicit activation with synthetic queries, confirm that ordinary public HTTPS results can be processed. Do not weaken a rejection to make an HTTP, private-address, redirect, unexpected-content-type, missing-peer, or oversized-response case pass. Those cases belong in the offline tests.
