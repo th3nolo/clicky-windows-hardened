@@ -19,6 +19,7 @@ _INPUT_KEYBOARD = 1
 _CF_UNICODETEXT = 13
 _GMEM_MOVEABLE = 0x0002
 _MAX_CLIPBOARD_BYTES = 1024 * 1024
+_GA_ROOT = 2
 
 
 class _KeyboardInput(ctypes.Structure):
@@ -211,6 +212,37 @@ class WindowsInsertionBackend:
             return int(value or 0)
         except Exception:
             return 0
+
+
+def is_clicky_owned_window(handle: int) -> bool:
+    """Return true only for a real top-level window owned by this process."""
+
+    if os.name != "nt" or type(handle) is not int or handle <= 0:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetAncestor.restype = wintypes.HWND
+        if (
+            not user32.IsWindow(handle)
+            or int(user32.GetAncestor(handle, _GA_ROOT) or 0) != handle
+        ):
+            return False
+        process_id = wintypes.DWORD()
+        thread_id = user32.GetWindowThreadProcessId(
+            handle,
+            ctypes.byref(process_id),
+        )
+        return bool(thread_id and process_id.value == os.getpid())
+    except Exception:
+        return False
 
 
 def _focused_control(auto, target: TargetLease):

@@ -13,6 +13,10 @@ from PyQt6.QtWidgets import (
 )
 
 from config import cfg
+from feature_gates import (
+    ActionCapability,
+    build_feature_available,
+)
 from privacy_controls import PRIVACY_NOTICE_VERSION, notice_accepted
 
 
@@ -119,6 +123,28 @@ class PrivacyConsentDialog(QDialog):
         coding_agent_notice.setWordWrap(True)
         layout.addWidget(coding_agent_notice)
 
+        self.global_dictation = None
+        if build_feature_available(ActionCapability.GLOBAL_DICTATION):
+            self.global_dictation = QCheckBox(
+                "Allow Global Dictation to insert transcribed text"
+            )
+            self.global_dictation.setChecked(
+                cfg.global_dictation_permission is True
+            )
+            self.global_dictation.setToolTip(
+                "Uses the dedicated dictation hotkey and inserts one final "
+                "transcript into the focused, verified text control."
+            )
+            layout.addWidget(self.global_dictation)
+            dictation_notice = QLabel(
+                "STT transcribes; Global Dictation inserts. This permission "
+                "does not allow screen capture, a response model, memory, "
+                "connectors, a Task Agent, or desktop automation. Microphone "
+                "and any cloud speech permission remain separate."
+            )
+            dictation_notice.setWordWrap(True)
+            layout.addWidget(dictation_notice)
+
         buttons = QHBoxLayout()
         keep_disabled = QPushButton("Keep all disabled")
         keep_disabled.clicked.connect(self._keep_disabled)
@@ -145,10 +171,17 @@ class PrivacyConsentDialog(QDialog):
             screen_capture=screen,
             coding_agent=coding_agent,
             notice_version=PRIVACY_NOTICE_VERSION,
+            global_dictation=(
+                self.global_dictation.isChecked()
+                if self.global_dictation is not None
+                else None
+            ),
         )
         self.accept()
 
     def _keep_disabled(self) -> None:
+        if self.global_dictation is not None:
+            self.global_dictation.setChecked(False)
         self._persist(False, False, False, False, False)
 
     def _save(self) -> None:

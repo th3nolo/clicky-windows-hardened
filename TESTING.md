@@ -246,6 +246,45 @@ unchanged until the user chooses the one-use copy action. Reuse the commit,
 race cancellation, and force each adapter to fail; no case may try a second
 mutation adapter silently.
 
+### Global Dictation end-to-end test-build matrix
+
+The checked-in integration tests provide source-level evidence for the complete
+caller path with synthetic Win32, WPF, browser, Electron, and Qt target
+identities. They assert hotkey ownership, one final STT result, an immediate
+target recheck, exactly one insertion, content-free telemetry, one-use recovery,
+and no response-model, screenshot, or tutor-transcript call. CI passing these
+tests is not live Windows compatibility proof.
+
+For interactive proof, use a disposable Windows VM and a test build where only
+Global Dictation is build-available. Use a synthetic phrase that contains no
+personal or account data. In each row below, focus a disposable ordinary text
+control before pressing the dictation hotkey:
+
+| Surface | Disposable target | Required evidence |
+| --- | --- | --- |
+| Win32 | Notepad document | One insertion; result is `attempted_unverified` unless an exact readable postcondition is available |
+| WPF | Local test app text box | One insertion; no focus redirection |
+| Browser | Empty local `about:blank` editable field | One insertion; no page or browser metadata in the result |
+| Electron | Empty disposable editor | One insertion; no application-specific fallback |
+| Qt | Empty local test text control | One insertion; Clicky result windows remain excluded from capture |
+
+For every row, repeat these adversarial transitions before release and before
+the final commit: move focus to another field, switch applications, close the
+target, elevate the target, and open a password, payment, sign-in, or protected
+field. Expected result is **Not inserted** with zero input events in the new
+destination. Exercise Escape and immediate dictation/tutor replacement during
+capture, STT finalization, and insertion; stale results must not appear over the
+new run.
+
+Finally, disable Unicode input in the test harness. Confirm no clipboard write
+occurs automatically. Choose **Retry as safe preview**, confirm text becomes
+visible only then, dismiss it, and verify it is cleared. Repeat and choose
+**Copy**; verify one clipboard write through a Clicky-owned HWND and that a
+second click cannot reuse the recovery token. This live matrix, including
+screen recordings or content-free logs with run ID, STT provider, application,
+status, adapter, and result code, remains required before changing the baseline
+build flag.
+
 ### Live speech-to-text
 
 Use a test Deepgram account and synthetic spoken phrases. Grant microphone and cloud-STT permissions, then choose **Setup & Diagnostics → Speech input → Deepgram Nova-2 — live streaming**. Verify partial text appears while the hotkey is still held and network capture shows bounded binary audio frames before release, followed by the explicit finalization messages. Release and confirm one final transcript is used for the turn without a batch transcription POST.

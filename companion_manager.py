@@ -13,6 +13,7 @@ import math
 import re
 import threading
 import time
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -24,9 +25,25 @@ from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
 from audio.tts.base_tts import DisabledTTSProvider
 from audio.tts.local_status_tts import LocalStatusTTS
+from dictation.insertion import (
+    CopyPreview,
+    CopyResult,
+    InsertionBroker,
+    InsertionRequest,
+)
 from dictation.models import DictationSession
+from dictation.outcome import DictationRunOutcome
 from dictation.session import DictationSessionCoordinator
 from dictation.targeting import SecureTargetGuard, WindowsTargetInspector
+from dictation.windows_insertion import (
+    WindowsInsertionBackend,
+    is_clicky_owned_window,
+)
+from feature_gates import (
+    DEFAULT_BUILD_FEATURE_FLAGS,
+    ActionCapability,
+    BuildFeatureFlag,
+)
 from privacy_controls import (
     cloud_stt_allowed,
     cloud_tts_allowed,
@@ -280,8 +297,17 @@ class CompanionManager(QObject):
     sig_recording_state     = pyqtSignal(bool, str)       # (is_recording, output_dir)
     sig_dictation_state     = pyqtSignal(object)          # DictationSnapshot
     sig_dictation_error     = pyqtSignal(str)
+    sig_dictation_result    = pyqtSignal(object)          # DictationRunOutcome
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        action_build_flags: Mapping[
+            ActionCapability, BuildFeatureFlag
+        ] = DEFAULT_BUILD_FEATURE_FLAGS,
+        dictation_targets: SecureTargetGuard | None = None,
+        dictation_insertion_backend=None,
+    ):
         super().__init__()
         self._state: AppState = AppState.IDLE
         self._history: List[Message] = []
@@ -291,11 +317,30 @@ class CompanionManager(QObject):
         self._input_lock = threading.RLock()
         self._pressed_session: TurnSession | None = None
         self._dictation_pressed: DictationSession | None = None
+        self._dictation_clipboard_owner = 0
+        self._dictation_targets = (
+            dictation_targets
+            if dictation_targets is not None
+            else SecureTargetGuard(WindowsTargetInspector())
+        )
         self._dictation = DictationSessionCoordinator(
             self._turns,
-            targets=SecureTargetGuard(WindowsTargetInspector()),
+            targets=self._dictation_targets,
             on_state=self.sig_dictation_state.emit,
+            build_flags=action_build_flags,
         )
+        self._dictation_insertion = InsertionBroker(
+            self._dictation,
+            self._dictation_targets,
+            (
+                dictation_insertion_backend
+                if dictation_insertion_backend is not None
+                else WindowsInsertionBackend(
+                    lambda: self._dictation_clipboard_owner
+                )
+            ),
+        )
+        self._dictation_result: DictationRunOutcome | None = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
@@ -383,6 +428,7 @@ class CompanionManager(QObject):
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None
+            self._discard_dictation_result()
             active_dictation = self._dictation.active
             if (
                 active_dictation is not None
@@ -555,7 +601,12 @@ class CompanionManager(QObject):
             self._fallback_stt_name = provider
         return self._fallback_stt
 
-    def _new_streaming_stt(self, session: TurnSession):
+    def _new_streaming_stt(
+        self,
+        session: TurnSession,
+        *,
+        publish_partial: bool = True,
+    ):
         if cfg.stt_provider() != "deepgram":
             return None
         if not cloud_stt_allowed(cfg):
@@ -574,11 +625,17 @@ class CompanionManager(QObject):
             cloud_consent=True,
             loop=self._loop,
             vocabulary=cfg.transcription_vocabulary,
-            on_partial=lambda text: self._emit_turn_signal(
-                session,
-                self.sig_transcript_partial,
-                session.sequence,
-                text,
+            on_partial=(
+                (
+                    lambda text: self._emit_turn_signal(
+                        session,
+                        self.sig_transcript_partial,
+                        session.sequence,
+                        text,
+                    )
+                )
+                if publish_partial
+                else None
             ),
         )
         self._streaming_stt[session.sequence] = stream
@@ -710,26 +767,35 @@ class CompanionManager(QObject):
             self._submit(self._end_capture_and_process(session), session)
 
     def on_dictation_hotkey_press(self) -> None:
-        """Claim the shared turn for a build-gated dictation session."""
+        """Capture one secure target, then open the owned microphone stream."""
         with self._input_lock:
             active = self._dictation_pressed
             if active is not None and self._turns.is_current(active.turn):
                 return
+            self._discard_dictation_result()
             try:
                 session = self._dictation.begin_capture(cfg)
             except (PermissionError, RuntimeError, ValueError) as exc:
                 self.sig_dictation_error.emit(str(exc))
                 return
-            if session is not None:
+            if session is not None and self._begin_dictation_capture(session):
                 self._dictation_pressed = session
+            elif session is not None:
+                self._dictation.fail(session, "microphone_start_failed")
 
     def on_dictation_hotkey_release(self) -> None:
-        """Move the owned session to finalization; STT wiring lands separately."""
+        """Finalize STT and commit one transcript to the captured target."""
         with self._input_lock:
             session = self._dictation_pressed
             self._dictation_pressed = None
-            if session is not None:
-                self._dictation.release_capture(session)
+            if (
+                session is not None
+                and self._dictation.release_capture(session)
+            ):
+                self._submit(
+                    self._end_dictation_capture(session),
+                    session.turn,
+                )
 
     def _handle_wake(self):
         """Triggered from ambient listener when wake-word is detected."""
@@ -751,6 +817,203 @@ class CompanionManager(QObject):
             pass   # never crash the sounddevice audio thread
 
     # ── Capture flow ──────────────────────────────────────────────────────────
+
+    def _begin_dictation_capture(self, session: DictationSession) -> bool:
+        """Start STT without exposing dictated content to the tutor UI."""
+
+        if not microphone_allowed(cfg):
+            self.sig_dictation_error.emit(
+                "Microphone access is disabled for Global Dictation."
+            )
+            return False
+        provider = cfg.stt_provider()
+        if (
+            provider in ("deepgram", "deepgram_batch", "openai")
+            and not cloud_stt_allowed(cfg)
+        ):
+            self.sig_dictation_error.emit(
+                "The selected cloud speech provider is not permitted."
+            )
+            return False
+        try:
+            streaming = self._new_streaming_stt(
+                session.turn,
+                publish_partial=False,
+            )
+            started = self._listener.start_recording(
+                session.turn.sequence,
+                on_frame=(
+                    streaming.send_frame
+                    if streaming is not None
+                    else None
+                ),
+            )
+        except Exception:
+            self._cancel_streaming_stt(session.turn.sequence)
+            _log.exception("dictation microphone start failed")
+            self.sig_dictation_error.emit(
+                "Global Dictation could not start the microphone."
+            )
+            return False
+        if not started:
+            self._cancel_streaming_stt(session.turn.sequence)
+            self.sig_dictation_error.emit(
+                "Global Dictation could not claim the microphone."
+            )
+            return False
+        self._turns.bind_cancel(
+            session.turn,
+            "recording",
+            lambda: self._listener.cancel_recording(
+                session.turn.sequence
+            ),
+        )
+        return self._turns.is_current(session.turn)
+
+    async def _end_dictation_capture(
+        self,
+        session: DictationSession,
+    ) -> None:
+        """Produce one final transcript and one truthfully classified insert."""
+
+        if not self._turns.is_current(session.turn):
+            return
+        try:
+            pcm = self._listener.stop_recording(session.turn.sequence)
+            self._turns.unbind_cancel(session.turn, "recording")
+        except Exception:
+            _log.exception("dictation microphone stop failed")
+            self._dictation.fail(session, "microphone_capture_failed")
+            self.sig_dictation_error.emit(
+                "Global Dictation could not finalize microphone capture."
+            )
+            return
+        if pcm is None or not self._turns.is_current(session.turn):
+            return
+        if len(pcm) < 3200:
+            self._cancel_streaming_stt(session.turn.sequence)
+            self._dictation.fail(session, "audio_too_short")
+            self.sig_dictation_error.emit(
+                "No usable speech was captured."
+            )
+            return
+
+        try:
+            transcript, stt_provider = (
+                await self._transcribe_with_configured_fallback(
+                    pcm,
+                    session.turn,
+                )
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _log.exception("dictation transcription failed")
+            self._dictation.fail(session, "transcription_failed")
+            self.sig_dictation_error.emit(
+                "Global Dictation could not transcribe the captured audio."
+            )
+            return
+        if not transcript.strip():
+            self._dictation.fail(session, "transcript_empty")
+            self.sig_dictation_error.emit(
+                "The speech provider returned no text."
+            )
+            return
+        try:
+            accepted = self._dictation.accept_final_transcript(
+                session,
+                transcript,
+            )
+        except (TypeError, ValueError):
+            self._dictation.fail(session, "transcript_invalid")
+            self.sig_dictation_error.emit(
+                "The final transcript could not be inserted safely."
+            )
+            return
+        if not accepted:
+            return
+        commit = self._dictation.begin_commit(session)
+        if commit is None:
+            if self._turns.is_current(session.turn):
+                self._dictation.fail(session, "commit_unavailable")
+            return
+        insertion = self._dictation_insertion.insert(
+            InsertionRequest(commit)
+        )
+        outcome = DictationRunOutcome(
+            run_id=session.run_id,
+            stt_provider=stt_provider,
+            insertion=insertion,
+        )
+        with self._input_lock:
+            if self._dictation.active is not session:
+                if insertion.preview is not None:
+                    self._dictation_insertion.discard_preview(
+                        insertion.preview
+                    )
+                return
+            self._dictation_result = outcome
+            _log.info(
+                "dictation result run=%s provider=%s application=%s "
+                "status=%s adapter=%s code=%s",
+                outcome.run_id,
+                outcome.stt_provider,
+                outcome.application_name or "unknown",
+                insertion.status.value,
+                insertion.adapter.value,
+                insertion.result_code,
+            )
+            self.sig_dictation_result.emit(outcome)
+
+    def set_dictation_clipboard_owner(self, handle: int) -> bool:
+        """Accept only a native Clicky-owned HWND for explicit copy actions."""
+
+        with self._input_lock:
+            if not is_clicky_owned_window(handle):
+                self._dictation_clipboard_owner = 0
+                return False
+            self._dictation_clipboard_owner = handle
+            return True
+
+    def copy_dictation_preview(
+        self,
+        outcome: DictationRunOutcome,
+    ) -> CopyResult:
+        with self._input_lock:
+            current = self._dictation_result
+            preview = (
+                outcome.insertion.preview
+                if isinstance(outcome, DictationRunOutcome)
+                else None
+            )
+            if current is not outcome or not isinstance(preview, CopyPreview):
+                return CopyResult(False, "copy_preview_invalid")
+            result = self._dictation_insertion.copy_preview(preview)
+            if result.copied:
+                self._dictation_result = None
+            return result
+
+    def discard_dictation_preview(
+        self,
+        outcome: DictationRunOutcome,
+    ) -> bool:
+        with self._input_lock:
+            if self._dictation_result is not outcome:
+                return False
+            preview = outcome.insertion.preview
+            discarded = (
+                self._dictation_insertion.discard_preview(preview)
+                if preview is not None
+                else True
+            )
+            self._dictation_result = None
+            return discarded
+
+    def _discard_dictation_result(self) -> None:
+        outcome = self._dictation_result
+        if outcome is not None:
+            self.discard_dictation_preview(outcome)
 
     def _begin_capture(self, session: TurnSession) -> bool:
         if not microphone_allowed(cfg):
@@ -2229,6 +2492,7 @@ class CompanionManager(QObject):
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None
+            self._discard_dictation_result()
             active_dictation = self._dictation.active
             if (
                 active_dictation is not None

@@ -775,8 +775,9 @@ class Config:
         screen_capture: bool,
         coding_agent: bool = False,
         notice_version: int,
+        global_dictation: bool | None = None,
     ) -> None:
-        """Atomically persist explicit privacy choices for the current notice."""
+        """Atomically persist privacy and any exposed action permission."""
         if notice_version != PRIVACY_NOTICE_VERSION:
             raise ValueError("Unsupported privacy notice version")
         if not all(
@@ -790,7 +791,12 @@ class Config:
             )
         ):
             raise TypeError("Privacy permissions must be booleans")
-        _save_preferences(
+        if (
+            global_dictation is not None
+            and type(global_dictation) is not bool
+        ):
+            raise TypeError("Global Dictation permission must be boolean")
+        updates = dict(
             privacy_consent_version=notice_version,
             microphone_consent=microphone,
             cloud_stt_consent=cloud_stt,
@@ -798,12 +804,16 @@ class Config:
             screen_capture_consent=screen_capture,
             coding_agent_consent=coding_agent,
         )
-        self.privacy_consent_version = notice_version
-        self.microphone_consent = microphone
-        self.cloud_stt_consent = cloud_stt
-        self.cloud_tts_consent = cloud_tts
-        self.screen_capture_consent = screen_capture
-        self.coding_agent_consent = coding_agent
+        if global_dictation is not None:
+            updates.update(
+                action_permission_schema_version=(
+                    ACTION_PERMISSION_SCHEMA_VERSION
+                ),
+                global_dictation_permission=global_dictation,
+            )
+        _save_preferences(**updates)
+        for name, value in updates.items():
+            setattr(self, name, value)
 
     def set_action_permissions(
         self,

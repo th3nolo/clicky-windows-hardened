@@ -474,13 +474,46 @@ def main():
 
     dictation_hotkey = None
     dictation_indicator = None
+    dictation_result = None
     if build_feature_available(ActionCapability.GLOBAL_DICTATION):
         from ui.dictation_indicator import DictationIndicator
+        from ui.dictation_result import DictationResultPanel
+        from dictation.models import DictationState
 
         dictation_indicator = DictationIndicator()
-        manager.sig_dictation_state.connect(
-            dictation_indicator.set_snapshot
+        dictation_result = DictationResultPanel()
+
+        def _on_dictation_state(snapshot):
+            dictation_indicator.set_snapshot(snapshot)
+            if getattr(snapshot, "state", None) is DictationState.CAPTURING:
+                dictation_result.clear_sensitive()
+                dictation_result.hide()
+
+        def _copy_dictation_preview(outcome):
+            result = manager.copy_dictation_preview(outcome)
+            dictation_result.set_copy_result(result)
+            tray.show_notification(
+                "Global Dictation",
+                (
+                    "Dictated text copied."
+                    if result.copied
+                    else "Dictated text could not be copied."
+                ),
+            )
+
+        manager.sig_dictation_state.connect(_on_dictation_state)
+        manager.sig_dictation_result.connect(dictation_result.show_result)
+        dictation_result.copy_requested.connect(_copy_dictation_preview)
+        dictation_result.dismissed.connect(
+            manager.discard_dictation_preview
         )
+        if not manager.set_dictation_clipboard_owner(
+            int(dictation_result.winId())
+        ):
+            tray.show_notification(
+                "Global Dictation recovery unavailable",
+                "Clicky could not establish a private clipboard owner window.",
+            )
         manager.sig_dictation_error.connect(
             lambda message: tray.show_notification(
                 "Global Dictation unavailable",
