@@ -79,6 +79,7 @@ EXPECTED_ACTIONS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "astral-sh/setup-uv": "08807647e7069bb48b6ef5acd8ec9567f424441b",
 }
+BUNDLED_SKILL_INFRASTRUCTURE = frozenset({"schema.py"})
 
 
 @dataclass(frozen=True)
@@ -524,16 +525,61 @@ def check_bundled_skills() -> None:
     manifest = payload.get("files")
     if not isinstance(manifest, dict) or not manifest:
         fail("bundled skill manifest must contain a non-empty files object")
-    bundled = {
+    all_modules = {
         path.name: path
         for path in directory.glob("*.py")
         if not path.name.startswith("_")
     }
+    loader_path = directory / "__init__.py"
+    loader_tree = ast.parse(
+        loader_path.read_text(encoding="utf-8"),
+        filename=str(loader_path),
+    )
+    infrastructure_assignments = [
+        node.value
+        for node in loader_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_BUNDLED_INFRASTRUCTURE_MODULES"
+            for target in node.targets
+        )
+    ]
+    present_infrastructure = (
+        set(all_modules) & BUNDLED_SKILL_INFRASTRUCTURE
+    )
+    if infrastructure_assignments:
+        if len(infrastructure_assignments) != 1:
+            fail("bundled skill infrastructure needs one static allowlist")
+        allowlist_call = infrastructure_assignments[0]
+        if not (
+            isinstance(allowlist_call, ast.Call)
+            and isinstance(allowlist_call.func, ast.Name)
+            and allowlist_call.func.id == "frozenset"
+            and len(allowlist_call.args) == 1
+            and not allowlist_call.keywords
+        ):
+            fail("bundled skill infrastructure allowlist must be static")
+        try:
+            infrastructure = set(
+                ast.literal_eval(allowlist_call.args[0])
+            )
+        except (ValueError, TypeError):
+            fail("bundled skill infrastructure allowlist must be literal")
+    else:
+        infrastructure = set()
+    if infrastructure != present_infrastructure:
+        fail(
+            "bundled skill infrastructure allowlist differs from policy"
+        )
+    bundled = {
+        name: path
+        for name, path in all_modules.items()
+        if name not in infrastructure
+    }
     if set(manifest) != set(bundled):
         fail("bundled skill manifest must cover exactly every bundled skill")
 
-    loader_path = directory / "__init__.py"
-    loader_tree = ast.parse(loader_path.read_text(encoding="utf-8"), filename=str(loader_path))
     anchors = [
         node.value
         for node in loader_tree.body

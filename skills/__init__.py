@@ -28,6 +28,9 @@ _MAX_BUNDLED_SKILL_BYTES = 256 * 1024
 _MAX_USER_SKILL_BYTES = 256 * 1024
 _MAX_ALLOWLIST_BYTES = 64 * 1024
 _BUNDLED_MANIFEST_NAME = "manifest.json"
+# Package infrastructure is imported normally and covered by the application
+# package.  It must never be compiled and executed as a Developer Python Skill.
+_BUNDLED_INFRASTRUCTURE_MODULES = frozenset({"schema.py"})
 # This immutable trust anchor is embedded in the PyInstaller executable/PYZ.
 # The external manifest is retained for transparency, but cannot authorize a
 # different sidecar skill even if both files are replaced together.
@@ -77,7 +80,10 @@ def _verified_bundled_skill_sources() -> list[tuple[Path, bytes, str]]:
         bundled = {
             path.name: path
             for path in directory.glob("*.py")
-            if not path.name.startswith("_")
+            if (
+                not path.name.startswith("_")
+                and path.name not in _BUNDLED_INFRASTRUCTURE_MODULES
+            )
         }
         if set(bundled) != set(approved):
             return []
