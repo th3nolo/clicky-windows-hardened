@@ -1,0 +1,290 @@
+"""Thread-safe dictation state and shared turn ownership."""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Callable, Mapping
+from typing import Protocol
+
+from dictation.models import (
+    DictationCommit,
+    DictationSession,
+    DictationSnapshot,
+    DictationState,
+    validate_final_transcript,
+    validate_result_code,
+)
+from feature_gates import (
+    ACTION_PERMISSION_SCHEMA_VERSION,
+    DEFAULT_BUILD_FEATURE_FLAGS,
+    ActionCapability,
+    ActionPermissionConfiguration,
+    BuildFeatureFlag,
+    RunCapabilityGrant,
+    action_capability_allowed,
+    build_feature_available,
+    user_permission_allowed,
+)
+from privacy_controls import microphone_allowed
+from turn_coordinator import TurnCoordinator
+
+
+StateCallback = Callable[[DictationSnapshot], object]
+
+
+class DictationConfiguration(ActionPermissionConfiguration, Protocol):
+    microphone_consent: bool
+
+
+class DictationSessionCoordinator:
+    """Own dictation state while sharing one microphone turn coordinator."""
+
+    def __init__(
+        self,
+        turns: TurnCoordinator,
+        *,
+        on_state: StateCallback | None = None,
+        build_flags: Mapping[
+            ActionCapability, BuildFeatureFlag
+        ] = DEFAULT_BUILD_FEATURE_FLAGS,
+    ) -> None:
+        self._turns = turns
+        self._on_state = on_state
+        self._build_flags = build_flags
+        self._lock = threading.RLock()
+        self._active: DictationSession | None = None
+        self._requested_cancel_codes: dict[str, str] = {}
+
+    @property
+    def active(self) -> DictationSession | None:
+        with self._lock:
+            return self._active
+
+    def snapshot(self) -> DictationSnapshot:
+        with self._lock:
+            if self._active is None:
+                return DictationSnapshot(None, DictationState.IDLE)
+            return self._active.snapshot()
+
+    def begin_capture(
+        self,
+        config: DictationConfiguration,
+    ) -> DictationSession | None:
+        """Create the per-run grant from an explicit dictation-hotkey press."""
+        capability = ActionCapability.GLOBAL_DICTATION
+        if (
+            not build_feature_available(capability, self._build_flags)
+            or not user_permission_allowed(config, capability)
+            or not microphone_allowed(config)
+        ):
+            raise PermissionError(
+                "Global Dictation is unavailable or not permitted"
+            )
+        turn = self._turns.start_capture()
+        if turn is None:
+            return None
+        run_id = f"dictation-{turn.sequence}"
+        grant = RunCapabilityGrant(
+            run_id=run_id,
+            capabilities=frozenset(
+                {capability}
+            ),
+            permission_schema_version=ACTION_PERMISSION_SCHEMA_VERSION,
+        )
+        if not action_capability_allowed(
+            config,
+            capability,
+            grant=grant,
+            run_id=run_id,
+            build_flags=self._build_flags,
+        ):
+            self._turns.complete(turn)
+            raise PermissionError(
+                "Global Dictation is unavailable or not permitted"
+            )
+
+        session = DictationSession(
+            run_id=run_id,
+            turn=turn,
+            grant=grant,
+        )
+        with self._lock:
+            self._active = session
+        self._turns.bind_cancel(
+            turn,
+            "dictation-session-state",
+            lambda: self._mark_cancelled(
+                session,
+                self._take_cancel_code(session),
+            ),
+        )
+        self._publish(session)
+        return session
+
+    def release_capture(self, session: DictationSession) -> bool:
+        if not self._turns.release_capture(session.turn):
+            return False
+        return self._transition_if_current(
+            session,
+            DictationState.FINALIZING,
+        )
+
+    def accept_final_transcript(
+        self,
+        session: DictationSession,
+        transcript: str,
+    ) -> bool:
+        final = validate_final_transcript(transcript)
+
+        def accept() -> None:
+            with self._lock:
+                if (
+                    self._active is not session
+                    or session.state is not DictationState.FINALIZING
+                ):
+                    raise ValueError(
+                        "Only the current finalizing session accepts a transcript"
+                    )
+                session.final_transcript = final
+                session.transition(DictationState.READY_TO_COMMIT)
+                self._publish_locked(session)
+
+        ran, _ = self._turns.run_if_current(session.turn, accept)
+        return ran
+
+    def begin_commit(
+        self,
+        session: DictationSession,
+    ) -> DictationCommit | None:
+        commit: list[DictationCommit] = []
+
+        def prepare() -> None:
+            with self._lock:
+                if (
+                    self._active is not session
+                    or session.state is not DictationState.READY_TO_COMMIT
+                    or session.final_transcript is None
+                ):
+                    return
+                session.transition(DictationState.COMMITTING)
+                commit.append(
+                    DictationCommit(
+                        run_id=session.run_id,
+                        turn=session.turn,
+                        grant=session.grant,
+                        transcript=session.final_transcript,
+                    )
+                )
+                self._publish_locked(session)
+
+        ran, _ = self._turns.run_if_current(session.turn, prepare)
+        return commit[0] if ran and commit else None
+
+    def commit_is_current(self, commit: DictationCommit) -> bool:
+        with self._lock:
+            matches = (
+                self._active is not None
+                and self._active.run_id == commit.run_id
+                and self._active.state is DictationState.COMMITTING
+            )
+        return matches and self._turns.is_current(commit.turn)
+
+    def complete_commit(self, session: DictationSession) -> bool:
+        def complete() -> None:
+            with self._lock:
+                if (
+                    self._active is not session
+                    or session.state is not DictationState.COMMITTING
+                ):
+                    raise ValueError(
+                        "Only the current committing session can complete"
+                    )
+                session.transition(
+                    DictationState.COMPLETED,
+                    result_code="completed",
+                )
+                session.final_transcript = None
+                self._publish_locked(session)
+
+        return self._turns.complete(session.turn, complete)
+
+    def fail(
+        self,
+        session: DictationSession,
+        result_code: str,
+    ) -> bool:
+        validate_result_code(result_code)
+
+        def mark_failed() -> None:
+            with self._lock:
+                if self._active is not session or session.terminal:
+                    return
+                session.transition(
+                    DictationState.FAILED,
+                    result_code=result_code,
+                )
+                self._publish_locked(session)
+
+        return self._turns.complete(session.turn, mark_failed)
+
+    def cancel(
+        self,
+        session: DictationSession,
+        result_code: str = "cancelled",
+    ) -> bool:
+        validate_result_code(result_code)
+        with self._lock:
+            if self._active is not session or session.terminal:
+                return False
+            self._requested_cancel_codes[session.run_id] = result_code
+        cancelled = self._turns.cancel(
+            session.turn,
+        )
+        if not cancelled:
+            with self._lock:
+                self._requested_cancel_codes.pop(session.run_id, None)
+        return cancelled
+
+    def _transition_if_current(
+        self,
+        session: DictationSession,
+        state: DictationState,
+    ) -> bool:
+        def transition() -> None:
+            with self._lock:
+                if self._active is not session or session.terminal:
+                    return
+                session.transition(state)
+                self._publish_locked(session)
+
+        ran, _ = self._turns.run_if_current(session.turn, transition)
+        return ran
+
+    def _mark_cancelled(
+        self,
+        session: DictationSession,
+        result_code: str,
+    ) -> None:
+        with self._lock:
+            if self._active is not session or session.terminal:
+                return
+            session.transition(
+                DictationState.CANCELLED,
+                result_code=result_code,
+            )
+            self._publish_locked(session)
+
+    def _take_cancel_code(self, session: DictationSession) -> str:
+        with self._lock:
+            return self._requested_cancel_codes.pop(
+                session.run_id,
+                "superseded",
+            )
+
+    def _publish(self, session: DictationSession) -> None:
+        with self._lock:
+            self._publish_locked(session)
+
+    def _publish_locked(self, session: DictationSession) -> None:
+        if self._on_state is not None:
+            self._on_state(session.snapshot())

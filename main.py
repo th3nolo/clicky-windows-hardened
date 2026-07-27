@@ -12,7 +12,11 @@ from PyQt6.QtCore import Qt
 
 from config import cfg
 from audio.secure_temp import initialize_secure_audio_temp
-from feature_gates import validate_action_capability_startup
+from feature_gates import (
+    ActionCapability,
+    build_feature_available,
+    validate_action_capability_startup,
+)
 from privacy_controls import microphone_allowed
 from screen.capture_exclusion import install_qt_capture_exclusion
 from screen.dpi_awareness import enable_per_monitor_v2
@@ -467,6 +471,34 @@ def main():
         on_release=_on_hotkey_release,
     )
     hotkey.start()
+
+    dictation_hotkey = None
+    dictation_indicator = None
+    if build_feature_available(ActionCapability.GLOBAL_DICTATION):
+        from ui.dictation_indicator import DictationIndicator
+
+        dictation_indicator = DictationIndicator()
+        manager.sig_dictation_state.connect(
+            dictation_indicator.set_snapshot
+        )
+        manager.sig_dictation_error.connect(
+            lambda message: tray.show_notification(
+                "Global Dictation unavailable",
+                message,
+            )
+        )
+        if not cfg.dictation_hotkey_is_dedicated():
+            tray.show_notification(
+                "Global Dictation unavailable",
+                "The dictation hotkey must differ from the tutor hotkey.",
+            )
+        else:
+            dictation_hotkey = GlobalHotkeyMonitor(
+                on_press=manager.on_dictation_hotkey_press,
+                on_release=manager.on_dictation_hotkey_release,
+                hotkey=cfg.dictation_hotkey,
+            )
+            dictation_hotkey.start()
 
     # Esc = cancel current generation (kills Ollama ramble mid-stream)
     stop_key = StopHotkey(on_stop=manager.stop, key="esc")

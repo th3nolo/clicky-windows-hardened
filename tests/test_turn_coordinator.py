@@ -55,6 +55,17 @@ class TurnCoordinatorTests(unittest.TestCase):
         self.assertEqual(turns.active, replacement)
         self.assertEqual(turns.phase, TurnPhase.CAPTURING)
 
+    def test_exact_cancel_cannot_cancel_a_replacement(self):
+        turns = TurnCoordinator()
+        first = turns.start_processing()
+        replacement = turns.start_capture()
+
+        self.assertFalse(turns.cancel(first))
+        self.assertEqual(turns.active, replacement)
+        self.assertTrue(turns.cancel(replacement))
+        self.assertIsNone(turns.active)
+        self.assertEqual(turns.phase, TurnPhase.IDLE)
+
     def test_bound_generation_playback_recording_and_stream_are_all_cancelled(self):
         turns = TurnCoordinator()
         session = turns.start_processing()

@@ -174,6 +174,20 @@ class TurnCoordinator:
                 callback()
             return had_active
 
+    def cancel(
+        self,
+        session: TurnSession,
+        callback: Callable[[], object] | None = None,
+    ) -> bool:
+        """Cancel exactly one current session without touching a replacement."""
+        with self._lock:
+            if self._active != session:
+                return False
+            self._cancel_current_locked()
+            if callback is not None:
+                callback()
+            return True
+
     def _new_session_locked(self, phase: TurnPhase) -> TurnSession:
         session = TurnSession(self._next_sequence)
         self._next_sequence += 1

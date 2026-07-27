@@ -127,6 +127,24 @@ def user_permission_allowed(
     return getattr(config, _PERMISSION_ATTRIBUTES[capability], False) is True
 
 
+def build_feature_available(
+    capability: ActionCapability,
+    build_flags: Mapping[
+        ActionCapability, BuildFeatureFlag
+    ] = DEFAULT_BUILD_FEATURE_FLAGS,
+) -> bool:
+    """Return availability only when the build declares the current schema."""
+    if not isinstance(capability, ActionCapability):
+        return False
+    flag = build_flags.get(capability)
+    return (
+        isinstance(flag, BuildFeatureFlag)
+        and flag.available
+        and flag.permission_schema_version
+        == ACTION_PERMISSION_SCHEMA_VERSION
+    )
+
+
 def validate_action_capability_startup(
     config: ActionPermissionConfiguration,
     build_flags: Mapping[
@@ -180,8 +198,7 @@ def action_capability_allowed(
     validate_action_capability_startup(config, build_flags)
     if not isinstance(capability, ActionCapability):
         return False
-    flag = build_flags[capability]
-    if not flag.available:
+    if not build_feature_available(capability, build_flags):
         return False
     if not user_permission_allowed(config, capability):
         return False
