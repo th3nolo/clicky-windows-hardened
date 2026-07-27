@@ -830,8 +830,12 @@ def _validate_unsigned_application(
         time.sleep(0.02)
     if self_test.poll() is None:
         self_test.kill()
-        self_test.wait(timeout=10)
-        raise AssertionError("packaged security self-test timed out")
+        self_test_stdout, self_test_stderr = self_test.communicate(timeout=10)
+        raise AssertionError(
+            "packaged security self-test timed out\n"
+            f"stdout tail:\n{self_test_stdout[-4096:]}\n"
+            f"stderr tail:\n{self_test_stderr[-4096:]}"
+        )
     self_test_stdout, self_test_stderr = self_test.communicate(timeout=10)
     _require(
         self_test.returncode == 0,

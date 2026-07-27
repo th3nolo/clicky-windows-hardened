@@ -606,7 +606,7 @@ def validate_runtime_report(
     )
     require(set(microphone) >= {"cancelled_after_revocation", "standby_after_regrant"}, "microphone evidence differs")
     packaged_screen = _require_true_fields(
-        packaged["screen_capture"], ("synthetic_content_observed",), "packaged.screen_capture"
+        packaged["screen_capture"], ("synthetic_content_excluded",), "packaged.screen_capture"
     )
     packaged_screens = packaged_screen.get("screens")
     require(isinstance(packaged_screens, list) and packaged_screens, "packaged screen evidence is empty")

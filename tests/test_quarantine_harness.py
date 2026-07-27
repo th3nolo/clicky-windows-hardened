@@ -150,7 +150,7 @@ def _runtime_report(distribution_identity: dict[str, object]) -> dict[str, objec
                     "standby_after_regrant": True,
                 },
                 "screen_capture": {
-                    "synthetic_content_observed": True,
+                    "synthetic_content_excluded": True,
                     "screens": [{"index": 0, "width": 800, "height": 600}],
                 },
                 "cloud_tts": {
@@ -283,7 +283,7 @@ class EvidenceTests(unittest.TestCase):
             "audio": lambda p: p["unsigned_application"]["packaged_security_self_test"]["secure_audio"].update(normal_cleanup=False),
             "skills": lambda p: p["unsigned_application"]["packaged_security_self_test"]["bundled_skills"].update(verified_files=[]),
             "defaults": lambda p: p["unsigned_application"]["packaged_security_self_test"]["privacy_defaults"].update(microphone_allowed=True),
-            "screen": lambda p: p["unsigned_application"]["packaged_security_self_test"]["screen_capture"].update(synthetic_content_observed=False),
+            "screen": lambda p: p["unsigned_application"]["packaged_security_self_test"]["screen_capture"].update(synthetic_content_excluded=False),
             "microphone": lambda p: p["unsigned_application"]["packaged_security_self_test"]["microphone_state"].update(standby_after_regrant=False),
             "cloud": lambda p: p["unsigned_application"]["packaged_security_self_test"]["cloud_tts"].update(correlated_tcp_addresses=[]),
         }

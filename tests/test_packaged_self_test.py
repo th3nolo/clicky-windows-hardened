@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -18,6 +20,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagedSelfTestBoundaryTests(unittest.TestCase):
+    def test_stage_markers_are_bounded_and_identify_completion(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            result = packaged_self_test._run_stage("screen capture", lambda: 7)
+        self.assertEqual(result, 7)
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            [
+                "[self-test] screen capture: started",
+                "[self-test] screen capture: completed",
+            ],
+        )
+
     def test_requires_frozen_sandbox_and_explicit_sentinel(self) -> None:
         with mock.patch.object(sys, "frozen", False, create=True), mock.patch.dict(
             os.environ,
@@ -87,12 +102,21 @@ class PackagedSelfTestBoundaryTests(unittest.TestCase):
             for node in ast.walk(run)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
+        staged = {
+            node.args[1].id
+            for node in ast.walk(run)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_run_stage"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Name)
+        }
         self.assertTrue(
             {
                 "_validate_microphone_revocation",
                 "_validate_screen_capture",
                 "_validate_cloud_tts",
-            } <= called
+            } <= called | staged
         )
 
     def test_distribution_hashes_bracket_all_packaged_execution(self) -> None:

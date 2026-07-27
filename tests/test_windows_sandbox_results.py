@@ -154,7 +154,7 @@ class WindowsSandboxResultTests(unittest.TestCase):
                     "secure_audio": {"normal_cleanup": True},
                     "bundled_skills": {"verified_files": ["example_self_mode.py"]},
                     "privacy_defaults": {"microphone_allowed": False},
-                    "screen_capture": {"synthetic_content_observed": True},
+                    "screen_capture": {"synthetic_content_excluded": True},
                     "microphone_state": {
                         "cancelled_after_revocation": True,
                         "standby_after_regrant": True,
