@@ -1,4 +1,4 @@
-"""Focused construction boundary for LLM and coding-agent providers."""
+"""Focused construction boundary for LLM and read-only response providers."""
 
 from __future__ import annotations
 

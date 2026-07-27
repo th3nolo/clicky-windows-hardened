@@ -34,8 +34,9 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Pointing and drawing instructions produced by supported vision models.
 - Cloud LLM support for Anthropic, OpenAI, Gemini, GitHub Copilot, Kimi Code,
   MiniMax Token Plan, DeepSeek, and standard-rate Qwen.
-- Optional Codex and Qwen Code agent backends through already-installed
-  official CLIs. Agent execution has its own explicit privacy permission.
+- Optional Codex and Qwen Code read-only response providers through
+  already-installed official CLIs. They cannot edit files, run tools, or
+  perform external actions. CLI execution has its own explicit permission.
 - Local LLM support through an already-installed Ollama or LM Studio server.
 - True Deepgram streaming speech-to-text, explicit cloud-batch modes, and local batch speech-to-text fallbacks.
 - A fixed local Windows voice status when an approved cloud narration request fails.
@@ -70,8 +71,9 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - The selected model is stored independently for each provider. Saved IDs are
   restored only while they remain in that provider's validated model list.
 - Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
-  and external coding-agent execution require independent persisted permission.
-  Microphone permission alone never authorizes cloud transcription.
+  and external read-only response-provider CLI execution require independent
+  persisted permission. Microphone permission alone never authorizes cloud
+  transcription.
 - Unfinished action capabilities have separate build availability, versioned
   user permission, and per-run grants. All seven action build flags are off in
   the baseline release, and no one layer can authorize another capability.
@@ -95,9 +97,9 @@ Additional OpenAI-compatible providers use fixed reviewed destinations:
 Clicky disables environment proxies and redirects for these direct provider
 clients. Their keys are provider-specific and are never reused across billing
 realms. Qwen Coding Plan is not exposed as a generic application backend.
-Instead, an explicitly selected, already-installed Qwen Code agent receives
-only `BAILIAN_CODING_PLAN_API_KEY`, the selected allowlisted plan model, and
-Alibaba's fixed international Coding Plan endpoint.
+Instead, an explicitly selected, already-installed Qwen Code read-only response
+provider receives only `BAILIAN_CODING_PLAN_API_KEY`, the selected allowlisted
+plan model, and Alibaba's fixed international Coding Plan endpoint.
 
 The transcription vocabulary editor is an explicit approval boundary. Clicky
 ships only its own product name, accepts at most 63 custom terms of 64 characters
@@ -149,18 +151,21 @@ Do not place keys in this repository or in a sidecar configuration file.
 GitHub Copilot uses the tray device-login flow and stores its resulting token
 with DPAPI.
 
-Codex agent mode requires an official `codex` executable already on `PATH` and
-an explicit login completed through that CLI. Clicky uses ephemeral
-non-interactive runs, ignores user Codex configuration and rules, selects a
-read-only sandbox, supplies prompts through stdin, and leaves authentication
-storage and token refresh entirely to Codex. It never reads `auth.json`.
+Codex read-only response-provider mode requires an official `codex` executable
+already on `PATH` and an explicit login completed through that CLI. Clicky uses
+ephemeral non-interactive runs, ignores user Codex configuration and rules,
+selects a read-only sandbox, supplies prompts through stdin, and leaves
+authentication storage and token refresh entirely to Codex. It never reads
+`auth.json`.
 
-Qwen Code agent mode requires an official `qwen` executable already on `PATH`
-and `BAILIAN_CODING_PLAN_API_KEY`. Clicky uses Qwen Code's safe headless mode,
-plan approval mode, bounded turns/tool calls/runtime, a temporary working
-directory, and the fixed international Coding Plan endpoint. Clicky never
-installs either CLI. Selecting a direct provider or agent never silently falls
-back to a different billing realm.
+Qwen Code read-only response-provider mode requires an official `qwen`
+executable already on `PATH` and `BAILIAN_CODING_PLAN_API_KEY`. Clicky uses
+Qwen Code's safe headless mode, plan approval mode, bounded turns, output, and
+runtime, a temporary working directory, and the fixed international Coding
+Plan endpoint. These integrations return responses only: they are not Task
+Agents and cannot edit files, run tools, or perform external actions through
+Clicky. Clicky never installs either CLI. Selecting a direct or read-only
+response provider never silently falls back to a different billing realm.
 
 See [SETUP.md](SETUP.md) for the frozen environment and model-integrity steps.
 
