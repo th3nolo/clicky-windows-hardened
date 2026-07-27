@@ -439,6 +439,10 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         manager._submit = lambda coroutine, _session=None: coroutine.close()
         manager._get_llm = lambda: FakeLLM()
         manager.start()
+        _require(
+            manager.set_model("sandbox-validation-model"),
+            "could not select the synthetic local validation model",
+        )
         _require(not microphone_allowed(cfg), "microphone permission defaulted on")
         _require(manager._listener.start_count == 0, "microphone opened without consent")
         manager.on_hotkey_press()
