@@ -32,6 +32,7 @@ jobs:
         shell: pwsh
         run: >-
           python -m unittest -v
+          tests.test_action_feature_gates
           tests.test_audio_temp_privacy
           tests.test_capture_exclusion
           tests.test_dependency_policy

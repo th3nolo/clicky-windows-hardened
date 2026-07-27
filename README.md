@@ -72,6 +72,9 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
   and external coding-agent execution require independent persisted permission.
   Microphone permission alone never authorizes cloud transcription.
+- Unfinished action capabilities have separate build availability, versioned
+  user permission, and per-run grants. All seven action build flags are off in
+  the baseline release, and no one layer can authorize another capability.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.

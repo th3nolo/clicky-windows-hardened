@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 
 from config import cfg
 from audio.secure_temp import initialize_secure_audio_temp
+from feature_gates import validate_action_capability_startup
 from privacy_controls import microphone_allowed
 from screen.capture_exclusion import install_qt_capture_exclusion
 from screen.dpi_awareness import enable_per_monitor_v2
@@ -93,6 +94,7 @@ def _setup_logging():
 
 def main():
     _setup_logging()
+    validate_action_capability_startup(cfg)
     enable_per_monitor_v2()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

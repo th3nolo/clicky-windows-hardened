@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from feature_gates import ACTION_PERMISSION_SCHEMA_VERSION
 from privacy_controls import PRIVACY_NOTICE_VERSION
 
 
@@ -45,6 +46,13 @@ _PREFERENCE_BOOL_KEYS = {
     "cloud_tts_consent",
     "screen_capture_consent",
     "coding_agent_consent",
+    "global_dictation_permission",
+    "screen_compose_permission",
+    "task_agent_permission",
+    "connector_read_permission",
+    "connector_write_permission",
+    "workspace_coding_permission",
+    "desktop_automation_permission",
 }
 _PREFERENCE_STRING_LIST_LIMITS = {
     "transcription_vocabulary": (63, 64),
@@ -94,6 +102,13 @@ def _sanitize_preferences(values) -> dict:
         and 0 <= notice_version <= PRIVACY_NOTICE_VERSION
     ):
         clean["privacy_consent_version"] = notice_version
+    action_version = values.get("action_permission_schema_version")
+    if (
+        isinstance(action_version, int)
+        and not isinstance(action_version, bool)
+        and 0 <= action_version <= ACTION_PERMISSION_SCHEMA_VERSION
+    ):
+        clean["action_permission_schema_version"] = action_version
     mic = values.get("mic_device_index")
     if mic is None or (isinstance(mic, int) and not isinstance(mic, bool) and 0 <= mic <= 4096):
         clean["mic_device_index"] = mic
@@ -376,6 +391,46 @@ class Config:
     )
     coding_agent_consent: bool = field(
         default_factory=lambda: bool(_preference("coding_agent_consent", False))
+    )
+    action_permission_schema_version: int = field(
+        default_factory=lambda: int(
+            _preference("action_permission_schema_version", 0)
+        )
+    )
+    global_dictation_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("global_dictation_permission", False)
+        )
+    )
+    screen_compose_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("screen_compose_permission", False)
+        )
+    )
+    task_agent_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("task_agent_permission", False)
+        )
+    )
+    connector_read_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("connector_read_permission", False)
+        )
+    )
+    connector_write_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("connector_write_permission", False)
+        )
+    )
+    workspace_coding_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("workspace_coding_permission", False)
+        )
+    )
+    desktop_automation_permission: bool = field(
+        default_factory=lambda: bool(
+            _preference("desktop_automation_permission", False)
+        )
     )
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
@@ -706,6 +761,46 @@ class Config:
         self.cloud_tts_consent = cloud_tts
         self.screen_capture_consent = screen_capture
         self.coding_agent_consent = coding_agent
+
+    def set_action_permissions(
+        self,
+        *,
+        global_dictation: bool,
+        screen_compose: bool,
+        task_agent: bool,
+        connector_read: bool,
+        connector_write: bool,
+        workspace_coding: bool,
+        desktop_automation: bool,
+        permission_schema_version: int,
+    ) -> None:
+        """Atomically persist independent permissions for action capabilities."""
+        if permission_schema_version != ACTION_PERMISSION_SCHEMA_VERSION:
+            raise ValueError("Unsupported action permission schema version")
+        permissions = (
+            global_dictation,
+            screen_compose,
+            task_agent,
+            connector_read,
+            connector_write,
+            workspace_coding,
+            desktop_automation,
+        )
+        if not all(isinstance(value, bool) for value in permissions):
+            raise TypeError("Action permissions must be booleans")
+        updates = {
+            "action_permission_schema_version": permission_schema_version,
+            "global_dictation_permission": global_dictation,
+            "screen_compose_permission": screen_compose,
+            "task_agent_permission": task_agent,
+            "connector_read_permission": connector_read,
+            "connector_write_permission": connector_write,
+            "workspace_coding_permission": workspace_coding,
+            "desktop_automation_permission": desktop_automation,
+        }
+        _save_preferences(**updates)
+        for name, value in updates.items():
+            setattr(self, name, value)
 
 
 # Singleton
