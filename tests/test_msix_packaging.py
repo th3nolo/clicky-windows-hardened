@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +29,18 @@ MAKEAPPX_SHA256 = "b" * 64
 
 
 class MsixPackagingTests(unittest.TestCase):
+    def test_documented_cli_entry_point_can_load_from_tools_path(self):
+        completed = subprocess.run(
+            [sys.executable, "tools/build_msix.py", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--makeappx-sha256", completed.stdout)
+
     def make_distribution(self, root: Path, *, store: bool = True) -> Path:
         distribution = root / "distribution"
         (distribution / "_internal").mkdir(parents=True)
