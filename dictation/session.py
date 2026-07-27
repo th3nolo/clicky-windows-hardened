@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from dictation.models import (
     DictationCommit,
@@ -36,6 +36,7 @@ from turn_coordinator import TurnCoordinator
 
 
 StateCallback = Callable[[DictationSnapshot], object]
+T = TypeVar("T")
 
 
 class DictationTargetBlocked(RuntimeError):
@@ -255,6 +256,60 @@ class DictationSessionCoordinator:
                 self._publish_locked(session)
 
         return self._turns.complete(session.turn, complete)
+
+    def execute_commit(
+        self,
+        commit: DictationCommit,
+        callback: Callable[[], T],
+    ) -> tuple[bool, T | None]:
+        """Run one owned insertion and close its turn before cancellation races."""
+
+        def execute() -> T | None:
+            with self._lock:
+                session = self._active
+                if (
+                    session is None
+                    or session.run_id != commit.run_id
+                    or session.state is not DictationState.COMMITTING
+                ):
+                    return None
+            try:
+                outcome = callback()
+                terminal_success = (
+                    getattr(outcome, "terminal_success", False) is True
+                )
+                result_code = getattr(
+                    outcome,
+                    "result_code",
+                    "insertion_failed",
+                )
+                validate_result_code(result_code)
+            except Exception:
+                outcome = None
+                terminal_success = False
+                result_code = "insertion_exception"
+
+            with self._lock:
+                if (
+                    self._active is not session
+                    or session.state is not DictationState.COMMITTING
+                ):
+                    return None
+                session.transition(
+                    (
+                        DictationState.COMPLETED
+                        if terminal_success
+                        else DictationState.FAILED
+                    ),
+                    result_code=result_code,
+                )
+                session.final_transcript = None
+                self._publish_locked(session)
+            if not self._turns.complete(commit.turn):
+                return None
+            return outcome
+
+        return self._turns.run_if_current(commit.turn, execute)
 
     def fail(
         self,
