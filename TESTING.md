@@ -148,13 +148,20 @@ Use synthetic screen content, test accounts, and temporary process-scoped keys. 
 1. Start with no existing `%LOCALAPPDATA%\Clicky\preferences.json`.
 2. Launch Clicky and confirm the privacy dialog appears before microphone or hotkey capture starts.
 3. Close the dialog and confirm the microphone is unopened, speech is silent, and no screenshot is taken. Restart and confirm the dialog returns.
-4. Choose **Keep all disabled** and confirm all three denials persist.
-5. Grant only microphone permission. Confirm microphone capture works while cloud TTS remains silent and screen capture remains blocked.
-6. Grant cloud TTS using synthetic text and verify only the selected provider destination.
-7. Grant screen capture while displaying synthetic content on every monitor; verify local providers keep images local and the selected cloud provider receives them only after permission.
-8. Confirm **Web Search** and **Journal Logging** are off in the tray and no `journal.db` or search request appears.
-9. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
-10. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
+4. Choose **Keep all disabled** and confirm all four denials persist.
+5. Grant only microphone permission. Confirm local microphone capture works while cloud STT, cloud TTS, and screen capture remain blocked.
+6. Grant cloud STT separately. Confirm this permission alone sends nothing until a cloud speech mode is explicitly selected.
+7. Grant cloud TTS using synthetic text and verify only the selected provider destination.
+8. Grant screen capture while displaying synthetic content on every monitor; verify local providers keep images local and the selected cloud provider receives them only after permission.
+9. Confirm **Web Search** and **Journal Logging** are off in the tray and no `journal.db` or search request appears.
+10. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
+11. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
+
+### Live speech-to-text
+
+Use a test Deepgram account and synthetic spoken phrases. Grant microphone and cloud-STT permissions, then choose **Setup & Diagnostics → Speech input → Deepgram Nova-2 — live streaming**. Verify partial text appears while the hotkey is still held and network capture shows bounded binary audio frames before release, followed by the explicit finalization messages. Release and confirm one final transcript is used for the turn without a batch transcription POST.
+
+Interrupt live finalization with a new push-to-talk turn and verify the first WebSocket closes, its late partial/final messages never appear, and exactly one replacement capture owns the microphone. Exercise provider rejection, disconnect, connection/finalization timeout, and queue saturation; each must show an error without reconnecting or selecting another provider. Finally choose a labeled local-batch mode and confirm it performs no cloud-STT request.
 
 ### Push-to-talk cancellation
 

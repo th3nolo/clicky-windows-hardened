@@ -32,7 +32,7 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 - Pointing and drawing instructions produced by supported vision models.
 - Cloud LLM support for Anthropic, OpenAI, Gemini, and GitHub Copilot.
 - Local LLM support through an already-installed Ollama or LM Studio server.
-- Local or cloud speech-to-text and text-to-speech providers.
+- True Deepgram streaming speech-to-text, explicit cloud-batch modes, and local batch speech-to-text fallbacks.
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
 - Optional web search and a local learning journal. Both are off by default.
 
@@ -61,6 +61,8 @@ The application does not provide a fully offline guarantee. Cloud AI providers r
 ### Network requests
 
 Web search accepts HTTPS destinations only. It rejects local, private, link-local, reserved, multicast, and unspecified IP addresses before connecting, repeats the check for every redirect, and verifies the actual connected socket peer. Response types, redirects, and decoded byte counts are bounded. Environment proxies are not used.
+
+Deepgram live speech uses only the fixed `wss://api.deepgram.com/v1/listen` endpoint after both microphone and cloud-STT permissions are granted. The tray labels live, cloud-batch, and local-batch modes separately. Live sessions bound PCM frame size, frame rate, queued frames, transcript size, and total duration; they do not reconnect or silently fall back after a provider failure.
 
 ### Local code and models
 

@@ -156,6 +156,7 @@ class CompanionPanel(QWidget):
         super().__init__()
         self._state = AppState.IDLE
         self._response_text = ""
+        self._transcript_session = 0
         self._setup_window()
         self._build_ui()
         self._position_bottom_right()
@@ -238,6 +239,16 @@ class CompanionPanel(QWidget):
         self._waveform = WaveformWidget()
         self._waveform.setVisible(False)
         root.addWidget(self._waveform)
+
+        # Live speech preview. Session IDs prevent a queued result from an
+        # interrupted turn from replacing the current user's words.
+        self._transcript_label = QLabel()
+        self._transcript_label.setWordWrap(True)
+        self._transcript_label.setStyleSheet(
+            "color: rgb(155,185,235); font-size: 12px; font-style: italic;"
+        )
+        self._transcript_label.setVisible(False)
+        root.addWidget(self._transcript_label)
 
         # Response area
         scroll = QScrollArea()
@@ -340,6 +351,32 @@ class CompanionPanel(QWidget):
         """Append streaming text chunk."""
         self._response_text = text
         self._response_label.setText(text)
+
+    def begin_transcript(self, session_id: int):
+        if session_id <= self._transcript_session:
+            return
+        self._transcript_session = session_id
+        self._transcript_label.clear()
+        self._transcript_label.setVisible(False)
+
+    def update_partial_transcript(self, session_id: int, text: str):
+        if session_id < self._transcript_session:
+            return
+        self._transcript_session = session_id
+        self._transcript_label.setText(f'You (live): "{text}"')
+        self._transcript_label.setVisible(bool(text))
+
+    def update_final_transcript(self, session_id: int, text: str):
+        if session_id != self._transcript_session:
+            return
+        self._transcript_label.setText(f'You: "{text}"')
+        self._transcript_label.setVisible(bool(text))
+
+    def end_transcript(self, session_id: int):
+        if session_id != self._transcript_session:
+            return
+        self._transcript_label.clear()
+        self._transcript_label.setVisible(False)
 
     def append_response_chunk(self, chunk: str):
         self._response_text += chunk

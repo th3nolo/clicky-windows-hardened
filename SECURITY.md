@@ -111,6 +111,17 @@ identity before cancelling its recording, transcription, generation, and
 playback resources. Late callbacks from an invalidated turn are refused before
 they can update Clicky's state or response UI.
 
+Deepgram live transcription uses a provider-neutral open/send-frame/finalize/
+cancel lifecycle owned by that turn. It connects only to the reviewed Deepgram
+WebSocket endpoint with environment proxies and redirects disabled, sends the
+process-environment credential only in the authorization header, and bounds
+frame size and rate, queue depth, session bytes and duration, provider-message
+size, transcript size, and every connection/finalization timeout. A disconnect,
+timeout, capacity failure, or provider error is surfaced explicitly. The live
+session does not reconnect and does not silently invoke batch or local STT.
+Partial and final transcript UI updates carry the turn sequence so queued
+updates from an interrupted turn are rejected.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.

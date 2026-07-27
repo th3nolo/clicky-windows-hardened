@@ -355,7 +355,13 @@ class Config:
 
     def stt_provider(self) -> str:
         forced = self.stt_provider_preference.strip().lower()
-        if forced in ("deepgram", "openai", "whisper_cpp", "faster_whisper"):
+        if forced in (
+            "deepgram",
+            "deepgram_batch",
+            "openai",
+            "whisper_cpp",
+            "faster_whisper",
+        ):
             return forced
         if self.deepgram_api_key:
             return "deepgram"
@@ -368,6 +374,26 @@ class Config:
             return "whisper_cpp"
         except ImportError:
             return "faster_whisper"
+
+    def available_stt_providers(self) -> list[str]:
+        """Return explicit live, cloud-batch, and local-batch choices."""
+        providers: list[str] = []
+        if self.deepgram_api_key:
+            providers.extend(("deepgram", "deepgram_batch"))
+        if self.openai_api_key:
+            providers.append("openai")
+        providers.extend(("whisper_cpp", "faster_whisper"))
+        return providers
+
+    def set_stt_provider(self, name: str) -> None:
+        normalized = (name or "").strip().lower()
+        if normalized not in self.available_stt_providers():
+            raise ValueError(
+                "The selected speech provider is unavailable; configure its "
+                "credential or choose a local provider."
+            )
+        self.stt_provider_preference = normalized
+        _save_preferences(stt_provider=normalized)
 
     def tts_provider(self) -> str:
         if self.elevenlabs_api_key:
@@ -386,6 +412,13 @@ class Config:
         return {
             "llm": self.llm_provider(),
             "stt": self.stt_provider(),
+            "stt_mode": (
+                "live"
+                if self.stt_provider() == "deepgram"
+                else "cloud batch"
+                if self.stt_provider() in ("deepgram_batch", "openai")
+                else "local batch"
+            ),
             "tts": self.tts_provider(),
             "search": self.search_provider(),
             "ollama_model": self.ollama_model,

@@ -55,6 +55,7 @@ class TrayManager(QObject):
     on_privacy_permissions = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
+    on_set_stt_provider   = pyqtSignal(str)
     on_set_response_language = pyqtSignal(str)  # "" = auto-detect, else ISO code
     on_set_custom_instructions = pyqtSignal(str)
 
@@ -269,6 +270,7 @@ class TrayManager(QObject):
         # ── Setup / Diagnostics ──
         setup_menu = menu.addMenu("Setup && Diagnostics")
         self._build_mic_submenu(setup_menu)
+        self._build_stt_submenu(setup_menu, providers)
         privacy_permissions = setup_menu.addAction("Privacy permissions…")
         privacy_permissions.triggered.connect(self.on_privacy_permissions)
         run_setup = setup_menu.addAction("Run setup wizard again…")
@@ -395,6 +397,34 @@ class TrayManager(QObject):
             act.setCheckable(True)
             act.setChecked(idx == getattr(self, "_active_mic_index", default_idx))
             act.triggered.connect(lambda checked, i=idx: self.on_set_mic_device.emit(i))
+
+    def _build_stt_submenu(self, parent_menu: QMenu, providers: dict):
+        """Expose whether microphone audio is live, cloud-batch, or local."""
+        labels = {
+            "deepgram": "Deepgram Nova-2 — live streaming",
+            "deepgram_batch": "Deepgram Nova-2 — cloud batch",
+            "openai": "OpenAI Whisper — cloud batch",
+            "whisper_cpp": "whisper.cpp — local batch",
+            "faster_whisper": "faster-whisper — local batch",
+        }
+        active = providers.get("stt", "")
+        mode = providers.get("stt_mode", "")
+        stt_menu = parent_menu.addMenu(f"Speech input: {mode}")
+        available = set(cfg.available_stt_providers())
+        for name, label in labels.items():
+            action = stt_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(name == active)
+            action.setEnabled(name in available)
+            if name not in available and name.startswith("deepgram"):
+                action.setToolTip("Set DEEPGRAM_API_KEY to enable this mode.")
+            elif name not in available and name == "openai":
+                action.setToolTip("Set OPENAI_API_KEY to enable this mode.")
+            action.triggered.connect(
+                lambda checked, selected=name: (
+                    self.on_set_stt_provider.emit(selected) if checked else None
+                )
+            )
 
     def _build_ollama_submenu(self, parent_menu: QMenu, providers: dict):
         """Installed-model pickers plus manual Ollama setup guidance."""

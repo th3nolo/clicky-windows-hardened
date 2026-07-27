@@ -173,6 +173,10 @@ class DeepgramStreamingSession(StreamingSTTSession):
                 ssl=tls_context,
             )
             self._verify_connected_endpoint()
+        except asyncio.CancelledError:
+            self._state = StreamingSTTState.CANCELED
+            await self._cleanup()
+            raise
         except Exception as exc:
             await self._close_transport()
             self._state = StreamingSTTState.FAILED
