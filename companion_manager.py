@@ -26,6 +26,7 @@ from audio.tts.base_tts import DisabledTTSProvider
 from audio.tts.local_status_tts import LocalStatusTTS
 from dictation.models import DictationSession
 from dictation.session import DictationSessionCoordinator
+from dictation.targeting import SecureTargetGuard, WindowsTargetInspector
 from privacy_controls import (
     cloud_stt_allowed,
     cloud_tts_allowed,
@@ -292,6 +293,7 @@ class CompanionManager(QObject):
         self._dictation_pressed: DictationSession | None = None
         self._dictation = DictationSessionCoordinator(
             self._turns,
+            targets=SecureTargetGuard(WindowsTargetInspector()),
             on_state=self.sig_dictation_state.emit,
         )
         self._loop: Optional[asyncio.AbstractEventLoop] = None

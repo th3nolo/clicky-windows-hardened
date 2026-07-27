@@ -210,6 +210,23 @@ screenshot, LLM, style profile, web, connector, read-only response-provider, or
 Task Agent call occurs. This task defines ownership only: the baseline flag
 remains off and no text insertion is available yet.
 
+### Global Dictation secure target
+
+In a Global Dictation test build, focus an ordinary editable field in one
+Win32, WPF, browser, Electron, and Qt application before pressing the dictation
+hotkey. Confirm the target is accepted without the indicator or diagnostics
+showing the control's contents or window title. Before commit, change focus,
+window, process, or control and confirm the indicator shows **Blocked**, the
+final transcript is cleared, and no insertion adapter is called.
+
+Repeat with a password or protected field, sign-in and payment surfaces,
+Windows Security and administrator tools, a disabled/read-only control, an
+elevated target, and the secure desktop. Each must fail closed. Repeat after
+making the UI Automation runtime ID, executable identity, foreground window,
+focus, editability, or process integrity lookup unavailable; an unknown value
+must never become an allowed target. This source gate does not yet attempt
+input; truthful adapters and live app compatibility evidence land separately.
+
 ### Live speech-to-text
 
 Use a test Deepgram account and synthetic spoken phrases. Grant microphone and cloud-STT permissions, then choose **Setup & Diagnostics → Speech input → Deepgram Nova-2 — live streaming**. Verify partial text appears while the hotkey is still held and network capture shows bounded binary audio frames before release, followed by the explicit finalization messages. Release and confirm one final transcript is used for the turn without a batch transcription POST.
