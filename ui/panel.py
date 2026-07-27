@@ -103,30 +103,6 @@ PROVIDER_LABELS = {
     "ollama":  f"Ollama ({cfg.ollama_model})",
 }
 
-# Provider model lists are fetched live from each vendor's /models endpoint
-# (see ai/model_registry.py for Claude/OpenAI/Gemini and
-# ai/github_copilot_provider.py for Copilot). The hardcoded lists below are
-# only used as offline fallbacks when no cache exists yet.
-
-
-def _copilot_model_choices() -> list[tuple[str, str]]:
-    """Returns [(model_id, display_label), ...] for the dropdown.
-    Free models first, then ascending multiplier. Display shows '(free)' /
-    '(1×)' so the user always knows what burns premium quota."""
-    try:
-        from ai.github_copilot_provider import (
-            cached_models, sorted_model_ids, model_label,
-        )
-    except Exception:
-        return [("gpt-4o-mini", "gpt-4o-mini  (free)")]
-    out = []
-    for mid in sorted_model_ids():
-        out.append((mid, model_label(mid)))
-    if not out:
-        out.append(("gpt-4o-mini", "gpt-4o-mini  (free)"))
-    return out
-
-
 class ProviderBadge(QLabel):
     """Small pill showing active provider."""
 
@@ -281,44 +257,123 @@ class CompanionPanel(QWidget):
             "background: rgba(40,40,50,200); border: 1px solid rgba(60,60,75,180);"
             "border-radius: 6px; color: rgb(200,200,215); padding: 2px 6px; font-size: 11px;"
         )
-        self._populate_models()
         # Emit the model id (stored in userData), not the display label
         self._model_combo.currentIndexChanged.connect(
-            lambda _idx: self.on_model_changed.emit(
-                self._model_combo.currentData() or self._model_combo.currentText()
-            )
+            self._emit_model_selection
         )
         footer.addWidget(lbl)
         footer.addWidget(self._model_combo, stretch=1)
         root.addLayout(footer)
+        self._model_notice = QLabel()
+        self._model_notice.setWordWrap(True)
+        self._model_notice.setStyleSheet(
+            "color: rgb(245,180,85); font-size: 10px;"
+        )
+        self._model_notice.setVisible(False)
+        root.addWidget(self._model_notice)
+        self._populate_models()
 
     def _populate_models(self):
         self._set_models_for(cfg.llm_provider())
 
     def _set_models_for(self, provider: str):
+        from ai.model_selection import (
+            normalized_model_records,
+            resolve_model,
+        )
+
         # Avoid firing on_model_changed while we rebuild
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         if provider == "copilot":
-            for mid, label in _copilot_model_choices():
-                self._model_combo.addItem(label, userData=mid)
+            try:
+                from ai.github_copilot_provider import (
+                    cached_models as copilot_models,
+                    model_label,
+                )
+                records = normalized_model_records(copilot_models())
+                for model in records:
+                    self._model_combo.addItem(
+                        model_label(model["id"]),
+                        userData=model["id"],
+                    )
+            except Exception:
+                records = []
         elif provider in ("claude", "openai", "gemini"):
             try:
                 from ai.model_registry import cached_models
-                for m in cached_models(provider):
+                records = normalized_model_records(cached_models(provider))
+                for m in records:
                     label = m["id"]
                     if not m.get("vision"):
                         label += "  (no vision)"
                     self._model_combo.addItem(label, userData=m["id"])
             except Exception:
-                self._model_combo.addItem("default", userData="default")
-        else:   # ollama
-            self._model_combo.addItem(cfg.ollama_model, userData=cfg.ollama_model)
+                records = []
+        else:
+            local_model = cfg.selected_model(provider)
+            records = (
+                [{"id": local_model, "label": local_model, "vision": True}]
+                if local_model
+                else []
+            )
+            if local_model:
+                self._model_combo.addItem(local_model, userData=local_model)
+
+        saved = cfg.selected_model(provider)
+        if provider in ("claude", "openai", "gemini", "copilot"):
+            resolution = resolve_model(provider, records, saved)
+        elif saved:
+            from ai.model_selection import ModelResolution
+            resolution = ModelResolution(saved, "restored")
+        else:
+            from ai.model_selection import ModelResolution
+            resolution = ModelResolution(None, "selection-required")
+
+        if resolution.model_id:
+            index = self._model_combo.findData(resolution.model_id)
+            self._model_combo.setCurrentIndex(index)
+        else:
+            self._model_combo.insertItem(0, "Select a model…", userData="")
+            self._model_combo.setCurrentIndex(0)
         self._model_combo.blockSignals(False)
-        # Fire once with the new default model id (NOT the display label) so
-        # the manager picks it up — important when label != id.
-        if self._model_combo.count():
-            self.on_model_changed.emit(self._model_combo.currentData() or self._model_combo.currentText())
+        self._set_model_resolution_notice(provider, resolution)
+        self.emit_current_model()
+
+    def _set_model_resolution_notice(self, provider, resolution):
+        if resolution.status == "stale-fallback":
+            message = (
+                f"Saved {provider} model '{resolution.previous_model}' is "
+                f"unavailable. Using reviewed low-cost fallback "
+                f"'{resolution.model_id}'."
+            )
+        elif resolution.status == "selection-required":
+            previous = (
+                f" Saved model '{resolution.previous_model}' is unavailable."
+                if resolution.previous_model
+                else ""
+            )
+            message = (
+                f"No reviewed low-cost {provider} fallback is available."
+                f"{previous} Select a model before asking Clicky."
+            )
+        else:
+            message = ""
+        self._model_notice.setText(message)
+        self._model_notice.setVisible(bool(message))
+
+    def _emit_model_selection(self, _index=None):
+        model_id = self._model_combo.currentData() or ""
+        if _index is not None and model_id:
+            self._model_notice.setVisible(False)
+        self.on_model_changed.emit(model_id)
+
+    def emit_current_model(self):
+        self._emit_model_selection()
+
+    @property
+    def model_selection_notice(self) -> str:
+        return self._model_notice.text() if not self._model_notice.isHidden() else ""
 
     def refresh_for_provider(self, provider: str):
         """Called from outside when the active provider is switched at runtime."""

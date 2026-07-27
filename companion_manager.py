@@ -843,6 +843,16 @@ class CompanionManager(QObject):
             except Exception as e:
                 self._emit_turn_signal(session, self.sig_error, f"Skill error: {e}")
 
+            if not self._current_model:
+                self._emit_turn_signal(
+                    session,
+                    self.sig_error,
+                    "No validated model is selected for "
+                    f"{cfg.llm_provider()}. Choose one in the Model dropdown. "
+                    "Clicky did not send the request.",
+                )
+                return
+
             # 2. Screen capture — skipped if sensitive window (password manager etc.)
             #
             # ALSO skipped for "who is X" / "tell me about X" identity questions:
@@ -1628,7 +1638,35 @@ class CompanionManager(QObject):
     # ── Settings ──────────────────────────────────────────────────────────────
 
     def set_model(self, model: str):
+        from ai.model_selection import model_is_available, valid_model_id
+
+        provider = cfg.llm_provider()
+        if provider in ("claude", "openai", "gemini"):
+            from ai.model_registry import cached_models
+
+            valid = model_is_available(model, cached_models(provider))
+        elif provider == "copilot":
+            from ai.github_copilot_provider import cached_models
+
+            valid = model_is_available(model, cached_models())
+        else:
+            valid = valid_model_id(model)
+        if not valid:
+            self._current_model = None
+            if model:
+                self.sig_error.emit(
+                    f"The selected {provider} model is unavailable. "
+                    "Choose a listed model before asking Clicky."
+                )
+            return False
+        try:
+            cfg.set_selected_model(provider, model)
+        except (OSError, ValueError) as exc:
+            self._current_model = None
+            self.sig_error.emit(f"Could not save the {provider} model: {exc}")
+            return False
         self._current_model = model
+        return True
 
     def set_active_provider(self, name: str):
         """Runtime switch between claude / openai / copilot / gemini / ollama."""
@@ -1804,6 +1842,15 @@ class CompanionManager(QObject):
         """Called when quiz mode flips ON — generates the first question
         without waiting for a user utterance."""
         if not self._turns.is_current(session):
+            return
+        if not self._current_model:
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                "Quiz Mode needs a validated model selection. Choose one in "
+                "the Model dropdown.",
+            )
+            self._finish_turn(session)
             return
         if not screen_capture_allowed(cfg):
             self._emit_turn_signal(session, self.sig_error,

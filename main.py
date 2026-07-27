@@ -178,6 +178,9 @@ def main():
 
     # Panel → Manager
     panel.on_model_changed.connect(manager.set_model)
+    panel.emit_current_model()
+    if panel.model_selection_notice:
+        tray.show_notification("Model selection changed", panel.model_selection_notice)
 
     def _on_doc_dropped(path: str):
         ok = manager.attach_document(path)
@@ -281,7 +284,10 @@ def main():
         manager.set_active_provider(name)
         panel.refresh_for_provider(name)       # repopulate model dropdown + badge
         tray.rebuild_menu()                    # tick mark moves to new provider
-        tray.show_notification("Clicky", f"Switched to {name}")
+        tray.show_notification(
+            "Model selection changed" if panel.model_selection_notice else "Clicky",
+            panel.model_selection_notice or f"Switched to {name}",
+        )
 
     tray.on_switch_provider.connect(_switch)
     tray.on_stop.connect(manager.stop)
@@ -304,6 +310,11 @@ def main():
     def _on_models_refreshed(provider: str, count: int):
         if cfg.llm_provider() == provider:
             panel.refresh_for_provider(provider)
+            if panel.model_selection_notice:
+                tray.show_notification(
+                    "Model selection changed",
+                    panel.model_selection_notice,
+                )
     manager.sig_models_refreshed.connect(_on_models_refreshed)
 
     # ── Ollama multi-model wiring ─────────────────────────────────────────

@@ -185,16 +185,18 @@ _FETCHERS = {
 
 def cached_models(provider: str) -> list[dict]:
     """Read on-disk cache, falling back to a curated list if missing."""
+    from ai.model_selection import normalized_model_records
+
     p = _cache_path(provider)
     if p.exists():
         try:
             blob = json.loads(p.read_text())
-            ms = blob.get("models", [])
+            ms = normalized_model_records(blob.get("models", []))
             if ms:
                 return ms
         except Exception:
             pass
-    return list(_FALLBACKS.get(provider, []))
+    return normalized_model_records(_FALLBACKS.get(provider, []))
 
 
 def cache_is_stale(provider: str, ttl: int = CACHE_TTL_SECONDS) -> bool:
@@ -240,12 +242,10 @@ def model_ids(provider: str) -> list[str]:
 
 
 def best_default(provider: str) -> Optional[str]:
-    """Pick a sensible default model from the cache — vision-capable first."""
-    models = cached_models(provider)
-    for m in models:
-        if m.get("vision"):
-            return m["id"]
-    return models[0]["id"] if models else None
+    """Pick only the provider's reviewed low-cost default."""
+    from ai.model_selection import resolve_model
+
+    return resolve_model(provider, cached_models(provider), "").model_id
 
 
 # ─── CLI: `python -m ai.model_registry [show|refresh] [provider]` ─────────────
