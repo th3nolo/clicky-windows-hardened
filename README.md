@@ -74,6 +74,14 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
 - The selected model is stored independently for each provider. Saved IDs are
   restored only while they remain in that provider's validated model list.
+- Writing-style profiles do not exist until the user creates or imports one.
+  SQLite stores only stable IDs, timestamps, enabled state, schema version, and
+  DPAPI-protected payloads; names, rules, approved examples, and executable
+  identity scopes remain encrypted for the current Windows user. Disabled,
+  deleted, corrupt, or out-of-scope profiles cannot be returned by the
+  prompt-facing application lookup. Management APIs explicitly cover create,
+  inspect, update, enable/disable, delete, single export/import, and complete
+  export/import without passive learning or plaintext file storage.
 - Microphone access, cloud speech-to-text, cloud text-to-speech, screen capture,
   and external read-only response-provider CLI execution require independent
   persisted permission. Microphone permission alone never authorizes cloud

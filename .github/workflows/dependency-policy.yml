@@ -50,6 +50,7 @@ jobs:
           tests.test_response_provider_terminology
           tests.test_security_hardening
           tests.test_stt_vocabulary_contract
+          tests.test_style_profiles
           tests.test_turn_coordinator
           tests.test_validation_boundary
           tests.test_windows_runtime_validation

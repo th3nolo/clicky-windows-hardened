@@ -46,6 +46,7 @@ hidden = [
     "ai.lmstudio_provider",
     "ai.hybrid_pointer",
     "ai.figure_detector",
+    "memory.style_profiles",
 
     # First-run setup wizard
     "ui.setup_wizard",
