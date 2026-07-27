@@ -196,6 +196,20 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
+### Global Dictation session ownership
+
+Use a test build where only Global Dictation is build-available, grant only its
+permission, and configure a hotkey different from tutor push-to-talk. Hold the
+dictation hotkey and confirm the content-free indicator shows **Listening**;
+release it and confirm **Finalizing**. While either hotkey owns capture, press
+the other and confirm it cannot open a second microphone recording. While
+dictation is finalizing, start tutor push-to-talk and confirm the dictation
+session becomes cancelled and a late final transcript cannot advance toward
+insertion. Repeat with Escape during capture and finalization. Confirm no
+screenshot, LLM, style profile, web, connector, read-only response-provider, or
+Task Agent call occurs. This task defines ownership only: the baseline flag
+remains off and no text insertion is available yet.
+
 ### Live speech-to-text
 
 Use a test Deepgram account and synthetic spoken phrases. Grant microphone and cloud-STT permissions, then choose **Setup & Diagnostics → Speech input → Deepgram Nova-2 — live streaming**. Verify partial text appears while the hotkey is still held and network capture shows bounded binary audio frames before release, followed by the explicit finalization messages. Release and confirm one final transcript is used for the turn without a batch transcription POST.

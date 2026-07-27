@@ -36,6 +36,7 @@ jobs:
           tests.test_audio_temp_privacy
           tests.test_capture_exclusion
           tests.test_dependency_policy
+          tests.test_dictation_session
           tests.test_offline_model_loading
           tests.test_packaged_self_test
           tests.test_privacy_consent

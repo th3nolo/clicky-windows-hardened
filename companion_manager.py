@@ -24,6 +24,8 @@ from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
 from audio.tts.base_tts import DisabledTTSProvider
 from audio.tts.local_status_tts import LocalStatusTTS
+from dictation.models import DictationSession
+from dictation.session import DictationSessionCoordinator
 from privacy_controls import (
     cloud_stt_allowed,
     cloud_tts_allowed,
@@ -275,6 +277,8 @@ class CompanionManager(QObject):
     sig_draw                = pyqtSignal(dict)            # generic teaching shape → overlay
     sig_clear_drawings      = pyqtSignal()                # wipe all teaching shapes
     sig_recording_state     = pyqtSignal(bool, str)       # (is_recording, output_dir)
+    sig_dictation_state     = pyqtSignal(object)          # DictationSnapshot
+    sig_dictation_error     = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -285,6 +289,11 @@ class CompanionManager(QObject):
         self._turns = TurnCoordinator()
         self._input_lock = threading.RLock()
         self._pressed_session: TurnSession | None = None
+        self._dictation_pressed: DictationSession | None = None
+        self._dictation = DictationSessionCoordinator(
+            self._turns,
+            on_state=self.sig_dictation_state.emit,
+        )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
@@ -371,7 +380,16 @@ class CompanionManager(QObject):
     def shutdown(self):
         with self._input_lock:
             self._pressed_session = None
-            self._turns.cancel_active(self._set_idle_state)
+            self._dictation_pressed = None
+            active_dictation = self._dictation.active
+            if (
+                active_dictation is not None
+                and self._turns.is_current(active_dictation.turn)
+            ):
+                self._dictation.cancel(active_dictation, "shutdown")
+                self._set_idle_state()
+            else:
+                self._turns.cancel_active(self._set_idle_state)
         # Kill any audio that was playing when the user clicked Quit
         self._cancel_outputs()
         self._listener.stop()
@@ -688,6 +706,28 @@ class CompanionManager(QObject):
                 return
             self._emit_state(AppState.THINKING, session)
             self._submit(self._end_capture_and_process(session), session)
+
+    def on_dictation_hotkey_press(self) -> None:
+        """Claim the shared turn for a build-gated dictation session."""
+        with self._input_lock:
+            active = self._dictation_pressed
+            if active is not None and self._turns.is_current(active.turn):
+                return
+            try:
+                session = self._dictation.begin_capture(cfg)
+            except (PermissionError, RuntimeError, ValueError) as exc:
+                self.sig_dictation_error.emit(str(exc))
+                return
+            if session is not None:
+                self._dictation_pressed = session
+
+    def on_dictation_hotkey_release(self) -> None:
+        """Move the owned session to finalization; STT wiring lands separately."""
+        with self._input_lock:
+            session = self._dictation_pressed
+            self._dictation_pressed = None
+            if session is not None:
+                self._dictation.release_capture(session)
 
     def _handle_wake(self):
         """Triggered from ambient listener when wake-word is detected."""
@@ -2186,7 +2226,16 @@ class CompanionManager(QObject):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
         with self._input_lock:
             self._pressed_session = None
-            self._turns.cancel_active(self._set_idle_state)
+            self._dictation_pressed = None
+            active_dictation = self._dictation.active
+            if (
+                active_dictation is not None
+                and self._turns.is_current(active_dictation.turn)
+            ):
+                self._dictation.cancel(active_dictation, "cancelled")
+                self._set_idle_state()
+            else:
+                self._turns.cancel_active(self._set_idle_state)
         # Clear any stored lesson so "stop" really means "back to zero"
         self._lesson_steps = []
         self._lesson_step_idx = 0

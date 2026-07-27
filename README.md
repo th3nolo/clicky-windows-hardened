@@ -77,6 +77,10 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - Unfinished action capabilities have separate build availability, versioned
   user permission, and per-run grants. All seven action build flags are off in
   the baseline release, and no one layer can authorize another capability.
+- The build-gated Global Dictation session uses a dedicated configurable
+  hotkey and the same exclusive turn owner as tutor push-to-talk. Its state
+  indicator contains no transcript text, and only a final transcript can
+  advance toward a future insertion adapter.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.

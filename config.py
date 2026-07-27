@@ -35,6 +35,7 @@ _PREFERENCE_STRING_LIMITS = {
     "custom_instructions": 32 * 1024,
     "elevenlabs_voice_id": 256,
     "hotkey": 128,
+    "dictation_hotkey": 128,
     "stt_provider": 32,
     "stt_fallback_provider": 32,
 }
@@ -58,6 +59,23 @@ _PREFERENCE_STRING_LIST_LIMITS = {
     "transcription_vocabulary": (63, 64),
 }
 _PREFERENCES_LOCK = threading.Lock()
+
+
+def _canonical_hotkey(hotkey: str) -> str:
+    if not isinstance(hotkey, str):
+        raise TypeError("Hotkey must be text")
+    parts = [part.strip().lower() for part in hotkey.split("+")]
+    if (
+        not 1 <= len(parts) <= 4
+        or any(
+            not part
+            or len(part) > 32
+            or not part.isprintable()
+            for part in parts
+        )
+    ):
+        raise ValueError("Invalid hotkey")
+    return "+".join(parts)
 
 
 def _preferences_dir() -> Path:
@@ -368,6 +386,12 @@ class Config:
         default_factory=lambda: _preference("elevenlabs_voice_id", "")
     )
     hotkey: str = field(default_factory=lambda: _preference("hotkey", "ctrl+win"))
+    dictation_hotkey: str = field(
+        default_factory=lambda: _preference(
+            "dictation_hotkey",
+            "ctrl+win+d",
+        )
+    )
     journal_enabled: bool = field(
         default_factory=lambda: bool(_preference("journal_enabled", False))
     )
@@ -714,6 +738,25 @@ class Config:
         value = device_index if isinstance(device_index, int) and 0 <= device_index <= 4096 else None
         self.mic_device_index = value
         _save_preferences(mic_device_index=value)
+
+    def set_dictation_hotkey(self, hotkey: str) -> None:
+        normalized = _canonical_hotkey(hotkey)
+        tutor_hotkey = _canonical_hotkey(self.hotkey)
+        if normalized == tutor_hotkey:
+            raise ValueError(
+                "Dictation hotkey must differ from the tutor hotkey"
+            )
+        _save_preferences(dictation_hotkey=normalized)
+        self.dictation_hotkey = normalized
+
+    def dictation_hotkey_is_dedicated(self) -> bool:
+        try:
+            return (
+                _canonical_hotkey(self.dictation_hotkey)
+                != _canonical_hotkey(self.hotkey)
+            )
+        except (TypeError, ValueError):
+            return False
 
     def set_journal_enabled(self, enabled: bool) -> None:
         self.journal_enabled = bool(enabled)
