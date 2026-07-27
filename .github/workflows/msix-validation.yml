@@ -1,0 +1,46 @@
+name: MSIX validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory-reviewed-tool:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Inventory preinstalled MakeAppx candidates without execution
+        shell: pwsh
+        run: |
+          $root = "C:\Program Files (x86)\Windows Kits\10\bin"
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            throw "Windows SDK binary root is unavailable."
+          }
+          $candidates = @(
+            Get-ChildItem -LiteralPath $root -Filter MakeAppx.exe -File -Recurse |
+              Sort-Object -Property FullName
+          )
+          if ($candidates.Count -eq 0) {
+            throw "No preinstalled MakeAppx candidate was found."
+          }
+          $inventory = foreach ($candidate in $candidates) {
+            if ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw "MakeAppx candidate is a reparse point: $($candidate.FullName)"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $candidate.FullName
+            [pscustomobject]@{
+              path = $candidate.FullName
+              sha256 = (
+                Get-FileHash -Algorithm SHA256 -LiteralPath $candidate.FullName
+              ).Hash.ToLowerInvariant()
+              file_version = $candidate.VersionInfo.FileVersion
+              product_version = $candidate.VersionInfo.ProductVersion
+              signature_status = $signature.Status.ToString()
+              signer_subject = $signature.SignerCertificate.Subject
+              signer_thumbprint = $signature.SignerCertificate.Thumbprint
+            }
+          }
+          $inventory | ConvertTo-Json -Depth 3
