@@ -22,6 +22,10 @@ from typing import Optional
 import mss
 from PIL import Image
 
+from screen.capture_exclusion import (
+    CaptureExclusionError,
+    capture_without_owned_windows,
+)
 
 FPS = 8
 
@@ -29,7 +33,7 @@ FPS = 8
 class LessonRecorder:
     """Headless screen recorder. Markdown transcript built up alongside."""
 
-    def __init__(self):
+    def __init__(self, on_error=None):
         self._thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self._writer = None
@@ -37,6 +41,8 @@ class LessonRecorder:
         self._t0: float = 0.0
         self._out_dir: Optional[Path] = None
         self.is_recording = False
+        self._on_error = on_error
+        self.last_error = ""
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -69,6 +75,7 @@ class LessonRecorder:
         self._md_lines = [f"# Clicky Lesson — {ts}", ""]
         self._t0 = time.monotonic()
         self._stop_evt.clear()
+        self.last_error = ""
         self.is_recording = True
 
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -115,10 +122,16 @@ class LessonRecorder:
             next_t = time.monotonic()
             while not self._stop_evt.is_set():
                 try:
-                    raw = sct.grab(mon)
+                    raw = capture_without_owned_windows(lambda: sct.grab(mon))
                     img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                     if self._writer is not None:
                         self._writer.append_data(_to_array(img))
+                except CaptureExclusionError as exc:
+                    self.last_error = str(exc)
+                    if self._on_error is not None:
+                        self._on_error(self.last_error)
+                    self._stop_evt.set()
+                    break
                 except Exception:
                     pass
                 next_t += interval

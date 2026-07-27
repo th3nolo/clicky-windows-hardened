@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt
 from config import cfg
 from audio.secure_temp import initialize_secure_audio_temp
 from privacy_controls import microphone_allowed
+from screen.capture_exclusion import install_qt_capture_exclusion
 from ui.tray import TrayManager
 from ui.panel import CompanionPanel, AppState
 from ui.overlay import (
@@ -98,6 +99,7 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Clicky")
     app.setApplicationDisplayName("Clicky - AI Companion")
+    install_qt_capture_exclusion(app)
 
     # Consent is the first application-controlled capability boundary. In
     # particular, CompanionManager construction loads approved Python skills

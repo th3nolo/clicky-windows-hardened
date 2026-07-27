@@ -105,6 +105,15 @@ Web search and journal logging are also off by default. After explicit activatio
 
 The Privacy Guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Explicit screen permission is still required, but permission does not make the title heuristic comprehensive.
 
+Clicky applies Windows `WDA_EXCLUDEFROMCAPTURE` affinity to every current-
+process Qt top-level window and re-enumerates current-process native windows
+before each screenshot. If Windows cannot apply and verify that affinity, the
+capture boundary snapshots, hides, verifies, and compositor-flushes every
+visible Clicky-owned top-level window before capturing, then restores placement,
+visibility, and foreground state in `finally`. Any hide, verification, flush,
+or restoration failure is explicit and aborts the capture. The same guard
+covers LLM screenshots, OCR fallback captures, and lesson-recorder frames.
+
 Each microphone capture and generated response has one process-local turn
 identity. Starting a replacement push-to-talk turn invalidates the prior
 identity before cancelling its recording, transcription, generation, and

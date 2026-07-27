@@ -111,7 +111,8 @@ def _runtime_report(distribution_identity: dict[str, object]) -> dict[str, objec
             },
             "screen_denied_before_consent": True,
             "screen_capture_after_consent": [{"index": 0, "width": 800, "height": 600}],
-            "synthetic_screen_content_observed": True,
+            "clicky_owned_window_excluded": True,
+            "owned_window_fallback_restored": True,
         },
         "unsigned_application": {
             "external_destinations_before_consent": [],

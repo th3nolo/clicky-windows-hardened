@@ -25,6 +25,7 @@ import mss
 import mss.tools
 from PIL import Image
 
+from screen.capture_exclusion import capture_without_owned_windows
 
 @dataclass
 class ScreenShot:
@@ -65,7 +66,7 @@ def _query_dpi_scale() -> float:
         return 1.0
 
 
-def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
+def _capture_all_screens(max_width: int) -> List[ScreenShot]:
     """Capture all monitors. Each ScreenShot carries everything needed
     to convert detection coords back into logical screen space."""
     dpi = _query_dpi_scale()
@@ -107,6 +108,13 @@ def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
             ))
 
     return results
+
+
+def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
+    """Capture all monitors after excluding every Clicky-owned window."""
+    return capture_without_owned_windows(
+        lambda: _capture_all_screens(max_width)
+    )
 
 
 def capture_primary() -> ScreenShot:

@@ -343,8 +343,10 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         microphone_allowed,
         screen_capture_allowed,
     )
+    import screen.capture_exclusion as capture_exclusion
 
     app = QApplication.instance() or QApplication([])
+    capture_exclusion.install_qt_capture_exclusion(app)
     synthetic_window = QWidget()
     synthetic_window.setWindowTitle("Clicky Sandbox Synthetic Screen")
     synthetic_window.setStyleSheet("background-color: #ff00ff;")
@@ -499,8 +501,106 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         asyncio.run(manager._kickoff_quiz())
         _require(bool(captures), "manager screen path captured no monitors after consent")
         _require(
-            any(_screenshot_contains_synthetic_window(shot.base64_jpeg) for shot in captures),
-            "screen capture did not contain the known synthetic sandbox window",
+            not any(
+                _screenshot_contains_synthetic_window(shot.base64_jpeg)
+                for shot in captures
+            ),
+            "screen capture leaked the known Clicky-owned synthetic window",
+        )
+
+        native_backend = capture_exclusion.Win32OwnedWindowBackend()
+
+        class ForceFallbackBackend:
+            def visible_owned_windows(self):
+                return native_backend.visible_owned_windows()
+
+            def snapshot(self, handle):
+                return native_backend.snapshot(handle)
+
+            def exclude_from_capture(self, _handle):
+                return False
+
+            def hide(self, handle):
+                return native_backend.hide(handle)
+
+            def is_visible(self, handle):
+                return native_backend.is_visible(handle)
+
+            def flush_compositor(self):
+                return native_backend.flush_compositor()
+
+            def restore(self, snapshot):
+                return native_backend.restore(snapshot)
+
+        def placement_tuple(snapshot):
+            placement = snapshot.placement
+            rectangle = placement.rcNormalPosition
+            return (
+                int(placement.showCmd),
+                int(rectangle.left),
+                int(rectangle.top),
+                int(rectangle.right),
+                int(rectangle.bottom),
+                snapshot.was_foreground,
+            )
+
+        synthetic_handle = int(synthetic_window.winId())
+        _require(
+            bool(
+                ctypes.windll.user32.SetWindowDisplayAffinity(
+                    synthetic_handle, 0
+                )
+            ),
+            "could not clear synthetic affinity before fallback validation",
+        )
+        cleared_affinity = ctypes.c_ulong()
+        _require(
+            bool(
+                ctypes.windll.user32.GetWindowDisplayAffinity(
+                    synthetic_handle,
+                    ctypes.byref(cleared_affinity),
+                )
+            )
+            and cleared_affinity.value == 0,
+            "synthetic affinity did not clear before fallback validation",
+        )
+        before_fallback = native_backend.snapshot(synthetic_handle)
+        previous_controller = capture_exclusion._DEFAULT_CONTROLLER
+        capture_exclusion._DEFAULT_CONTROLLER = (
+            capture_exclusion.WindowCaptureController(ForceFallbackBackend())
+        )
+        try:
+            fallback_screens = original_capture()
+            _require(
+                not any(
+                    _screenshot_contains_synthetic_window(shot.base64_jpeg)
+                    for shot in fallback_screens
+                ),
+                "hide/capture/restore fallback leaked the Clicky-owned window",
+            )
+            try:
+                capture_exclusion.capture_without_owned_windows(
+                    lambda: (_ for _ in ()).throw(
+                        RuntimeError("synthetic capture failure")
+                    )
+                )
+            except RuntimeError as exc:
+                _require(
+                    str(exc) == "synthetic capture failure",
+                    "capture fallback changed the synthetic failure",
+                )
+            else:
+                raise AssertionError("synthetic capture failure did not propagate")
+        finally:
+            capture_exclusion._DEFAULT_CONTROLLER = previous_controller
+        after_fallback = native_backend.snapshot(synthetic_handle)
+        _require(
+            native_backend.is_visible(synthetic_handle),
+            "Clicky-owned window remained hidden after fallback",
+        )
+        _require(
+            placement_tuple(after_fallback) == placement_tuple(before_fallback),
+            "Clicky-owned window placement changed after fallback",
         )
         dimensions = [
             {"index": shot.index, "width": shot.width, "height": shot.height}
@@ -527,7 +627,8 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         "cloud_tts_after_consent": cloud_tts_network,
         "screen_denied_before_consent": True,
         "screen_capture_after_consent": dimensions,
-        "synthetic_screen_content_observed": True,
+        "clicky_owned_window_excluded": True,
+        "owned_window_fallback_restored": True,
     }
 
 
