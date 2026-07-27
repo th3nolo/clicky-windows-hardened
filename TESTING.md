@@ -462,6 +462,14 @@ Use a disposable GitHub test account if an end-to-end check is required. Confirm
 
 The automated suite exercises DPAPI with a generated non-secret value.
 
+The reusable DPAPI tests also enforce plaintext, ciphertext, entropy, and file
+deletion limits; reject non-Windows use before a native call; and verify that a
+wrong application context or damaged ciphertext raises a content-free
+corrupt-or-foreign-user error. In a disposable second Windows account, copy a
+synthetic protected blob created by the first account and confirm
+`decrypt_current_user` raises that same explicit error. This cross-account
+check remains interactive because CI has only one Windows user context.
+
 ### Web search
 
 Keep web search disabled for the baseline. After explicit activation with synthetic queries, confirm that ordinary public HTTPS results can be processed. Do not weaken a rejection to make an HTTP, private-address, redirect, unexpected-content-type, missing-peer, or oversized-response case pass. Those cases belong in the offline tests.

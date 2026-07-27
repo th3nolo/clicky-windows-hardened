@@ -66,7 +66,11 @@ message; response content is not sent to that fallback and barge-in cancels it.
 
 - The application does not load `.env` or `.env.local` files.
 - Provider API keys are read from the current process environment only.
-- GitHub Copilot OAuth tokens are encrypted for the current Windows user with DPAPI.
+- Reusable, bounded Windows DPAPI primitives encrypt application secrets for
+  the current user, reject corrupt or foreign-user ciphertext explicitly, and
+  delete only bounded regular files without following symlinks. GitHub Copilot
+  OAuth tokens retain their existing DPAPI file path, format, application
+  entropy, verified write, and legacy-migration behavior.
 - Non-secret preferences are allowlisted and stored in `%LOCALAPPDATA%\Clicky\preferences.json`.
 - The selected model is stored independently for each provider. Saved IDs are
   restored only while they remain in that provider's validated model list.

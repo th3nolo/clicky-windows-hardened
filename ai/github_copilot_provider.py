@@ -36,6 +36,11 @@ from typing import AsyncIterator, List, Optional
 import httpx
 
 from ai.base_provider import BaseLLMProvider, Message
+from security.dpapi import (
+    decrypt_current_user,
+    delete_file_bounded,
+    encrypt_current_user,
+)
 
 
 VSCODE_CLIENT_ID = "Iv1.b507a08c87ecfe98"   # Public VS Code Copilot client id
@@ -90,78 +95,20 @@ def _is_windows() -> bool:
 
 
 def _dpapi_transform(data: bytes, *, protect: bool) -> bytes:
-    """Protect or unprotect bytes for the current Windows user."""
-    if not _is_windows():
-        raise RuntimeError("GitHub token storage requires Windows DPAPI")
-
-    import ctypes
-    from ctypes import wintypes
-
-    class DATA_BLOB(ctypes.Structure):
-        _fields_ = [
-            ("cbData", wintypes.DWORD),
-            ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
-        ]
-
-    def make_blob(value: bytes):
-        buffer = (ctypes.c_ubyte * len(value)).from_buffer_copy(value)
-        blob = DATA_BLOB(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
-        return blob, buffer
-
-    input_blob, input_buffer = make_blob(data)
-    entropy_blob, entropy_buffer = make_blob(_DPAPI_ENTROPY)
-    output_blob = DATA_BLOB()
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
-    kernel32.LocalFree.restype = wintypes.HLOCAL
-    flags = 0x1  # CRYPTPROTECT_UI_FORBIDDEN
-
     if protect:
-        operation = crypt32.CryptProtectData
-        operation.argtypes = [
-            ctypes.POINTER(DATA_BLOB), wintypes.LPCWSTR,
-            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
-            wintypes.DWORD, ctypes.POINTER(DATA_BLOB),
-        ]
-        operation.restype = wintypes.BOOL
-        arguments = (
-            ctypes.byref(input_blob),
-            "Clicky GitHub Copilot token",
-            ctypes.byref(entropy_blob),
-            None,
-            None,
-            flags,
-            ctypes.byref(output_blob),
+        return encrypt_current_user(
+            data,
+            entropy=_DPAPI_ENTROPY,
+            description="Clicky GitHub Copilot token",
+            max_plaintext_bytes=8192,
+            max_protected_bytes=128 * 1024,
         )
-    else:
-        operation = crypt32.CryptUnprotectData
-        operation.argtypes = [
-            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p,
-            ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
-            wintypes.DWORD, ctypes.POINTER(DATA_BLOB),
-        ]
-        operation.restype = wintypes.BOOL
-        arguments = (
-            ctypes.byref(input_blob),
-            None,
-            ctypes.byref(entropy_blob),
-            None,
-            None,
-            flags,
-            ctypes.byref(output_blob),
-        )
-
-    # Keep backing buffers alive through the native call.
-    _ = input_buffer, entropy_buffer
-    if not operation(*arguments):
-        error = ctypes.get_last_error()
-        raise OSError(error, "Windows DPAPI operation failed")
-    try:
-        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
-    finally:
-        if output_blob.pbData:
-            kernel32.LocalFree(ctypes.cast(output_blob.pbData, ctypes.c_void_p))
+    return decrypt_current_user(
+        data,
+        entropy=_DPAPI_ENTROPY,
+        max_protected_bytes=128 * 1024,
+        max_plaintext_bytes=8192,
+    )
 
 
 def _dpapi_protect(data: bytes) -> bytes:
@@ -174,22 +121,11 @@ def _dpapi_unprotect(data: bytes) -> bytes:
 
 def _delete_plaintext_token(path: Path) -> None:
     """Best-effort overwrite, then remove a legacy plaintext token file."""
-    if not path.exists() and not path.is_symlink():
-        return
-    if path.is_symlink():
-        path.unlink()
-        return
-    size = path.stat().st_size
-    with open(path, "r+b", buffering=0) as handle:
-        remaining = size
-        zeros = b"\x00" * min(64 * 1024, max(1, size))
-        while remaining:
-            chunk = zeros[: min(len(zeros), remaining)]
-            handle.write(chunk)
-            remaining -= len(chunk)
-        handle.flush()
-        os.fsync(handle.fileno())
-    path.unlink()
+    delete_file_bounded(
+        path,
+        max_file_bytes=_MAX_LEGACY_TOKEN_FILE_BYTES,
+        overwrite=True,
+    )
 
 
 def _read_encrypted_token() -> Optional[str]:
