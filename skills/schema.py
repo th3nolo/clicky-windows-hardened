@@ -8,6 +8,8 @@ tools.  The future registry will parse bounded JSON through
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from enum import Enum
@@ -930,6 +932,19 @@ def parse_declarative_skill(
 ) -> DeclarativeSkillDefinition:
     """Parse one bounded JSON definition and enforce release compatibility."""
 
+    definition = parse_declarative_skill_definition(payload)
+    require_declarative_skill_compatibility(
+        definition,
+        current_clicky_version=current_clicky_version,
+    )
+    return definition
+
+
+def parse_declarative_skill_definition(
+    payload: bytes,
+) -> DeclarativeSkillDefinition:
+    """Parse bounded JSON without turning compatibility into authority."""
+
     if type(payload) is not bytes:
         raise TypeError("Declarative Skill definitions must be JSON bytes")
     if not payload or len(payload) > MAX_DEFINITION_BYTES:
@@ -940,6 +955,18 @@ def parse_declarative_skill(
         payload,
         strict=True,
     )
+    return definition
+
+
+def require_declarative_skill_compatibility(
+    definition: DeclarativeSkillDefinition,
+    *,
+    current_clicky_version: str = CURRENT_CLICKY_VERSION,
+) -> None:
+    """Reject a structurally valid definition that needs a newer release."""
+
+    if not isinstance(definition, DeclarativeSkillDefinition):
+        raise TypeError("Compatibility checks require a validated skill")
     current = _release_triplet(
         current_clicky_version,
         label="Current Clicky version",
@@ -952,7 +979,28 @@ def parse_declarative_skill(
         raise DeclarativeSkillCompatibilityError(
             "Declarative Skill requires a newer Clicky release"
         )
-    return definition
+
+
+def declarative_skill_source_digest(
+    definition: DeclarativeSkillDefinition,
+) -> str:
+    """Digest all validated semantic fields except the digest field itself."""
+
+    if not isinstance(definition, DeclarativeSkillDefinition):
+        raise TypeError("Source digest requires a validated skill")
+    payload = definition.model_dump(mode="json")
+    payload.pop("source_digest", None)
+    payload["capabilities"] = sorted(payload["capabilities"])
+    for connector in payload["connectors"]:
+        connector["capabilities"] = sorted(connector["capabilities"])
+        connector["oauth_scopes"] = sorted(connector["oauth_scopes"])
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 __all__ = [
@@ -984,5 +1032,8 @@ __all__ = [
     "StepArgumentBinding",
     "ValidationError",
     "WorkflowStep",
+    "declarative_skill_source_digest",
     "parse_declarative_skill",
+    "parse_declarative_skill_definition",
+    "require_declarative_skill_compatibility",
 ]

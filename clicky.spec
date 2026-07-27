@@ -47,6 +47,7 @@ hidden = [
     "ai.hybrid_pointer",
     "ai.figure_detector",
     "memory.style_profiles",
+    "skills.registry",
     "skills.schema",
 
     # First-run setup wizard
@@ -75,6 +76,7 @@ datas, binaries, hiddenimports = [], [], []
 # Dynamically loaded bundled skills stay as source so their reviewed bytes can
 # be verified against the shipped manifest before execution.
 datas += [
+    ("skills/declarative/manifest.json", "skills/declarative"),
     ("skills/example_self_mode.py", "skills"),
     ("skills/manifest.json", "skills"),
 ]

@@ -370,6 +370,90 @@ class BundledSkillPolicyTests(unittest.TestCase):
                 policy.check_bundled_skills()
 
 
+class BundledDeclarativeSkillPolicyTests(unittest.TestCase):
+    def _write_fixture(self, root: Path) -> tuple[Path, bytes, str]:
+        directory = root / "skills" / "declarative"
+        directory.mkdir(parents=True)
+        definition = b'{"schema_version":1}\n'
+        digest = hashlib.sha256(definition).hexdigest()
+        skill = directory / "safe.skill.json"
+        skill.write_bytes(definition)
+        (directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "files": {"safe.skill.json": digest},
+                    "version": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "skills" / "registry.py").write_text(
+            "from types import MappingProxyType\n"
+            "_BUNDLED_DECLARATIVE_SKILL_DIGESTS = "
+            f"MappingProxyType({{'safe.skill.json': {digest!r}}})\n",
+            encoding="utf-8",
+        )
+        return skill, definition, digest
+
+    def test_exact_declarative_manifest_is_accepted(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_fixture(root)
+            with mock.patch.object(policy, "ROOT", root):
+                policy.check_bundled_declarative_skills()
+
+    def test_tampered_unlisted_or_reanchored_definition_fails(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill, _source, _digest = self._write_fixture(root)
+            skill.write_bytes(b"tampered")
+            with mock.patch.object(policy, "ROOT", root), self.assertRaisesRegex(
+                AssertionError,
+                "digest differs",
+            ):
+                policy.check_bundled_declarative_skills()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_fixture(root)
+            (root / "skills" / "declarative" / "extra.txt").write_text(
+                "unlisted",
+                encoding="utf-8",
+            )
+            with mock.patch.object(policy, "ROOT", root), self.assertRaisesRegex(
+                AssertionError,
+                "unlisted content",
+            ):
+                policy.check_bundled_declarative_skills()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill, _source, _digest = self._write_fixture(root)
+            replacement = b'{"schema_version":2}\n'
+            replacement_digest = hashlib.sha256(replacement).hexdigest()
+            skill.write_bytes(replacement)
+            (root / "skills" / "declarative" / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "files": {
+                            "safe.skill.json": replacement_digest
+                        },
+                        "version": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(policy, "ROOT", root), self.assertRaisesRegex(
+                AssertionError,
+                "embedded anchor",
+            ):
+                policy.check_bundled_declarative_skills()
+
+
 VALID_BUILD = (ROOT / "build.bat").read_text(encoding="utf-8")
 VALID_WORKFLOW = r'''
 name: Dependency policy
