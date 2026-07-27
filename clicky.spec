@@ -49,6 +49,7 @@ hidden = [
 
     # First-run setup wizard
     "ui.setup_wizard",
+    "ui.onboarding_demo",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",

@@ -93,6 +93,10 @@ class SetupWizard(QDialog):
         self.skip_btn.setObjectName("secondary")
         self.skip_btn.clicked.connect(self._on_skip)
         button_row.addWidget(self.skip_btn)
+        self.practice_btn = QPushButton("Practice hotkey + pointing")
+        self.practice_btn.setObjectName("secondary")
+        self.practice_btn.clicked.connect(self._open_practice)
+        button_row.addWidget(self.practice_btn)
         button_row.addStretch(1)
         self.action_btn = QPushButton("Check local setup")
         self.action_btn.clicked.connect(self._on_action)
@@ -229,6 +233,11 @@ class SetupWizard(QDialog):
             self._set_step("vision_model")
         else:
             self._set_step("done")
+
+    def _open_practice(self) -> None:
+        from ui.onboarding_demo import show_onboarding_demo
+
+        show_onboarding_demo(cfg.hotkey, self)
 
 
 def maybe_show_setup_wizard(parent=None) -> SetupWizard | None:
