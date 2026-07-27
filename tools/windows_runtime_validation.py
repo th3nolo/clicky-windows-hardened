@@ -432,8 +432,10 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
 
     companion_manager.capture_all_screens = tracked_capture
     manager = None
+    manager_errors: list[str] = []
     try:
         manager = companion_manager.CompanionManager()
+        manager.sig_error.connect(manager_errors.append)
         manager._submit = lambda coroutine, _session=None: coroutine.close()
         manager._get_llm = lambda: FakeLLM()
         manager.start()
@@ -519,11 +521,21 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
             notice_version=PRIVACY_NOTICE_VERSION,
         )
         manager.refresh_privacy_permissions()
+        manager_errors.clear()
         _require(screen_capture_allowed(cfg), "screen permission did not persist")
         quiz_session = manager._turns.start_processing()
         _require(quiz_session is not None, "could not open consented quiz turn")
         asyncio.run(manager._kickoff_quiz(quiz_session))
-        _require(bool(captures), "manager screen path captured no monitors after consent")
+        capture_error = (
+            manager_errors[-1]
+            if manager_errors
+            else "the manager emitted no capture error"
+        )
+        _require(
+            bool(captures),
+            "manager screen path captured no monitors after consent: "
+            f"{capture_error}",
+        )
         _require(
             not any(
                 _screenshot_contains_synthetic_window(shot.base64_jpeg)
