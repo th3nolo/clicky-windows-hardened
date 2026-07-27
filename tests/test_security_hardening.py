@@ -24,25 +24,54 @@ def load_module(name: str, relative: str):
     return module
 
 
-# Import security-sensitive modules without importing optional dependencies.
-httpx_stub = types.ModuleType("httpx")
-httpx_stub.AsyncClient = object
-sys.modules.setdefault("httpx", httpx_stub)
-config_stub = types.ModuleType("config")
-config_stub.cfg = types.SimpleNamespace(tavily_api_key=None, search_provider=lambda: "duckduckgo")
-sys.modules.setdefault("config", config_stub)
-base_stub = types.ModuleType("ai.base_provider")
-base_stub.BaseLLMProvider = object
-base_stub.Message = object
-ai_stub = types.ModuleType("ai")
-ai_stub.__path__ = []
-sys.modules.setdefault("ai", ai_stub)
-sys.modules.setdefault("ai.base_provider", base_stub)
+def load_security_modules():
+    """Load isolated subjects without leaking dependency stubs to later tests."""
+    httpx_stub = types.ModuleType("httpx")
+    httpx_stub.AsyncClient = object
+    config_stub = types.ModuleType("config")
+    config_stub.cfg = types.SimpleNamespace(
+        tavily_api_key=None,
+        search_provider=lambda: "duckduckgo",
+    )
+    base_stub = types.ModuleType("ai.base_provider")
+    base_stub.BaseLLMProvider = object
+    base_stub.Message = object
+    ai_stub = types.ModuleType("ai")
+    ai_stub.__path__ = []
+    replacements = {
+        "httpx": httpx_stub,
+        "config": config_stub,
+        "ai": ai_stub,
+        "ai.base_provider": base_stub,
+    }
+    missing = object()
+    previous = {
+        name: sys.modules.get(name, missing)
+        for name in replacements
+    }
+    sys.modules.update(replacements)
+    try:
+        return (
+            load_module("security_test_web_search", "ai/web_search.py"),
+            load_module("security_test_skills", "skills/__init__.py"),
+            load_module(
+                "security_test_github",
+                "ai/github_copilot_provider.py",
+            ),
+            load_module(
+                "security_test_journal",
+                "tutor_features/journal.py",
+            ),
+        )
+    finally:
+        for name, module in previous.items():
+            if module is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
-web_search = load_module("security_test_web_search", "ai/web_search.py")
-skills = load_module("security_test_skills", "skills/__init__.py")
-github = load_module("security_test_github", "ai/github_copilot_provider.py")
-journal = load_module("security_test_journal", "tutor_features/journal.py")
+
+web_search, skills, github, journal = load_security_modules()
 
 
 class WebSearchSecurityTests(unittest.TestCase):
