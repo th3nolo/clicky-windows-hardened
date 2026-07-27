@@ -35,6 +35,7 @@ jobs:
           tests.test_action_feature_gates
           tests.test_audio_temp_privacy
           tests.test_capture_exclusion
+          tests.test_compose_insertion
           tests.test_compose_service
           tests.test_dependency_policy
           tests.test_dictation_insertion

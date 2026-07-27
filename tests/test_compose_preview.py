@@ -22,6 +22,7 @@ from dictation.policy import (
     SecureTargetPolicy,
     TargetDescriptor,
 )
+from feature_gates import ActionCapability, RunCapabilityGrant
 from ui.compose_preview import ComposePreviewPanel
 
 
@@ -102,6 +103,12 @@ class ComposePreviewTests(unittest.TestCase):
 
     def setUp(self):
         self.guard = Guard()
+        self.grant = RunCapabilityGrant(
+            "compose-preview-1",
+            frozenset(
+                {ActionCapability.SCREEN_AWARE_COMPOSE}
+            ),
+        )
         self.panel = ComposePreviewPanel(self.guard)
 
     def tearDown(self):
@@ -111,7 +118,11 @@ class ComposePreviewTests(unittest.TestCase):
 
     def show(self, draft=None):
         current = draft or draft_for(self.guard.lease)
-        self.panel.show_draft(current, self.guard.lease)
+        self.panel.show_draft(
+            current,
+            self.guard.lease,
+            self.grant,
+        )
         self.app.processEvents()
         return current
 
@@ -282,7 +293,11 @@ class ComposePreviewTests(unittest.TestCase):
             ValueError,
             "does not match",
         ):
-            self.panel.show_draft(mismatched, self.guard.lease)
+            self.panel.show_draft(
+                mismatched,
+                self.guard.lease,
+                self.grant,
+            )
 
         self.assertEqual(self.panel._preview.toPlainText(), "")
         self.assertFalse(self.panel._expiry.isActive())

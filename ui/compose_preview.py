@@ -16,8 +16,13 @@ from PyQt6.QtWidgets import (
 )
 
 from ai.provider_catalog import provider_label
-from compose.models import Draft, DraftInsertionApproval
+from compose.models import (
+    Draft,
+    DraftInsertionApproval,
+    validate_draft_review_context,
+)
 from dictation.policy import TargetDecision, TargetLease
+from feature_gates import RunCapabilityGrant
 
 
 COMPOSE_PREVIEW_TTL_MS = 5 * 60_000
@@ -46,6 +51,7 @@ class ComposePreviewPanel(QWidget):
         self._targets = targets
         self._draft: Draft | None = None
         self._target: TargetLease | None = None
+        self._grant: RunCapabilityGrant | None = None
         self._active = False
         self._copy_pending = False
         self._regeneration_pending = False
@@ -131,14 +137,20 @@ class ComposePreviewPanel(QWidget):
         button.clicked.connect(callback)
         return button
 
-    @pyqtSlot(object, object)
-    def show_draft(self, draft: Draft, target: TargetLease) -> None:
+    @pyqtSlot(object, object, object)
+    def show_draft(
+        self,
+        draft: Draft,
+        target: TargetLease,
+        grant: RunCapabilityGrant,
+    ) -> None:
         """Show a validated draft while retaining its original target lease."""
 
-        DraftInsertionApproval(draft=draft, target=target)
+        validate_draft_review_context(draft, target, grant)
         self.clear_sensitive()
         self._draft = draft
         self._target = target
+        self._grant = grant
         self._active = True
         self._copy_pending = False
         self._regeneration_pending = False
@@ -178,6 +190,7 @@ class ComposePreviewPanel(QWidget):
         self._preview.clear()
         self._draft = None
         self._target = None
+        self._grant = None
         self._active = False
         self._copy_pending = False
         self._regeneration_pending = False
@@ -228,7 +241,13 @@ class ComposePreviewPanel(QWidget):
     def _request_insert(self) -> None:
         draft = self._draft
         target = self._target
-        if not self._active or draft is None or target is None:
+        grant = self._grant
+        if (
+            not self._active
+            or draft is None
+            or target is None
+            or grant is None
+        ):
             return
         try:
             decision = self._targets.revalidate(target)
@@ -248,6 +267,7 @@ class ComposePreviewPanel(QWidget):
             approval = DraftInsertionApproval(
                 draft=draft,
                 target=decision.lease,
+                grant=grant,
             )
         except (TypeError, ValueError):
             self._status.setText(

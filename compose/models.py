@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from ai.model_selection import valid_model_id
 from ai.provider_catalog import ALL_PROVIDER_IDS
 from dictation.policy import TargetLease
-from feature_gates import RunCapabilityGrant
+from feature_gates import ActionCapability, RunCapabilityGrant
 
 
 MAX_INSTRUCTION_CHARS = 8_192
@@ -264,31 +264,50 @@ class Draft:
         return len(self.text)
 
 
+def validate_draft_review_context(
+    draft: Draft,
+    target: TargetLease,
+    grant: RunCapabilityGrant,
+) -> None:
+    """Validate preview context without creating insertion authority."""
+
+    if not isinstance(draft, Draft):
+        raise TypeError("Draft review requires a compose draft")
+    if not isinstance(target, TargetLease):
+        raise TypeError("Draft review requires a target lease")
+    if not isinstance(grant, RunCapabilityGrant):
+        raise TypeError("Draft review requires a run grant")
+    if (
+        grant.run_id != draft.provenance.run_id
+        or ActionCapability.SCREEN_AWARE_COMPOSE
+        not in grant.capabilities
+    ):
+        raise ValueError("Draft review requires the matching compose run grant")
+    descriptor = target.descriptor
+    provenance = draft.provenance
+    target_type = f"{descriptor.framework_id}:{descriptor.control_type}"
+    if (
+        descriptor.application_name != provenance.destination_application
+        or descriptor.application_identity != provenance.destination_identity
+        or target_type != provenance.target_type
+    ):
+        raise ValueError("Draft review destination does not match the draft")
+
+
 @dataclass(frozen=True, slots=True)
 class DraftInsertionApproval:
     """One explicit preview approval bound to the remembered destination."""
 
     draft: Draft = field(repr=False)
     target: TargetLease = field(repr=False)
+    grant: RunCapabilityGrant = field(repr=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.draft, Draft):
-            raise TypeError("Insertion approval requires a compose draft")
-        if not isinstance(self.target, TargetLease):
-            raise TypeError("Insertion approval requires a target lease")
-        descriptor = self.target.descriptor
-        provenance = self.draft.provenance
-        target_type = f"{descriptor.framework_id}:{descriptor.control_type}"
-        if (
-            descriptor.application_name
-            != provenance.destination_application
-            or descriptor.application_identity
-            != provenance.destination_identity
-            or target_type != provenance.target_type
-        ):
-            raise ValueError(
-                "Insertion approval destination does not match the draft"
-            )
+        validate_draft_review_context(
+            self.draft,
+            self.target,
+            self.grant,
+        )
 
     @property
     def run_id(self) -> str:

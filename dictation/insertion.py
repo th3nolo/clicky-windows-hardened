@@ -7,10 +7,11 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Protocol
 
-from dictation.models import DictationCommit
+from dictation.models import DictationCommit, MAX_FINAL_TRANSCRIPT_CHARS
 from dictation.policy import TargetLease
 from dictation.session import DictationSessionCoordinator
 from dictation.targeting import SecureTargetGuard
+from feature_gates import MAX_RUN_ID_LENGTH
 
 
 class InsertionIntent(str, Enum):
@@ -88,6 +89,43 @@ class InsertionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplicitInsertionRequest:
+    """Text insertion authorized by a reviewed caller outside dictation."""
+
+    run_id: str
+    target: TargetLease = field(repr=False)
+    text: str = field(repr=False)
+    intent: InsertionIntent = InsertionIntent.INSERT_AT_SELECTION
+    clipboard_fallback_approved: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.run_id, str)
+            or not self.run_id
+            or len(self.run_id) > MAX_RUN_ID_LENGTH
+            or self.run_id.strip() != self.run_id
+            or not self.run_id.isprintable()
+        ):
+            raise ValueError("Explicit insertion run ID is invalid")
+        if not isinstance(self.target, TargetLease):
+            raise TypeError("Explicit insertion requires a target lease")
+        if (
+            not isinstance(self.text, str)
+            or not self.text.strip()
+            or len(self.text) > MAX_FINAL_TRANSCRIPT_CHARS
+            or any(
+                ord(character) < 32 and character not in "\n\t"
+                for character in self.text
+            )
+        ):
+            raise ValueError("Explicit insertion text is invalid")
+        if not isinstance(self.intent, InsertionIntent):
+            raise TypeError("Insertion intent is invalid")
+        if type(self.clipboard_fallback_approved) is not bool:
+            raise TypeError("Clipboard approval must be explicit")
+
+
+@dataclass(frozen=True, slots=True)
 class InsertionResult:
     status: InsertionStatus
     adapter: InsertionAdapterKind
@@ -109,6 +147,13 @@ class InsertionResult:
 class CopyResult:
     copied: bool
     result_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class _InsertionSubject:
+    run_id: str
+    target: TargetLease = field(repr=False)
+    text: str = field(repr=False)
 
 
 class ReviewedApplicationAdapter(Protocol):
@@ -172,144 +217,199 @@ class InsertionBroker:
         self._backend = backend
         self._application_adapters = application_adapters
         self._lock = threading.Lock()
+        self._mutation_lock = threading.Lock()
         self._claimed_runs: set[str] = set()
         self._pending_previews: dict[str, CopyPreview] = {}
 
     def insert(self, request: InsertionRequest) -> InsertionResult:
         commit = request.commit
-        with self._lock:
-            if commit.run_id in self._claimed_runs:
-                return _result(
-                    InsertionStatus.BLOCKED,
-                    InsertionAdapterKind.NONE,
-                    "insertion_duplicate_blocked",
-                    commit,
-                )
-            self._claimed_runs.add(commit.run_id)
+        subject = _InsertionSubject(
+            run_id=commit.run_id,
+            target=commit.target,
+            text=commit.transcript,
+        )
+        if not self._claim(subject.run_id):
+            return _result(
+                InsertionStatus.BLOCKED,
+                InsertionAdapterKind.NONE,
+                "insertion_duplicate_blocked",
+                subject,
+            )
 
         if not self._sessions.commit_is_current(commit):
             return _result(
                 InsertionStatus.BLOCKED,
                 InsertionAdapterKind.NONE,
                 "insertion_stale_blocked",
-                commit,
+                subject,
             )
-
-        def insert_owned() -> InsertionResult:
-            target_decision = self._targets.revalidate(commit.target)
-            if (
-                not target_decision.allowed
-                or target_decision.lease is None
-            ):
-                return _result(
-                    InsertionStatus.BLOCKED,
-                    InsertionAdapterKind.NONE,
-                    f"insertion_target_{target_decision.reason.value}",
-                    commit,
-                )
-            target = target_decision.lease
-
-            for adapter in self._application_adapters:
-                if adapter.supports(target, request.intent):
-                    return _mutation_result(
-                        adapter.insert(
-                            target,
-                            commit.transcript,
-                            request.intent,
-                        ),
-                        InsertionAdapterKind.REVIEWED_APPLICATION_API,
-                        commit,
-                    )
-
-            if (
-                request.intent is InsertionIntent.REPLACE_WHOLE_VALUE
-                and self._backend.value_pattern_available(target)
-            ):
-                return _mutation_result(
-                    self._backend.replace_whole_value(
-                        target,
-                        commit.transcript,
-                    ),
-                    InsertionAdapterKind.UIA_VALUE_REPLACE,
-                    commit,
-                )
-
-            if (
-                request.intent is InsertionIntent.INSERT_AT_SELECTION
-                and self._backend.unicode_input_available(target)
-            ):
-                return _mutation_result(
-                    self._backend.send_unicode(
-                        target,
-                        commit.transcript,
-                    ),
-                    InsertionAdapterKind.UNICODE_SEND_INPUT,
-                    commit,
-                )
-
-            if (
-                request.intent is InsertionIntent.INSERT_AT_SELECTION
-                and request.clipboard_fallback_approved
-                and self._backend.clipboard_paste_available(target)
-            ):
-                return _mutation_result(
-                    self._backend.paste_via_clipboard(
-                        target,
-                        commit.transcript,
-                    ),
-                    InsertionAdapterKind.CLIPBOARD_PASTE,
-                    commit,
-                )
-
-            preview = CopyPreview(
-                run_id=commit.run_id,
-                application_name=target.application_name,
-                text=commit.transcript,
-            )
-            return _result(
-                InsertionStatus.UNSUPPORTED,
-                InsertionAdapterKind.PREVIEW_COPY,
-                "insertion_unsupported",
-                commit,
-                preview=preview,
-            )
-
-        def safe_insert_owned() -> InsertionResult:
-            try:
-                outcome = insert_owned()
-            except Exception:
-                outcome = _result(
-                    InsertionStatus.FAILED,
-                    InsertionAdapterKind.NONE,
-                    "insertion_backend_failed",
-                    commit,
-                )
-            if not outcome.terminal_success and outcome.preview is None:
-                outcome = replace(
-                    outcome,
-                    preview=CopyPreview(
-                        run_id=commit.run_id,
-                        application_name=commit.target.application_name,
-                        text=commit.transcript,
-                    ),
-                )
-            return outcome
 
         ran, outcome = self._sessions.execute_commit(
             commit,
-            safe_insert_owned,
+            lambda: self._safe_insert(
+                subject,
+                request.intent,
+                request.clipboard_fallback_approved,
+            ),
         )
         if not ran or outcome is None:
             return _result(
                 InsertionStatus.BLOCKED,
                 InsertionAdapterKind.NONE,
                 "insertion_stale_blocked",
-                commit,
+                subject,
             )
+        self._store_preview(subject.run_id, outcome)
+        return outcome
+
+    def insert_explicit(
+        self,
+        request: ExplicitInsertionRequest,
+    ) -> InsertionResult:
+        """Execute one caller-approved request through the same adapters."""
+
+        if not isinstance(request, ExplicitInsertionRequest):
+            raise TypeError("Explicit insertion requires a typed request")
+        subject = _InsertionSubject(
+            run_id=request.run_id,
+            target=request.target,
+            text=request.text,
+        )
+        if not self._claim(subject.run_id):
+            return _result(
+                InsertionStatus.BLOCKED,
+                InsertionAdapterKind.NONE,
+                "insertion_duplicate_blocked",
+                subject,
+            )
+        outcome = self._safe_insert(
+            subject,
+            request.intent,
+            request.clipboard_fallback_approved,
+        )
+        self._store_preview(subject.run_id, outcome)
+        return outcome
+
+    def _claim(self, run_id: str) -> bool:
+        with self._lock:
+            if run_id in self._claimed_runs:
+                return False
+            self._claimed_runs.add(run_id)
+            return True
+
+    def _safe_insert(
+        self,
+        subject: _InsertionSubject,
+        intent: InsertionIntent,
+        clipboard_fallback_approved: bool,
+    ) -> InsertionResult:
+        with self._mutation_lock:
+            try:
+                outcome = self._insert_target_text(
+                    subject,
+                    intent,
+                    clipboard_fallback_approved,
+                )
+            except Exception:
+                outcome = _result(
+                    InsertionStatus.FAILED,
+                    InsertionAdapterKind.NONE,
+                    "insertion_backend_failed",
+                    subject,
+                )
+            if not outcome.terminal_success and outcome.preview is None:
+                outcome = replace(
+                    outcome,
+                    preview=CopyPreview(
+                        run_id=subject.run_id,
+                        application_name=subject.target.application_name,
+                        text=subject.text,
+                    ),
+                )
+            return outcome
+
+    def _insert_target_text(
+        self,
+        subject: _InsertionSubject,
+        intent: InsertionIntent,
+        clipboard_fallback_approved: bool,
+    ) -> InsertionResult:
+        target_decision = self._targets.revalidate(subject.target)
+        if not target_decision.allowed or target_decision.lease is None:
+            return _result(
+                InsertionStatus.BLOCKED,
+                InsertionAdapterKind.NONE,
+                f"insertion_target_{target_decision.reason.value}",
+                subject,
+            )
+        target = target_decision.lease
+
+        for adapter in self._application_adapters:
+            if adapter.supports(target, intent):
+                return _mutation_result(
+                    adapter.insert(target, subject.text, intent),
+                    InsertionAdapterKind.REVIEWED_APPLICATION_API,
+                    subject,
+                )
+
+        if (
+            intent is InsertionIntent.REPLACE_WHOLE_VALUE
+            and self._backend.value_pattern_available(target)
+        ):
+            return _mutation_result(
+                self._backend.replace_whole_value(
+                    target,
+                    subject.text,
+                ),
+                InsertionAdapterKind.UIA_VALUE_REPLACE,
+                subject,
+            )
+
+        if (
+            intent is InsertionIntent.INSERT_AT_SELECTION
+            and self._backend.unicode_input_available(target)
+        ):
+            return _mutation_result(
+                self._backend.send_unicode(target, subject.text),
+                InsertionAdapterKind.UNICODE_SEND_INPUT,
+                subject,
+            )
+
+        if (
+            intent is InsertionIntent.INSERT_AT_SELECTION
+            and clipboard_fallback_approved
+            and self._backend.clipboard_paste_available(target)
+        ):
+            return _mutation_result(
+                self._backend.paste_via_clipboard(
+                    target,
+                    subject.text,
+                ),
+                InsertionAdapterKind.CLIPBOARD_PASTE,
+                subject,
+            )
+
+        preview = CopyPreview(
+            run_id=subject.run_id,
+            application_name=target.application_name,
+            text=subject.text,
+        )
+        return _result(
+            InsertionStatus.UNSUPPORTED,
+            InsertionAdapterKind.PREVIEW_COPY,
+            "insertion_unsupported",
+            subject,
+            preview=preview,
+        )
+
+    def _store_preview(
+        self,
+        run_id: str,
+        outcome: InsertionResult,
+    ) -> None:
         if outcome.preview is not None:
             with self._lock:
-                self._pending_previews[commit.run_id] = outcome.preview
-        return outcome
+                self._pending_previews[run_id] = outcome.preview
 
     def copy_preview(self, preview: CopyPreview) -> CopyResult:
         if not isinstance(preview, CopyPreview):
@@ -346,7 +446,7 @@ class InsertionBroker:
 def _mutation_result(
     outcome: MutationOutcome,
     adapter: InsertionAdapterKind,
-    commit: DictationCommit,
+    subject: _InsertionSubject,
 ) -> InsertionResult:
     if not outcome.attempted or not outcome.succeeded:
         status = InsertionStatus.FAILED
@@ -361,7 +461,7 @@ def _mutation_result(
         status,
         adapter,
         f"insertion_{adapter.value}_{suffix}",
-        commit,
+        subject,
         clipboard_restored=outcome.clipboard_restored,
         clipboard_changed_externally=(
             outcome.clipboard_changed_externally
@@ -373,7 +473,7 @@ def _result(
     status: InsertionStatus,
     adapter: InsertionAdapterKind,
     result_code: str,
-    commit: DictationCommit,
+    subject: _InsertionSubject,
     *,
     clipboard_restored: bool | None = None,
     clipboard_changed_externally: bool | None = None,
@@ -383,7 +483,7 @@ def _result(
         status=status,
         adapter=adapter,
         result_code=result_code,
-        application_name=commit.target.application_name,
+        application_name=subject.target.application_name,
         clipboard_restored=clipboard_restored,
         clipboard_changed_externally=clipboard_changed_externally,
         preview=preview,

@@ -111,9 +111,15 @@ message; response content is not sent to that fallback and barge-in cancels it.
   target lease, names the destination application, provider, writing profile,
   and character count, and offers only Insert, Copy, Regenerate, and Cancel.
   Insert creates a one-use typed approval only after target revalidation; the
-  preview itself imports no insertion or clipboard implementation. Cancel,
-  close, and expiry clear the draft without requesting an action. The baseline
-  build flag remains unavailable.
+  preview itself imports no insertion or clipboard implementation. The
+  separately permissioned Compose insertion service consumes that approval
+  once, rechecks the same target lease again, and routes the draft through the
+  exact dictation insertion broker and ordered adapters. It does not authorize
+  clipboard fallback, retry a mutation, auto-insert by application, or treat
+  Global Dictation permission as Compose authority. Result logs contain only
+  the run ID, destination application, status, adapter, and result code.
+  Cancel, close, and expiry clear the draft without requesting an action. The
+  baseline build flag remains unavailable.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.
