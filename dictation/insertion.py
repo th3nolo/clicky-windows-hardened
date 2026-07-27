@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Protocol
 
@@ -276,14 +276,24 @@ class InsertionBroker:
 
         def safe_insert_owned() -> InsertionResult:
             try:
-                return insert_owned()
+                outcome = insert_owned()
             except Exception:
-                return _result(
+                outcome = _result(
                     InsertionStatus.FAILED,
                     InsertionAdapterKind.NONE,
                     "insertion_backend_failed",
                     commit,
                 )
+            if not outcome.terminal_success and outcome.preview is None:
+                outcome = replace(
+                    outcome,
+                    preview=CopyPreview(
+                        run_id=commit.run_id,
+                        application_name=commit.target.application_name,
+                        text=commit.transcript,
+                    ),
+                )
+            return outcome
 
         ran, outcome = self._sessions.execute_commit(
             commit,
@@ -320,6 +330,17 @@ class InsertionBroker:
                 else "copy_preview_failed"
             ),
         )
+
+    def discard_preview(self, preview: CopyPreview) -> bool:
+        """Forget one recovery copy without touching any external state."""
+
+        if not isinstance(preview, CopyPreview):
+            return False
+        with self._lock:
+            if self._pending_previews.get(preview.run_id) is not preview:
+                return False
+            self._pending_previews.pop(preview.run_id, None)
+            return True
 
 
 def _mutation_result(

@@ -192,6 +192,43 @@ class ActionFeatureGateTests(unittest.TestCase):
                 True,
             )
 
+    def test_exposed_dictation_permission_persists_with_privacy_notice(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": temporary},
+            clear=True,
+        ):
+            config = load_config("dictation_privacy_permission_config")
+            initial = config.Config()
+
+            initial.set_privacy_permissions(
+                microphone=True,
+                cloud_stt=False,
+                cloud_tts=False,
+                screen_capture=False,
+                coding_agent=False,
+                notice_version=privacy_controls.PRIVACY_NOTICE_VERSION,
+                global_dictation=True,
+            )
+
+            restored = config.Config()
+            self.assertEqual(
+                restored.privacy_consent_version,
+                privacy_controls.PRIVACY_NOTICE_VERSION,
+            )
+            self.assertEqual(
+                restored.action_permission_schema_version,
+                feature_gates.ACTION_PERMISSION_SCHEMA_VERSION,
+            )
+            self.assertTrue(restored.microphone_consent)
+            self.assertTrue(restored.global_dictation_permission)
+            self.assertTrue(
+                feature_gates.user_permission_allowed(
+                    restored,
+                    feature_gates.ActionCapability.GLOBAL_DICTATION,
+                )
+            )
+
     def test_permission_storage_failure_changes_no_in_memory_state(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
             os.environ,

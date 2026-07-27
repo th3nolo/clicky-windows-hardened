@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import threading
 import time
 from pathlib import Path
@@ -415,6 +416,63 @@ class InsertionBrokerTests(unittest.TestCase):
 
 
 class WindowsInsertionPrimitiveTests(unittest.TestCase):
+    def test_clipboard_owner_must_be_a_top_level_current_process_window(self):
+        class Function:
+            def __init__(self, callback):
+                self.callback = callback
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *args):
+                return self.callback(*args)
+
+        class User32:
+            def __init__(self, *, root=123, process_id=None):
+                self.IsWindow = Function(lambda handle: handle == 123)
+                self.GetAncestor = Function(
+                    lambda handle, relation: root
+                )
+
+                def process(_handle, output):
+                    output._obj.value = (
+                        os.getpid()
+                        if process_id is None
+                        else process_id
+                    )
+                    return 9
+
+                self.GetWindowThreadProcessId = Function(process)
+
+        with (
+            mock.patch.object(windows_insertion.os, "name", "nt"),
+            mock.patch.object(
+                windows_insertion.ctypes,
+                "WinDLL",
+                return_value=User32(),
+                create=True,
+            ),
+        ):
+            self.assertTrue(
+                windows_insertion.is_clicky_owned_window(123)
+            )
+
+        for backend in (
+            User32(root=999),
+            User32(process_id=os.getpid() + 1),
+        ):
+            with (
+                mock.patch.object(windows_insertion.os, "name", "nt"),
+                mock.patch.object(
+                    windows_insertion.ctypes,
+                    "WinDLL",
+                    return_value=backend,
+                    create=True,
+                ),
+            ):
+                self.assertFalse(
+                    windows_insertion.is_clicky_owned_window(123)
+                )
+
     def test_clipboard_requires_a_nonzero_clicky_owner_window(self):
         backend = windows_insertion.WindowsInsertionBackend()
         self.assertEqual(backend._clipboard_owner_handle(), 0)

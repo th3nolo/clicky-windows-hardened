@@ -80,7 +80,10 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state
   indicator contains no transcript text, and only a final transcript can
-  advance toward a future insertion adapter. Hotkey-down binds the focused
+  advance toward insertion. The end-to-end route reuses the explicitly
+  selected batch or live STT provider but never calls a response model,
+  screenshot path, conversation history, web search, skill, or Task Agent.
+  Hotkey-down binds the focused
   editable control by process, executable-path digest, top-level window, UI
   Automation runtime ID, focus, desktop, and process integrity level. Password,
   protected, read-only, disabled, sensitive, elevated, secure-desktop, Clicky,
@@ -91,7 +94,11 @@ message; response content is not sent to that fallback and barge-in cancels it.
   readable postcondition. Clipboard fallback requires separate approval and
   a Clicky-owned window handle; it restores only an unchanged, exactly
   restorable text snapshot. Unsupported controls remain unchanged and expose a
-  one-use preview-copy action.
+  one-use preview-copy action. Result UI names only the destination application
+  and truthfully distinguishes verified insertion from an attempted but
+  unverifiable insertion. Dictated text stays hidden until the user explicitly
+  chooses the recovery preview or copy action. The reviewed baseline build flag
+  remains unavailable until the documented interactive Windows matrix passes.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.
