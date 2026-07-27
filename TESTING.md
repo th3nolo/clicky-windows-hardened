@@ -195,7 +195,8 @@ Interrupt live finalization with a new push-to-talk turn and verify the first We
 Open **Setup & Diagnostics → Transcription vocabulary**, enter a distinctive
 synthetic term, and save. Confirm the Deepgram live WebSocket and Deepgram batch
 request contain the shipped `Clicky` term plus the approved term exactly once.
-Verify OpenAI and both local STT modes receive no vocabulary parameter.
+Confirm the OpenAI batch request contains the same bounded vocabulary in its
+`prompt` field. Verify both local STT modes receive no vocabulary input.
 
 Try more than 63 terms, a term longer than 64 characters, and control characters;
 confirm saving fails explicitly. Put distinctive synthetic text in a window
