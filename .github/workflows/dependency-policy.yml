@@ -30,7 +30,21 @@ jobs:
 
       - name: Run standard-library security tests
         shell: pwsh
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        run: >-
+          python -m unittest -v
+          tests.test_audio_temp_privacy
+          tests.test_capture_exclusion
+          tests.test_dependency_policy
+          tests.test_offline_model_loading
+          tests.test_packaged_self_test
+          tests.test_privacy_consent
+          tests.test_provider_security
+          tests.test_quarantine_harness
+          tests.test_security_hardening
+          tests.test_turn_coordinator
+          tests.test_validation_boundary
+          tests.test_windows_runtime_validation
+          tests.test_windows_sandbox_results
 
       - name: Parse every Python source file
         shell: pwsh
