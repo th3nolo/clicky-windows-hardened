@@ -138,7 +138,13 @@ class GeminiKeyTransportTests(unittest.TestCase):
         cfg = types.SimpleNamespace(google_api_key="registry-secret")
         config = types.ModuleType("config")
         config.cfg = cfg
-        modules = {"config": config, "httpx": fake_httpx()}
+        provider_catalog = types.ModuleType("ai.provider_catalog")
+        provider_catalog.OPENAI_COMPATIBLE_SPECS = {}
+        modules = {
+            "config": config,
+            "httpx": fake_httpx(),
+            "ai.provider_catalog": provider_catalog,
+        }
         registry = load_module(
             "provider_security_registry", "ai/model_registry.py", modules
         )
