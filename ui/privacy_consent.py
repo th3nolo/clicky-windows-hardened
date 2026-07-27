@@ -145,6 +145,30 @@ class PrivacyConsentDialog(QDialog):
             dictation_notice.setWordWrap(True)
             layout.addWidget(dictation_notice)
 
+        self.screen_compose = None
+        if build_feature_available(
+            ActionCapability.SCREEN_AWARE_COMPOSE
+        ):
+            self.screen_compose = QCheckBox(
+                "Allow Screen-Aware Compose to create reviewed drafts"
+            )
+            self.screen_compose.setChecked(
+                cfg.screen_compose_permission is True
+            )
+            self.screen_compose.setToolTip(
+                "Uses an explicitly authorized screen capture and selected "
+                "response provider to create a bounded text draft."
+            )
+            layout.addWidget(self.screen_compose)
+            compose_notice = QLabel(
+                "Screen-Aware Compose creates text for your review. It cannot "
+                "send, submit, click, run, or claim an external action. Screen "
+                "capture permission remains separate, and insertion requires "
+                "a later explicit approval."
+            )
+            compose_notice.setWordWrap(True)
+            layout.addWidget(compose_notice)
+
         buttons = QHBoxLayout()
         keep_disabled = QPushButton("Keep all disabled")
         keep_disabled.clicked.connect(self._keep_disabled)
@@ -176,12 +200,19 @@ class PrivacyConsentDialog(QDialog):
                 if self.global_dictation is not None
                 else None
             ),
+            screen_compose=(
+                self.screen_compose.isChecked()
+                if self.screen_compose is not None
+                else None
+            ),
         )
         self.accept()
 
     def _keep_disabled(self) -> None:
         if self.global_dictation is not None:
             self.global_dictation.setChecked(False)
+        if self.screen_compose is not None:
+            self.screen_compose.setChecked(False)
         self._persist(False, False, False, False, False)
 
     def _save(self) -> None:

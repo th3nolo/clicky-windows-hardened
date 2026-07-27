@@ -99,6 +99,15 @@ message; response content is not sent to that fallback and barge-in cancels it.
   unverifiable insertion. Dictated text stays hidden until the user explicitly
   chooses the recovery preview or copy action. The reviewed baseline build flag
   remains unavailable until the documented interactive Windows matrix passes.
+- Screen-Aware Compose has an independent, build-gated draft-generation
+  contract. It requires its own action permission and per-run grant plus the
+  separate screen-capture permission before capturing only the explicitly
+  authorized screens. It revalidates a metadata-only destination lease before
+  capture and before generation, accepts only a reviewed model with validated
+  image-input support, and sends no conversation history, clipboard, document,
+  web, or destination-identity data. Its bounded result contains plain draft
+  text and content-free provenance only; it has no insertion, send, submit,
+  click, or run authority. The baseline build flag remains unavailable.
 - Speech fallback is off by default and can target only one explicitly selected,
   pre-provisioned local batch recognizer; cross-cloud fallback is refused.
 - Journal logging and web search are disabled until the user enables them in the tray.

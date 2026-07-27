@@ -229,6 +229,42 @@ class ActionFeatureGateTests(unittest.TestCase):
                 )
             )
 
+    def test_exposed_compose_permission_persists_independently(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": temporary},
+            clear=True,
+        ):
+            config = load_config("compose_privacy_permission_config")
+            initial = config.Config()
+
+            initial.set_privacy_permissions(
+                microphone=False,
+                cloud_stt=False,
+                cloud_tts=False,
+                screen_capture=True,
+                coding_agent=False,
+                notice_version=privacy_controls.PRIVACY_NOTICE_VERSION,
+                screen_compose=True,
+            )
+
+            restored = config.Config()
+            self.assertTrue(restored.screen_capture_consent)
+            self.assertTrue(restored.screen_compose_permission)
+            self.assertFalse(restored.global_dictation_permission)
+            self.assertTrue(
+                feature_gates.user_permission_allowed(
+                    restored,
+                    feature_gates.ActionCapability.SCREEN_AWARE_COMPOSE,
+                )
+            )
+            self.assertFalse(
+                feature_gates.user_permission_allowed(
+                    restored,
+                    feature_gates.ActionCapability.GLOBAL_DICTATION,
+                )
+            )
+
     def test_permission_storage_failure_changes_no_in_memory_state(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
             os.environ,
