@@ -3,6 +3,34 @@
 This manual workflow is a merge gate for an exact reviewed commit. It is not a
 release or signing pipeline.
 
+## Temporary vendor-submission export
+
+The `export_for_vendor_submission` input is a temporary, fail-closed path for
+exporting the unsigned launcher solely to dispute an antivirus verdict. It is
+restricted to source-only merge
+`d8a6a8c462a2c7a70577a17a27a05d9dbafd4504`. In this mode:
+
+- GitHub receives only a one-time public SSH recipient; no private key or
+  VirusTotal key is stored in Actions.
+- The disposable Windows runner performs the same policy, test, build, and
+  runtime validation steps.
+- The upload is exactly one `age`-encrypted `Clicky.exe`, retained for one day.
+- The verifier and scanner jobs are skipped because they require secrets.
+- The operator must download the ciphertext, delete the Actions artifact, and
+  decrypt it only in the isolated submission workspace.
+
+Before decrypting, compare the downloaded ciphertext SHA-256 with the
+`VENDOR_CIPHERTEXT_SHA256` value in the build log. After decrypting, record the
+plaintext executable SHA-256 and use that identity for the vendor submission.
+This mode has no fresh private-key verifier: its plaintext identity relies on
+the fixed reviewed target, the trusted workflow, and the hash-pinned `age`
+invocation. The build VM's documented same-user race residual still applies.
+
+The exported executable remains unsigned and must not be run or distributed.
+Remove this temporary mode after the vendor submission sample is recovered.
+
+## Normal quarantine mode
+
 Before dispatching it:
 
 1. Generate a one-time, unencrypted SSH key pair that `age` 1.3.1 supports.
