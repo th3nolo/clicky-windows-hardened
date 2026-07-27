@@ -139,6 +139,12 @@ Temporary local-transcription WAV files are created in a protected per-user dire
 
 Web search and journal logging are also off by default. After explicit activation, the setting persists in the non-secret preferences file. The journal can contain questions, answers, provider and model names, active-application identifiers, and window titles. It is a local plaintext SQLite database.
 
+Cloud TTS failures do not trigger another network provider. Clicky displays a
+fixed error and may speak only that fixed status through the packaged Qt
+binding to an allowlisted local Windows `winrt` or `sapi` engine. It never
+passes response content to the local failure voice. The local utterance is
+bounded by a timeout and shares the active turn's cancellation path.
+
 The Privacy Guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Explicit screen permission is still required, but permission does not make the title heuristic comprehensive.
 
 Clicky applies Windows `WDA_EXCLUDEFROMCAPTURE` affinity to every current-

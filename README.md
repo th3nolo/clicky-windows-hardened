@@ -37,10 +37,16 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
   official CLIs. Agent execution has its own explicit privacy permission.
 - Local LLM support through an already-installed Ollama or LM Studio server.
 - True Deepgram streaming speech-to-text, explicit cloud-batch modes, and local batch speech-to-text fallbacks.
+- A fixed local Windows voice status when an approved cloud narration request fails.
 - Optional document context, OCR, lesson recording, per-app conversation history, and quiz mode.
 - Optional web search and a local learning journal. Both are off by default.
 
 The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Cloud speech-to-text, Edge TTS, and web search also require network access. Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture each remain disabled until the first-run privacy dialog records an explicit choice.
+
+Normal response narration still uses only the explicitly selected cloud TTS
+provider. If that approved request fails, Clicky shows the error and uses an
+allowlisted local Windows `winrt` or `sapi` voice only for the fixed status
+message; response content is not sent to that fallback and barge-in cancels it.
 
 ## Hardened defaults
 

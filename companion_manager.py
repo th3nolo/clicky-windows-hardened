@@ -23,6 +23,7 @@ from config import cfg
 from ai.base_provider import BaseLLMProvider, Message
 from audio.ambient_listener import AmbientListener
 from audio.tts.base_tts import DisabledTTSProvider
+from audio.tts.local_status_tts import LocalStatusTTS
 from privacy_controls import (
     cloud_stt_allowed,
     cloud_tts_allowed,
@@ -292,6 +293,7 @@ class CompanionManager(QObject):
         self._streaming_stt: dict[int, object] = {}
         self._streaming_open: dict[int, concurrent.futures.Future] = {}
         self._tts = None
+        self._local_status_tts = LocalStatusTTS()
         self._privacy_tts_notice_emitted = False
 
         # Per-app memory: { window_title: [Message, ...] }
@@ -369,11 +371,7 @@ class CompanionManager(QObject):
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
         # Kill any audio that was playing when the user clicked Quit
-        try:
-            from audio.playback import stop_audio
-            stop_audio()
-        except Exception:
-            pass
+        self._cancel_outputs()
         self._listener.stop()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -609,6 +607,39 @@ class CompanionManager(QObject):
                 self._tts = EdgeTTSProvider()
         return self._tts
 
+    async def _speak_with_failure_fallback(
+        self,
+        text: str,
+        session: TurnSession,
+    ) -> bool:
+        """Narrate normally, then speak only a fixed local failure status."""
+
+        if not self._turns.is_current(session):
+            return False
+        try:
+            await self._get_tts().speak(text)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if not self._turns.is_current(session):
+                return False
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                "Cloud speech playback failed. Clicky is using the local "
+                "Windows voice for this status only.",
+            )
+            completed = await self._local_status_tts.speak_failure()
+            if not completed and self._turns.is_current(session):
+                self._emit_turn_signal(
+                    session,
+                    self.sig_error,
+                    "The local Windows status voice is unavailable. The "
+                    "response remains visible in Clicky.",
+                )
+            return False
+
     # ── Input sources ─────────────────────────────────────────────────────────
 
     def on_hotkey_press(self):
@@ -798,10 +829,10 @@ class CompanionManager(QObject):
                     session, self.sig_response_done, self._last_response
                 )
                 self._emit_state(AppState.SPEAKING, session)
-                try:
-                    await self._get_tts().speak(self._last_response)
-                except Exception:
-                    pass
+                await self._speak_with_failure_fallback(
+                    self._last_response,
+                    session,
+                )
                 return
 
             # Journal voice queries — answered locally, no LLM call needed
@@ -1253,10 +1284,7 @@ class CompanionManager(QObject):
         self._last_response = msg
         self._turns.set_phase(session, TurnPhase.SPEAKING)
         self._emit_state(AppState.SPEAKING, session)
-        try:
-            await self._get_tts().speak(msg)
-        except Exception:
-            pass
+        await self._speak_with_failure_fallback(msg, session)
 
     async def _spaced_review(self, session: TurnSession):
         """SR-style review: pick due entries from the journal, ask one back."""
@@ -1295,10 +1323,7 @@ class CompanionManager(QObject):
         self._emit_turn_signal(session, self.sig_response_done, msg)
         self._turns.set_phase(session, TurnPhase.SPEAKING)
         self._emit_state(AppState.SPEAKING, session)
-        try:
-            await self._get_tts().speak(msg)
-        except Exception:
-            pass
+        await self._speak_with_failure_fallback(msg, session)
 
     # ── Coordinate mapping ────────────────────────────────────────────────────
     #
@@ -1574,7 +1599,10 @@ class CompanionManager(QObject):
         plain TTS when the response contains no drawings."""
         segments = self._segment_lesson(full_response)
         if not any(shapes for _, shapes in segments):
-            await self._get_tts().speak(_speakable(clean))
+            await self._speak_with_failure_fallback(
+                _speakable(clean),
+                session,
+            )
             return
 
         try:
@@ -1599,12 +1627,12 @@ class CompanionManager(QObject):
                 else:
                     draw_end += 1.0
             if text:
-                try:
-                    await self._get_tts().speak(_speakable(text))
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    pass
+                spoken = await self._speak_with_failure_fallback(
+                    _speakable(text),
+                    session,
+                )
+                if not spoken:
+                    return
             # A real teacher finishes the stroke before the next sentence —
             # wait out any drawing time the narration didn't cover.
             remaining = draw_end - time.monotonic()
@@ -1656,6 +1684,9 @@ class CompanionManager(QObject):
                 tts.stop()
             except Exception:
                 pass
+        local_status_tts = getattr(self, "_local_status_tts", None)
+        if local_status_tts is not None:
+            local_status_tts.stop()
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
@@ -1932,10 +1963,7 @@ class CompanionManager(QObject):
             self._emit_turn_signal(session, self.sig_response_done, full)
             self._turns.set_phase(session, TurnPhase.SPEAKING)
             self._emit_state(AppState.SPEAKING, session)
-            try:
-                await self._get_tts().speak(full)
-            except Exception:
-                pass
+            await self._speak_with_failure_fallback(full, session)
         except Exception as e:
             self._emit_turn_signal(
                 session, self.sig_error, f"Quiz start failed: {e}"
