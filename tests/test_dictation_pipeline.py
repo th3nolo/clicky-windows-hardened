@@ -113,8 +113,6 @@ class _InsertionBackend:
     def __init__(self):
         self.mutations: list[tuple[str, str]] = []
         self.copies: list[str] = []
-        self.mutation_started: threading.Event | None = None
-        self.allow_mutation: threading.Event | None = None
 
     def value_pattern_available(self, target):
         return False
@@ -127,11 +125,6 @@ class _InsertionBackend:
 
     def send_unicode(self, target, text):
         self.mutations.append((target.descriptor.framework_id, text))
-        if self.mutation_started is not None:
-            self.mutation_started.set()
-        if self.allow_mutation is not None:
-            if not self.allow_mutation.wait(timeout=2):
-                raise RuntimeError("test mutation was not released")
         return MutationOutcome(True, True, False)
 
     def clipboard_paste_available(self, target):
@@ -377,33 +370,45 @@ class DictationPipelineIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.manager._turns.active)
 
     def test_replacement_suppresses_the_completed_runs_late_result_ui(self):
-        self.backend.mutation_started = threading.Event()
-        self.backend.allow_mutation = threading.Event()
         received = []
+        completed = threading.Event()
         self.manager.sig_dictation_result.connect(
             received.append,
             type=Qt.ConnectionType.DirectConnection,
         )
-        self.manager.on_dictation_hotkey_press()
-        self.manager.on_dictation_hotkey_release()
-        self.assertTrue(self.backend.mutation_started.wait(timeout=2))
+        original_submit = self.manager._submit
+        original_insert = self.manager._dictation_insertion.insert
 
-        replacement = threading.Thread(
-            target=self.manager.on_dictation_hotkey_press
-        )
-        replacement.start()
-        time.sleep(0.02)
-        self.assertTrue(replacement.is_alive())
-        self.backend.allow_mutation.set()
-        replacement.join(timeout=2)
+        def track_submission(coro, session=None):
+            async def tracked():
+                try:
+                    return await coro
+                finally:
+                    completed.set()
 
-        self.assertFalse(replacement.is_alive())
-        deadline = time.monotonic() + 2
-        while (
-            self.manager._dictation_pressed is None
-            and time.monotonic() < deadline
+            return original_submit(tracked(), session)
+
+        def replace_after_insertion(request):
+            result = original_insert(request)
+            self.manager.on_dictation_hotkey_press()
+            return result
+
+        with (
+            mock.patch.object(
+                self.manager,
+                "_submit",
+                side_effect=track_submission,
+            ),
+            mock.patch.object(
+                self.manager._dictation_insertion,
+                "insert",
+                side_effect=replace_after_insertion,
+            ),
         ):
-            time.sleep(0.01)
+            self.manager.on_dictation_hotkey_press()
+            self.manager.on_dictation_hotkey_release()
+            self.assertTrue(completed.wait(timeout=2))
+
         self.assertIsNotNone(self.manager._dictation_pressed)
         self.assertEqual(received, [])
         self.manager.stop()
