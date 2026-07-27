@@ -6,6 +6,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject
 
 from config import cfg
+from feature_gates import ActionCapability, build_feature_available
 
 
 def _make_tray_icon(color: QColor) -> QIcon:
@@ -55,6 +56,7 @@ class TrayManager(QObject):
     on_run_onboarding     = pyqtSignal()
     on_open_startup_settings = pyqtSignal()
     on_privacy_permissions = pyqtSignal()
+    on_manage_style_profiles = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
@@ -176,6 +178,13 @@ class TrayManager(QObject):
         scope_label = "Instructions for Clicky…"
         scope_action = menu.addAction(scope_label)
         scope_action.triggered.connect(self._prompt_custom_instructions)
+        if build_feature_available(
+            ActionCapability.SCREEN_AWARE_COMPOSE
+        ):
+            style_action = menu.addAction("Writing styles…")
+            style_action.triggered.connect(
+                self.on_manage_style_profiles
+            )
 
         # ── Tutor toggles ──
         menu.addSeparator()

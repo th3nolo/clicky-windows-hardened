@@ -15,9 +15,11 @@ from unittest import mock
 
 from memory.style_profiles import (
     MAX_PROFILE_NAME_CHARS,
+    STYLE_PROFILE_DATABASE_VERSION,
     StyleProfileConflictError,
     StyleProfileCorruptError,
     StyleProfileNotFoundError,
+    StyleProfileScopeError,
     StyleProfileStorageError,
     StyleProfileStore,
 )
@@ -169,6 +171,123 @@ class StyleProfileStoreTests(unittest.TestCase):
                 store.active_for_application(PERSONAL_APP),
                 (personal, global_profile),
             )
+
+    def test_resolve_active_requires_enabled_profile_and_exact_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store, _ = store_fixture(Path(temporary))
+            profile = store.create(
+                name="Work",
+                rules=(PRIVATE_RULE,),
+                application_scopes=(WORK_APP,),
+            )
+
+            self.assertEqual(
+                store.resolve_active(profile.profile_id, WORK_APP),
+                profile,
+            )
+            self.assertIsNone(
+                store.resolve_active(profile.profile_id, PERSONAL_APP)
+            )
+            store.set_enabled(profile.profile_id, False)
+            self.assertIsNone(
+                store.resolve_active(profile.profile_id, WORK_APP)
+            )
+
+    def test_per_application_default_is_encrypted_scoped_and_clearable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store, _ = store_fixture(Path(temporary))
+            profile = store.create(
+                name=PRIVATE_NAME,
+                rules=(PRIVATE_RULE,),
+                application_scopes=(WORK_APP,),
+            )
+
+            selected = store.set_default_for_application(
+                WORK_APP,
+                profile.profile_id,
+            )
+
+            self.assertEqual(selected, profile)
+            self.assertEqual(
+                store.default_for_application(WORK_APP),
+                profile,
+            )
+            self.assertIsNone(
+                store.default_for_application(PERSONAL_APP)
+            )
+            raw = store.database_path.read_bytes()
+            self.assertNotIn(WORK_APP.encode("ascii"), raw)
+            self.assertNotIn(PRIVATE_NAME.encode("utf-8"), raw)
+
+            store.set_enabled(profile.profile_id, False)
+            self.assertIsNone(
+                store.default_for_application(WORK_APP)
+            )
+            store.set_enabled(profile.profile_id, True)
+            self.assertEqual(
+                store.default_for_application(WORK_APP),
+                store.get(profile.profile_id),
+            )
+            self.assertIsNone(
+                store.set_default_for_application(WORK_APP, None)
+            )
+            self.assertIsNone(
+                store.default_for_application(WORK_APP)
+            )
+
+    def test_default_rejects_wrong_scope_and_cascades_on_delete(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store, _ = store_fixture(Path(temporary))
+            profile = store.create(
+                name="Work",
+                application_scopes=(WORK_APP,),
+            )
+
+            with self.assertRaises(StyleProfileScopeError):
+                store.set_default_for_application(
+                    PERSONAL_APP,
+                    profile.profile_id,
+                )
+
+            store.set_default_for_application(
+                WORK_APP,
+                profile.profile_id,
+            )
+            self.assertTrue(store.delete(profile.profile_id))
+            self.assertIsNone(
+                store.default_for_application(WORK_APP)
+            )
+
+    def test_version_one_store_migrates_without_decrypting_or_losing_profiles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, protector = store_fixture(root)
+            profile = store.create(
+                name=PRIVATE_NAME,
+                rules=(PRIVATE_RULE,),
+            )
+            with closing(sqlite3.connect(store.database_path)) as connection:
+                connection.execute("DROP TABLE style_profile_defaults")
+                connection.execute("PRAGMA user_version = 1")
+                connection.commit()
+
+            protector.fail_decrypt = True
+            with store._connection(create=False) as connection:
+                version = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table'"
+                    )
+                }
+            self.assertEqual(version, STYLE_PROFILE_DATABASE_VERSION)
+            self.assertIn("style_profile_defaults", tables)
+
+            protector.fail_decrypt = False
+            self.assertEqual(store.get(profile.profile_id), profile)
 
     def test_prompt_lookup_never_decrypts_disabled_payloads(self):
         with tempfile.TemporaryDirectory() as temporary:

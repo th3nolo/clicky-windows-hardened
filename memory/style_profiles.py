@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -23,6 +24,7 @@ from security.dpapi import (
 
 
 STYLE_PROFILE_SCHEMA_VERSION = 1
+STYLE_PROFILE_DATABASE_VERSION = 2
 STYLE_PROFILE_EXPORT_VERSION = 1
 STYLE_PROFILE_EXPORT_FORMAT = "clicky-writing-style-profiles"
 MAX_PROFILES = 64
@@ -62,6 +64,10 @@ class StyleProfileCorruptError(StyleProfileError):
 
 
 class StyleProfileStorageError(StyleProfileError):
+    pass
+
+
+class StyleProfileScopeError(StyleProfileError):
     pass
 
 
@@ -256,6 +262,147 @@ class StyleProfileStore:
                         self._decode_row(row) for row in rows
                     )
                     if profile.applies_to(checked_identity)
+                )
+
+    def resolve_active(
+        self,
+        profile_id: str,
+        application_identity: str,
+    ) -> StyleProfile | None:
+        checked_id = _validate_profile_id(profile_id)
+        checked_identity = _validate_application_identity(
+            application_identity
+        )
+        with self._lock:
+            if not self._database_exists():
+                return None
+            with self._connection(create=False) as connection:
+                row = connection.execute(
+                    "SELECT * FROM style_profiles "
+                    "WHERE profile_id = ? AND enabled = 1",
+                    (checked_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                profile = self._decode_row(row)
+                return (
+                    profile
+                    if profile.applies_to(checked_identity)
+                    else None
+                )
+
+    def set_default_for_application(
+        self,
+        application_identity: str,
+        profile_id: str | None,
+    ) -> StyleProfile | None:
+        checked_identity = _validate_application_identity(
+            application_identity
+        )
+        scope_key = _application_scope_key(checked_identity)
+        if profile_id is None:
+            with self._lock:
+                if not self._database_exists():
+                    return None
+                with self._connection(create=False) as connection:
+                    try:
+                        connection.execute("BEGIN IMMEDIATE")
+                        connection.execute(
+                            "DELETE FROM style_profile_defaults "
+                            "WHERE scope_key = ?",
+                            (scope_key,),
+                        )
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        raise
+            return None
+
+        checked_id = _validate_profile_id(profile_id)
+        with self._lock:
+            if not self._database_exists():
+                raise StyleProfileScopeError(
+                    "Default writing-style profile is unavailable"
+                )
+            with self._connection(create=False) as connection:
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    row = connection.execute(
+                        "SELECT * FROM style_profiles "
+                        "WHERE profile_id = ? AND enabled = 1",
+                        (checked_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise StyleProfileScopeError(
+                            "Default writing-style profile is unavailable"
+                        )
+                    profile = self._decode_row(row)
+                    if not profile.applies_to(checked_identity):
+                        raise StyleProfileScopeError(
+                            "Writing-style profile is outside this application"
+                        )
+                    protected = self._protect_default(
+                        checked_identity,
+                        checked_id,
+                    )
+                    connection.execute(
+                        "INSERT INTO style_profile_defaults "
+                        "(scope_key, profile_id, updated_at, "
+                        "payload_version, payload) VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(scope_key) DO UPDATE SET "
+                        "profile_id = excluded.profile_id, "
+                        "updated_at = excluded.updated_at, "
+                        "payload_version = excluded.payload_version, "
+                        "payload = excluded.payload",
+                        (
+                            scope_key,
+                            checked_id,
+                            self._now(),
+                            STYLE_PROFILE_SCHEMA_VERSION,
+                            sqlite3.Binary(protected),
+                        ),
+                    )
+                    connection.commit()
+                    return profile
+                except Exception:
+                    connection.rollback()
+                    raise
+
+    def default_for_application(
+        self,
+        application_identity: str,
+    ) -> StyleProfile | None:
+        checked_identity = _validate_application_identity(
+            application_identity
+        )
+        scope_key = _application_scope_key(checked_identity)
+        with self._lock:
+            if not self._database_exists():
+                return None
+            with self._connection(create=False) as connection:
+                default_row = connection.execute(
+                    "SELECT * FROM style_profile_defaults "
+                    "WHERE scope_key = ?",
+                    (scope_key,),
+                ).fetchone()
+                if default_row is None:
+                    return None
+                profile_id = self._decode_default(
+                    default_row,
+                    checked_identity,
+                )
+                profile_row = connection.execute(
+                    "SELECT * FROM style_profiles "
+                    "WHERE profile_id = ? AND enabled = 1",
+                    (profile_id,),
+                ).fetchone()
+                if profile_row is None:
+                    return None
+                profile = self._decode_row(profile_row)
+                return (
+                    profile
+                    if profile.applies_to(checked_identity)
+                    else None
                 )
 
     def update(
@@ -453,6 +600,90 @@ class StyleProfileStore:
                 "Could not protect the writing-style profile"
             ) from exc
 
+    def _protect_default(
+        self,
+        application_identity: str,
+        profile_id: str,
+    ) -> bytes:
+        plaintext = json.dumps(
+            {
+                "application_identity": application_identity,
+                "profile_id": profile_id,
+                "version": STYLE_PROFILE_SCHEMA_VERSION,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        try:
+            protected = self._protector.encrypt(plaintext)
+            if (
+                not isinstance(protected, bytes)
+                or not protected
+                or len(protected) > MAX_PROTECTED_PAYLOAD_BYTES
+                or self._protector.decrypt(protected) != plaintext
+            ):
+                raise StyleProfileStorageError(
+                    "Protected profile default verification failed"
+                )
+            return protected
+        except StyleProfileError:
+            raise
+        except (DpapiError, OSError, RuntimeError, ValueError) as exc:
+            raise StyleProfileStorageError(
+                "Could not protect the writing-style profile default"
+            ) from exc
+
+    def _decode_default(
+        self,
+        row: sqlite3.Row,
+        expected_application_identity: str,
+    ) -> str:
+        try:
+            protected = bytes(row["payload"])
+            if (
+                row["payload_version"] != STYLE_PROFILE_SCHEMA_VERSION
+                or not protected
+                or len(protected) > MAX_PROTECTED_PAYLOAD_BYTES
+            ):
+                raise StyleProfileCorruptError(
+                    "Writing-style profile default metadata is corrupt"
+                )
+            plaintext = self._protector.decrypt(protected)
+            if not plaintext or len(plaintext) > MAX_PAYLOAD_BYTES:
+                raise StyleProfileCorruptError(
+                    "Writing-style profile default is corrupt"
+                )
+            payload = json.loads(plaintext.decode("ascii", "strict"))
+            if (
+                not isinstance(payload, dict)
+                or set(payload)
+                != {"application_identity", "profile_id", "version"}
+                or payload["version"] != STYLE_PROFILE_SCHEMA_VERSION
+            ):
+                raise StyleProfileCorruptError(
+                    "Writing-style profile default schema is corrupt"
+                )
+            application_identity = _validate_application_identity(
+                payload["application_identity"]
+            )
+            profile_id = _validate_profile_id(payload["profile_id"])
+            if (
+                application_identity != expected_application_identity
+                or row["scope_key"]
+                != _application_scope_key(application_identity)
+                or row["profile_id"] != profile_id
+            ):
+                raise StyleProfileCorruptError(
+                    "Writing-style profile default identity is corrupt"
+                )
+            return profile_id
+        except StyleProfileCorruptError:
+            raise
+        except Exception as exc:
+            raise StyleProfileCorruptError(
+                "Writing-style profile default is corrupt or unavailable"
+            ) from exc
+
     def _decode_row(self, row: sqlite3.Row) -> StyleProfile:
         try:
             protected = bytes(row["payload"])
@@ -599,18 +830,50 @@ class StyleProfileStore:
                     "ix_style_profiles_enabled "
                     "ON style_profiles(enabled, created_at)"
                 )
+                StyleProfileStore._create_defaults_table(connection)
                 connection.execute(
-                    f"PRAGMA user_version = {STYLE_PROFILE_SCHEMA_VERSION}"
+                    f"PRAGMA user_version = {STYLE_PROFILE_DATABASE_VERSION}"
                 )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
             return
-        if version != STYLE_PROFILE_SCHEMA_VERSION:
+        if version == 1:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                StyleProfileStore._create_defaults_table(connection)
+                connection.execute(
+                    f"PRAGMA user_version = {STYLE_PROFILE_DATABASE_VERSION}"
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            return
+        if version != STYLE_PROFILE_DATABASE_VERSION:
             raise StyleProfileStorageError(
                 "Writing-style profile database schema is unsupported"
             )
+
+    @staticmethod
+    def _create_defaults_table(
+        connection: sqlite3.Connection,
+    ) -> None:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS style_profile_defaults ("
+            "scope_key TEXT PRIMARY KEY NOT NULL "
+            "CHECK(length(scope_key) = 64),"
+            "profile_id TEXT NOT NULL,"
+            "updated_at REAL NOT NULL,"
+            "payload_version INTEGER NOT NULL "
+            "CHECK(payload_version = 1),"
+            "payload BLOB NOT NULL "
+            "CHECK(length(payload) BETWEEN 1 AND 131072),"
+            "FOREIGN KEY(profile_id) REFERENCES style_profiles(profile_id) "
+            "ON DELETE CASCADE"
+            ") WITHOUT ROWID"
+        )
 
     def _now(self) -> float:
         return _validate_timestamp(self._clock())
@@ -622,6 +885,14 @@ class StyleProfileStore:
 def _default_db_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
     return base / "Clicky" / "style_profiles.db"
+
+
+def _application_scope_key(application_identity: str) -> str:
+    checked = _validate_application_identity(application_identity)
+    return hashlib.sha256(
+        b"Clicky writing style default v1\x00"
+        + checked.encode("ascii")
+    ).hexdigest()
 
 
 def _encode_payload(profile: StyleProfile) -> bytes:

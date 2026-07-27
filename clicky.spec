@@ -52,6 +52,7 @@ hidden = [
     "ui.setup_wizard",
     "ui.onboarding_demo",
     "ui.stt_readiness",
+    "ui.style_profiles",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",

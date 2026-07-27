@@ -141,6 +141,21 @@ def main():
             "Private audio storage unavailable",
             f"Local speech transcription will fail closed: {secure_audio_error}",
         )
+    style_profiles_panel = None
+    if build_feature_available(ActionCapability.SCREEN_AWARE_COMPOSE):
+        from memory.style_profiles import StyleProfileStore
+        from ui.style_profiles import StyleProfilesPanel
+
+        style_profiles_panel = StyleProfilesPanel(StyleProfileStore())
+        _style_profiles_keepalive[0] = style_profiles_panel
+
+        def _show_style_profiles():
+            style_profiles_panel.refresh()
+            style_profiles_panel.show()
+            style_profiles_panel.raise_()
+            style_profiles_panel.activateWindow()
+
+        tray.on_manage_style_profiles.connect(_show_style_profiles)
 
     # ── Wire signals ──────────────────────────────────────────────────────────
 
@@ -577,6 +592,7 @@ def main():
 # Module-level slot used to keep a reference to the setup wizard alive while
 # Qt is running (PyQt will GC it otherwise and the dialog will vanish).
 _setup_keepalive: list = [None]
+_style_profiles_keepalive: list = [None]
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import asyncio
 import ast
 import base64
 import hashlib
+import json
 import types
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ from compose.prompt import build_compose_prompt
 from compose.service import (
     ComposeCaptureError,
     ComposePermissionError,
+    ComposeProfileError,
     ComposeProviderError,
     ComposeService,
     ComposeTargetError,
@@ -35,6 +37,7 @@ from feature_gates import (
     BuildFeatureFlag,
     RunCapabilityGrant,
 )
+from memory.style_profiles import StyleProfile
 from privacy_controls import PRIVACY_NOTICE_VERSION
 
 
@@ -42,6 +45,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SYNTHETIC_JPEG = base64.b64encode(
     b"\xff\xd8\xffsynthetic-compose-image\xff\xd9"
 ).decode("ascii")
+STYLE_ID = "a" * 32
+OTHER_STYLE_ID = "b" * 32
+PRIVATE_STYLE_RULE = "Use the private selected style."
+UNSELECTED_STYLE_RULE = "Never include this unselected style."
 
 
 def descriptor(**changes) -> TargetDescriptor:
@@ -118,7 +125,13 @@ def screenshot(screenshot_id="monitor-one"):
     )
 
 
-def invocation(target, *, provider_id="openai", model_id="gpt-4o-mini"):
+def invocation(
+    target,
+    *,
+    provider_id="openai",
+    model_id="gpt-4o-mini",
+    style_profile_id=STYLE_ID,
+):
     run_id = "compose-7"
     return ComposeInvocation(
         run_id=run_id,
@@ -133,7 +146,7 @@ def invocation(target, *, provider_id="openai", model_id="gpt-4o-mini"):
         authorized_screenshot_ids=("monitor-one",),
         provider=ComposeProviderSelection(provider_id, model_id),
         response_language="en-US",
-        style_profile_id="work-concise",
+        style_profile_id=style_profile_id,
         max_output_chars=240,
     )
 
@@ -189,6 +202,45 @@ class Provider:
         return True
 
 
+class Profiles:
+    def __init__(self):
+        self.calls = []
+        self.available = True
+        self.selected = StyleProfile(
+            profile_id=STYLE_ID,
+            name="Selected private style",
+            rules=(PRIVATE_STYLE_RULE,),
+            examples=("A private approved example.",),
+            application_scopes=(
+                descriptor().application_identity,
+            ),
+            created_at=1_800_000_000.0,
+            updated_at=1_800_000_001.0,
+            enabled=True,
+        )
+        self.unselected = StyleProfile(
+            profile_id=OTHER_STYLE_ID,
+            name="Unselected style",
+            rules=(UNSELECTED_STYLE_RULE,),
+            examples=(),
+            application_scopes=(),
+            created_at=1_800_000_000.0,
+            updated_at=1_800_000_001.0,
+            enabled=True,
+        )
+
+    def resolve_active(self, profile_id, application_identity):
+        self.calls.append((profile_id, application_identity))
+        if not self.available:
+            return None
+        if (
+            profile_id == self.selected.profile_id
+            and self.selected.applies_to(application_identity)
+        ):
+            return self.selected
+        return None
+
+
 class ComposeServiceTests(unittest.TestCase):
     def setUp(self):
         self.guard = Guard()
@@ -197,11 +249,13 @@ class ComposeServiceTests(unittest.TestCase):
         self.provider_ids = []
         self.vision_calls = []
         self.vision_result = True
+        self.profiles = Profiles()
         self.service = ComposeService(
             targets=self.guard,
             capture_gateway=self.capture,
             provider_factory=self._provider_factory,
             vision_support=self._vision_support,
+            style_profiles=self.profiles,
             build_flags=enabled_build_flags(),
         )
 
@@ -261,7 +315,10 @@ class ComposeServiceTests(unittest.TestCase):
         )
         self.assertEqual(request.target_type, "Chrome:DocumentControl")
         self.assertEqual(request.response_language, "en-US")
-        self.assertEqual(request.style_profile_id, "work-concise")
+        self.assertEqual(request.style_profile_id, STYLE_ID)
+        self.assertIsNotNone(request.style_context)
+        self.assertEqual(request.style_context.profile_id, STYLE_ID)
+        self.assertNotIn(PRIVATE_STYLE_RULE, repr(request))
         self.assertNotIn(SYNTHETIC_JPEG, repr(request))
         self.assertNotIn(request.instruction, repr(request))
         self.assertNotIn(request.destination_identity, repr(request))
@@ -304,7 +361,20 @@ class ComposeServiceTests(unittest.TestCase):
         )
         self.assertEqual(self.provider_ids, ["openai"])
         sent = self.provider.calls[0]
-        self.assertEqual(sent["user_text"], request.instruction)
+        user_text = json.loads(sent["user_text"])
+        self.assertEqual(
+            user_text,
+            {
+                "spoken_instruction": request.instruction,
+                "user_authored_writing_style": {
+                    "approved_examples": [
+                        "A private approved example.",
+                    ],
+                    "name": "Selected private style",
+                    "rules": [PRIVATE_STYLE_RULE],
+                },
+            },
+        )
         self.assertEqual(sent["screenshots_b64"], [SYNTHETIC_JPEG])
         self.assertEqual(sent["history"], [])
         self.assertEqual(sent["model"], "gpt-4o-mini")
@@ -317,7 +387,74 @@ class ComposeServiceTests(unittest.TestCase):
             sent["system_prompt"],
         )
         self.assertNotIn(request.instruction, sent["system_prompt"])
+        self.assertNotIn(STYLE_ID, sent["system_prompt"])
+        self.assertNotIn(PRIVATE_STYLE_RULE, sent["system_prompt"])
+        self.assertNotIn(UNSELECTED_STYLE_RULE, sent["user_text"])
         self.assertNotIn(draft.text, repr(draft))
+
+    def test_no_profile_sends_only_the_explicit_instruction(self):
+        request = self.service.prepare_request(
+            invocation(
+                self.guard.lease,
+                style_profile_id=None,
+            ),
+            configured(),
+        )
+        draft = self.generate(request)
+
+        self.assertEqual(draft.provenance.style_profile_id, None)
+        self.assertEqual(self.profiles.calls, [])
+        self.assertEqual(
+            json.loads(self.provider.calls[0]["user_text"]),
+            {"spoken_instruction": request.instruction},
+        )
+
+    def test_unavailable_profile_fails_before_capture_or_provider(self):
+        self.profiles.available = False
+
+        with self.assertRaisesRegex(
+            ComposeProfileError,
+            "disabled or out of scope",
+        ):
+            self.prepare()
+
+        self.assertEqual(
+            self.profiles.calls,
+            [(STYLE_ID, descriptor().application_identity)],
+        )
+        self.assertEqual(self.capture.calls, [])
+        self.assertEqual(self.provider.calls, [])
+
+    def test_disabled_or_changed_profile_is_rejected_before_provider(self):
+        request = self.prepare()
+        self.profiles.available = False
+
+        with self.assertRaisesRegex(
+            ComposeProfileError,
+            "disabled or out of scope",
+        ):
+            self.generate(request)
+
+        self.assertEqual(self.provider.calls, [])
+        self.profiles.available = True
+        self.profiles.selected = StyleProfile(
+            profile_id=STYLE_ID,
+            name="Changed after review",
+            rules=("A changed private rule.",),
+            examples=(),
+            application_scopes=(
+                descriptor().application_identity,
+            ),
+            created_at=1_800_000_000.0,
+            updated_at=1_800_000_002.0,
+            enabled=True,
+        )
+        with self.assertRaisesRegex(
+            ComposeProfileError,
+            "changed; review it again",
+        ):
+            self.generate(request)
+        self.assertEqual(self.provider.calls, [])
 
     def test_prompt_forbids_actions_hidden_context_and_unbounded_output(self):
         prompt = build_compose_prompt(self.prepare())

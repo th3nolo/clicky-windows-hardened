@@ -15,10 +15,15 @@ from compose.models import (
     ComposeInvocation,
     ComposeRequest,
     ComposeScreenshot,
+    ComposeStyleContext,
     Draft,
     DraftProvenance,
 )
-from compose.prompt import build_compose_prompt, validate_draft_output
+from compose.prompt import (
+    build_compose_prompt,
+    build_compose_user_text,
+    validate_draft_output,
+)
 from dictation.targeting import SecureTargetGuard
 from feature_gates import (
     DEFAULT_BUILD_FEATURE_FLAGS,
@@ -53,6 +58,10 @@ class ComposeProviderError(ComposeError):
     pass
 
 
+class ComposeProfileError(ComposeError):
+    pass
+
+
 class ComposeCaptureGateway(Protocol):
     def capture(
         self,
@@ -67,6 +76,14 @@ class ComposeProviderFactory(Protocol):
 VisionSupport = Callable[[str, str], bool]
 
 
+class ComposeStyleProfileResolver(Protocol):
+    def resolve_active(
+        self,
+        profile_id: str,
+        application_identity: str,
+    ): ...
+
+
 class ComposeService:
     """Create a draft only; insertion is intentionally outside this service."""
 
@@ -77,6 +94,7 @@ class ComposeService:
         capture_gateway: ComposeCaptureGateway,
         provider_factory: ComposeProviderFactory | None = None,
         vision_support: VisionSupport | None = None,
+        style_profiles: ComposeStyleProfileResolver | None = None,
         build_flags: Mapping[
             ActionCapability, BuildFeatureFlag
         ] = DEFAULT_BUILD_FEATURE_FLAGS,
@@ -89,6 +107,7 @@ class ComposeService:
         self._vision_support = (
             vision_support or cached_model_supports_vision
         )
+        self._style_profiles = style_profiles
         self._build_flags = build_flags
 
     def prepare_request(
@@ -106,6 +125,10 @@ class ComposeService:
             raise ComposeTargetError(
                 "The compose destination changed or is not permitted."
             )
+        style_context = self._resolve_style_context(
+            invocation.style_profile_id,
+            target.lease.descriptor.application_identity,
+        )
         try:
             captured = tuple(
                 self._capture_gateway.capture(
@@ -151,6 +174,7 @@ class ComposeService:
                 response_language=invocation.response_language,
                 style_profile_id=invocation.style_profile_id,
                 max_output_chars=invocation.max_output_chars,
+                style_context=style_context,
             )
         except (TypeError, ValueError):
             raise ComposeCaptureError(
@@ -172,12 +196,20 @@ class ComposeService:
             raise ComposeTargetError(
                 "The compose destination changed before generation."
             )
+        current_style = self._resolve_style_context(
+            request.style_profile_id,
+            target.lease.descriptor.application_identity,
+        )
+        if current_style != request.style_context:
+            raise ComposeProfileError(
+                "The selected writing profile changed; review it again."
+            )
         try:
             provider = self._provider_factory(
                 request.provider.provider_id
             )
             stream = provider.stream_response(
-                user_text=request.instruction,
+                user_text=build_compose_user_text(request),
                 screenshots_b64=[
                     screenshot.base64_jpeg
                     for screenshot in request.screenshots
@@ -242,6 +274,40 @@ class ComposeService:
         except (TypeError, ValueError):
             raise ComposeProviderError(
                 "The selected compose provider returned an unsafe draft."
+            ) from None
+
+    def _resolve_style_context(
+        self,
+        profile_id: str | None,
+        application_identity: str,
+    ) -> ComposeStyleContext | None:
+        if profile_id is None:
+            return None
+        resolver = self._style_profiles
+        if resolver is None:
+            raise ComposeProfileError(
+                "The selected writing profile is unavailable."
+            )
+        try:
+            profile = resolver.resolve_active(
+                profile_id,
+                application_identity,
+            )
+            if profile is None:
+                raise ComposeProfileError(
+                    "The selected writing profile is disabled or out of scope."
+                )
+            return ComposeStyleContext(
+                profile_id=profile.profile_id,
+                name=profile.name,
+                rules=profile.rules,
+                examples=profile.examples,
+            )
+        except ComposeProfileError:
+            raise
+        except Exception:
+            raise ComposeProfileError(
+                "The selected writing profile could not be loaded."
             ) from None
 
     def _authorize(
