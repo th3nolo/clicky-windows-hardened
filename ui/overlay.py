@@ -229,6 +229,13 @@ class CursorOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._bound_screens: set[int] = set()
+        application = QApplication.instance()
+        if application is not None:
+            application.screenAdded.connect(self._bind_screen)
+            application.screenRemoved.connect(self._cover_all_monitors)
+            for screen in application.screens():
+                self._bind_screen(screen)
         self._cover_all_monitors()
 
         # Seed position so we don't flash at (0, 0)
@@ -382,7 +389,16 @@ class CursorOverlay(QWidget):
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _cover_all_monitors(self):
+    def _bind_screen(self, screen):
+        identity = id(screen)
+        if identity in self._bound_screens:
+            return
+        self._bound_screens.add(identity)
+        screen.geometryChanged.connect(self._cover_all_monitors)
+        screen.logicalDotsPerInchChanged.connect(self._cover_all_monitors)
+        self._cover_all_monitors()
+
+    def _cover_all_monitors(self, *_args):
         geo = QApplication.primaryScreen().virtualGeometry()
         for s in QApplication.screens():
             geo = geo.united(s.geometry())

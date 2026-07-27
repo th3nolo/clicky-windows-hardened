@@ -71,6 +71,10 @@ async def detect_element(
     physical_left: int = 0,
     physical_top: int = 0,
     dpi_scale: float = 1.0,
+    logical_left: int | None = None,
+    logical_top: int | None = None,
+    logical_width: int | None = None,
+    logical_height: int | None = None,
 ) -> Optional[Detected]:
     """Detect a UI element and return its position in **logical screen
     coordinates** (the same coordinate space Qt's QCursor.pos() uses), with
@@ -164,16 +168,32 @@ async def detect_element(
         px = cu_x / tw * physical_width
         py = cu_y / th * physical_height
 
-        # Stage 2: physical monitor px → physical virtual-screen px
-        # (apply the monitor's origin offset so monitor-2 coords don't land
-        # on monitor-1)
-        vx = px + physical_left
-        vy = py + physical_top
-
-        # Stage 3: physical → logical (Qt cursor space)
+        # Stage 2: physical monitor ratio → that monitor's Qt logical rect.
+        # Absolute origins must never be divided by a per-monitor scale:
+        # mixed-DPI layouts can have negative and non-proportional origins.
         scale = dpi_scale if dpi_scale > 0 else 1.0
-        lx = int(round(vx / scale))
-        ly = int(round(vy / scale))
+        target_left = (
+            logical_left
+            if logical_left is not None
+            else int(round(physical_left / scale))
+        )
+        target_top = (
+            logical_top
+            if logical_top is not None
+            else int(round(physical_top / scale))
+        )
+        target_width = (
+            logical_width
+            if logical_width is not None
+            else physical_width / scale
+        )
+        target_height = (
+            logical_height
+            if logical_height is not None
+            else physical_height / scale
+        )
+        lx = int(round(target_left + px / physical_width * target_width))
+        ly = int(round(target_top + py / physical_height * target_height))
         return Detected(x=lx, y=ly, screen_index=screen_index)
 
     return None

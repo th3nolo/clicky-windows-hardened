@@ -16,7 +16,6 @@ ScreenShot now carries every number needed to convert between them.
 """
 
 import base64
-import ctypes
 import io
 from dataclasses import dataclass
 from typing import List
@@ -26,6 +25,12 @@ import mss.tools
 from PIL import Image
 
 from screen.capture_exclusion import capture_without_owned_windows
+from screen.topology import (
+    MonitorDescriptor,
+    MonitorTopologyError,
+    Rect,
+    discover_monitor_topology,
+)
 
 @dataclass
 class ScreenShot:
@@ -48,38 +53,68 @@ class ScreenShot:
     # Convenience: where this monitor's top-left sits in LOGICAL screen space
     logical_left: int
     logical_top: int
+    stable_id: str = ""
+    label: str = ""
+    capture_index: int = 0
+    logical_width: int = 0
+    logical_height: int = 0
+    dpi_x: float = 0.0
+    dpi_y: float = 0.0
+    is_primary: bool = False
+    is_focused: bool = False
 
-
-def _query_dpi_scale() -> float:
-    """Best-effort DPI scale for the primary monitor.
-    Returns 1.0 if anything goes wrong."""
-    try:
-        # GetDpiForSystem returns DPI as integer (96 = 100%, 144 = 150%)
-        u = ctypes.windll.user32
-        u.SetProcessDPIAware()
-        gdfs = getattr(u, "GetDpiForSystem", None)
-        if gdfs:
-            return max(1.0, gdfs() / 96.0)
-        # Fallback: ratio of GetSystemMetrics(physical) vs (logical)
-        return 1.0
-    except Exception:
-        return 1.0
+    def descriptor(self) -> MonitorDescriptor:
+        logical_width = self.logical_width or int(
+            round(self.physical_width / max(self.dpi_scale, 1.0))
+        )
+        logical_height = self.logical_height or int(
+            round(self.physical_height / max(self.dpi_scale, 1.0))
+        )
+        return MonitorDescriptor(
+            stable_id=self.stable_id or f"screen-{self.index}",
+            index=self.index,
+            capture_index=self.capture_index or self.index,
+            device_name="",
+            label=self.label or f"Screen {self.index}",
+            physical=Rect(
+                self.physical_left,
+                self.physical_top,
+                self.physical_width,
+                self.physical_height,
+            ),
+            logical=Rect(
+                self.logical_left,
+                self.logical_top,
+                logical_width,
+                logical_height,
+            ),
+            dpi_x=self.dpi_x or self.dpi_scale * 96.0,
+            dpi_y=self.dpi_y or self.dpi_scale * 96.0,
+            primary=self.is_primary,
+            focused=self.is_focused,
+        )
 
 
 def _capture_all_screens(max_width: int) -> List[ScreenShot]:
     """Capture all monitors. Each ScreenShot carries everything needed
     to convert detection coords back into logical screen space."""
-    dpi = _query_dpi_scale()
     results = []
     with mss.mss() as sct:
-        # mss monitor index 0 is the combined virtual screen; 1+ are real monitors
-        for i, monitor in enumerate(sct.monitors[1:], start=1):
+        capture_monitors = sct.monitors[1:]
+        topology = discover_monitor_topology(capture_monitors)
+        for descriptor in topology:
+            monitor = capture_monitors[descriptor.capture_index - 1]
             raw = sct.grab(monitor)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
             phys_w, phys_h = img.width, img.height
-            phys_left = int(monitor.get("left", 0))
-            phys_top  = int(monitor.get("top",  0))
+            if (
+                phys_w != descriptor.physical.width
+                or phys_h != descriptor.physical.height
+            ):
+                raise MonitorTopologyError(
+                    f"captured dimensions changed for {descriptor.stable_id}"
+                )
 
             # Downscale only the JPEG we send to the LLM — keep physical numbers intact
             if img.width > max_width:
@@ -94,17 +129,26 @@ def _capture_all_screens(max_width: int) -> List[ScreenShot]:
             encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
 
             results.append(ScreenShot(
-                index=i,
+                index=descriptor.index,
                 width=img.width,
                 height=img.height,
                 base64_jpeg=encoded,
                 physical_width=phys_w,
                 physical_height=phys_h,
-                physical_left=phys_left,
-                physical_top=phys_top,
-                dpi_scale=dpi,
-                logical_left=int(round(phys_left / dpi)),
-                logical_top=int(round(phys_top  / dpi)),
+                physical_left=descriptor.physical.left,
+                physical_top=descriptor.physical.top,
+                dpi_scale=descriptor.dpi_x / 96.0,
+                logical_left=descriptor.logical.left,
+                logical_top=descriptor.logical.top,
+                stable_id=descriptor.stable_id,
+                label=descriptor.label,
+                capture_index=descriptor.capture_index,
+                logical_width=descriptor.logical.width,
+                logical_height=descriptor.logical.height,
+                dpi_x=descriptor.dpi_x,
+                dpi_y=descriptor.dpi_y,
+                is_primary=descriptor.primary,
+                is_focused=descriptor.focused,
             ))
 
     return results
@@ -120,7 +164,7 @@ def capture_all_screens(max_width: int = 1280) -> List[ScreenShot]:
 def capture_primary() -> ScreenShot:
     """Capture only the primary monitor."""
     screens = capture_all_screens()
-    return screens[0] if screens else None
+    return next((screen for screen in screens if screen.is_primary), None)
 
 
 def screen_count() -> int:

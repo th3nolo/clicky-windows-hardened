@@ -131,6 +131,15 @@ session does not reconnect and does not silently invoke batch or local STT.
 Partial and final transcript UI updates carry the turn sequence so queued
 updates from an interrupted turn are rejected.
 
+Monitor routing joins physical MSS rectangles, Win32 display identities, and Qt
+logical rectangles before a capture is accepted. Clicky does not use list
+position as monitor identity. It preserves negative origins and independent
+horizontal/vertical scale ratios, and it scopes OCR, accessibility lookup,
+figure detection, lesson recording, pointer coordinates, and model instructions
+to the requested or foreground-window monitor. Unknown display numbers,
+ambiguous hardware identities, or topology changes fail explicitly. Per-monitor
+v2 awareness is declared in both startup code and the executable manifest.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.

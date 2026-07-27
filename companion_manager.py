@@ -30,6 +30,12 @@ from privacy_controls import (
     screen_capture_allowed,
 )
 from screen.capture import capture_all_screens
+from screen.topology import (
+    MonitorTopologyError,
+    format_screen_context,
+    requested_screen_index,
+    select_monitor,
+)
 from ui.panel import AppState
 from turn_coordinator import TurnCoordinator, TurnPhase, TurnSession
 from tutor import (
@@ -96,11 +102,12 @@ def _build_system_prompt(
     if window_title:
         ctx_lines.append(f'ACTIVE WINDOW: "{window_title}"')
     if detected_coord:
-        x, y, label = detected_coord
+        x, y, label, screen_index = detected_coord
         ctx_lines.append(
             f"DETECTED ELEMENT (pre-computed by the pointing engine — use "
             f"this coordinate verbatim in your [POINT] tag): x={x}, y={y}, "
-            f"label='{label}'. (Already normalized 0-1000.)"
+            f"label='{label}', screen={screen_index}. "
+            f"(Already normalized 0-1000.)"
         )
     if total_steps > 1:
         ctx_lines.append(
@@ -131,7 +138,7 @@ ABSOLUTE QUIZ RULES (override everything else):
   • Format every turn as:  <one-line evaluation if applicable>  <one question>
 
 STYLE: short, friendly, never more than 2 sentences. End every turn with a
-question mark."""
+question mark.""" + extra
 
     from config import _TECHNICAL_RULES
     base = cfg.custom_instructions.strip()
@@ -292,6 +299,7 @@ class CompanionManager(QObject):
         # Screenshots from the current turn — needed to map the LLM's
         # normalized 0-1000 tag coordinates back to logical screen pixels.
         self._screens_ctx: list = []
+        self._active_screen_index: int | None = None
         # Figures detected on screen this turn (normalized vertices) — used
         # for prompt injection and for snapping sloppy stroke endpoints.
         self._figures_ctx: list = []
@@ -853,6 +861,21 @@ class CompanionManager(QObject):
                 screenshots = capture_all_screens()
             if not self._turns.is_current(session):
                 return
+            active_shot = None
+            if screenshots:
+                requested_index = requested_screen_index(transcript)
+                selected_monitor = select_monitor(
+                    [screenshot.descriptor() for screenshot in screenshots],
+                    requested_index,
+                )
+                active_shot = next(
+                    screenshot
+                    for screenshot in screenshots
+                    if screenshot.stable_id == selected_monitor.stable_id
+                )
+                self._active_screen_index = active_shot.index
+            else:
+                self._active_screen_index = None
             if not (sensitive or identity_q or not screen_permission):
                 images_b64 = [s.base64_jpeg for s in screenshots]
             # Fresh question → wipe the previous lesson's drawings and remember
@@ -865,13 +888,17 @@ class CompanionManager(QObject):
             # models) can draw on them accurately by echoing the numbers.
             self._figures_ctx = []
             fig_extra = ""
-            if screenshots:
+            if active_shot is not None:
                 try:
                     from ai.figure_detector import detect_figures, figures_prompt
                     self._figures_ctx = await asyncio.to_thread(
-                        detect_figures, screenshots[0].base64_jpeg,
+                        detect_figures, active_shot.base64_jpeg,
                     )
-                    fig_extra = figures_prompt(self._figures_ctx)
+                    fig_extra = (
+                        f"\nFIGURE SCREEN: screen{active_shot.index} "
+                        f"[{active_shot.stable_id}]\n"
+                        + figures_prompt(self._figures_ctx)
+                    )
                     if not self._turns.is_current(session):
                         return
                 except Exception:
@@ -895,8 +922,8 @@ class CompanionManager(QObject):
                 search_task = asyncio.create_task(search(transcript))
                 side_tasks.append(search_task)
 
-            if screenshots and locate_triggered:
-                shot = screenshots[0]
+            if active_shot is not None and locate_triggered:
+                shot = active_shot
                 # Pointing accuracy upgrade: try the hybrid pointer first.
                 # Tier 1 (UIA tree) is ~5ms and pixel-perfect; tier 2 (OCR)
                 # handles canvas apps. Falls through to the vision LLM grid
@@ -916,14 +943,10 @@ class CompanionManager(QObject):
                 if not self._turns.is_current(session):
                     return
                 if target is not None and target.source in ("uia", "ocr"):
-                    # UIA / OCR coordinates are PHYSICAL pixels; the overlay
-                    # draws in LOGICAL pixels — divide by the DPI scale.
-                    # (Also: return an object with .x/.y — downstream code
-                    # accesses attributes, a bare tuple would crash it.)
+                    # The hybrid pointer returns Qt logical coordinates for the
+                    # explicitly selected monitor.
                     from types import SimpleNamespace
-                    _scale = shot.dpi_scale or 1.0
-                    _pt = SimpleNamespace(x=target.x / _scale,
-                                          y=target.y / _scale)
+                    _pt = SimpleNamespace(x=target.x, y=target.y)
                     async def _ready(pt=_pt):
                         return pt
                     locate_task = asyncio.create_task(_ready())
@@ -940,6 +963,10 @@ class CompanionManager(QObject):
                         physical_left=shot.physical_left,
                         physical_top=shot.physical_top,
                         dpi_scale=shot.dpi_scale,
+                        logical_left=shot.logical_left,
+                        logical_top=shot.logical_top,
+                        logical_width=shot.logical_width,
+                        logical_height=shot.logical_height,
                         screen_index=shot.index,
                         user_question=transcript,
                     ))
@@ -959,6 +986,10 @@ class CompanionManager(QObject):
                             physical_left=shot.physical_left,
                             physical_top=shot.physical_top,
                             dpi_scale=shot.dpi_scale,
+                            logical_left=shot.logical_left,
+                            logical_top=shot.logical_top,
+                            logical_width=shot.logical_width,
+                            logical_height=shot.logical_height,
                             screen_index=shot.index,
                             user_question=transcript,
                             model=self._current_model,
@@ -991,8 +1022,15 @@ class CompanionManager(QObject):
                 label = _guess_label(transcript)
                 # Prompt wants NORMALIZED 0-1000 coords (the model echoes them
                 # into [POINT:...] which _parse_points denormalizes back).
-                ndx, ndy = self._norm(detected.x, detected.y)
-                detected_coord = (ndx, ndy, label)
+                ndx, ndy = self._norm(
+                    detected.x, detected.y, active_shot.index
+                )
+                detected_coord = (
+                    ndx,
+                    ndy,
+                    label,
+                    active_shot.index,
+                )
                 # Fire the overlay NOW so the buddy flies over while the LLM
                 # still thinks. Hold dwell until TTS completes.
                 self._emit_turn_signal(session, self.sig_point_hold, True)
@@ -1012,10 +1050,14 @@ class CompanionManager(QObject):
 
             # OCR fallback for fine print (only if user actually asks to read)
             ocr_extra = ""
-            if self._ocr_enabled and screenshots and ocr.needs_ocr(transcript):
+            if (
+                self._ocr_enabled
+                and active_shot is not None
+                and ocr.needs_ocr(transcript)
+            ):
                 try:
                     import base64
-                    jpeg = base64.b64decode(screenshots[0].base64_jpeg)
+                    jpeg = base64.b64decode(active_shot.base64_jpeg)
                     txt = ocr.run_ocr(jpeg)
                     if txt:
                         ocr_extra = ocr.format_for_prompt(txt)
@@ -1036,7 +1078,14 @@ class CompanionManager(QObject):
                 detected_coord=detected_coord,
                 code_active=code_active,
                 language_code=lang_code,
-                extra=ocr_extra + doc_extra + fig_extra,
+                extra=(
+                    ocr_extra
+                    + doc_extra
+                    + fig_extra
+                    + format_screen_context(
+                        [screenshot.descriptor() for screenshot in screenshots]
+                    )
+                ),
             )
             if sensitive:
                 system += (
@@ -1225,19 +1274,33 @@ class CompanionManager(QObject):
     # it saw. The overlay draws in LOGICAL screen pixels. These helpers convert
     # between the two using the ScreenShot metadata captured this turn.
 
-    def _shot(self, screen_idx: int = 1):
+    def _shot(self, screen_idx: int | None = None):
+        requested = (
+            self._active_screen_index if screen_idx is None else screen_idx
+        )
         for s in self._screens_ctx:
-            if s.index == screen_idx:
+            if s.index == requested:
                 return s
-        return self._screens_ctx[0] if self._screens_ctx else None
+        return None
 
-    def _denorm(self, nx: float, ny: float, screen_idx: int = 1):
+    def _denorm(
+        self,
+        nx: float,
+        ny: float,
+        screen_idx: int | None = None,
+    ):
         """Normalized 0-1000 (screenshot space) → logical screen pixels."""
         shot = self._shot(screen_idx)
         if shot is None:
-            return float(nx), float(ny)
-        log_w = shot.physical_width / shot.dpi_scale
-        log_h = shot.physical_height / shot.dpi_scale
+            raise MonitorTopologyError(
+                f"unknown screen number {screen_idx}"
+            )
+        log_w = shot.logical_width or (
+            shot.physical_width / max(shot.dpi_scale, 1.0)
+        )
+        log_h = shot.logical_height or (
+            shot.physical_height / max(shot.dpi_scale, 1.0)
+        )
         # Legacy safety: values beyond 1000 are raw pixels in the downscaled
         # JPEG the model saw — scale by the JPEG dimensions instead.
         bx = 1000.0 if (nx <= 1000 and ny <= 1000) else float(max(shot.width, 1))
@@ -1246,20 +1309,40 @@ class CompanionManager(QObject):
         y = shot.logical_top + (ny / by) * log_h
         return x, y
 
-    def _denorm_len(self, n: float, screen_idx: int = 1) -> float:
+    def _denorm_len(
+        self,
+        n: float,
+        screen_idx: int | None = None,
+    ) -> float:
         """Normalized length (0-1000 x-units) → logical pixels."""
         shot = self._shot(screen_idx)
         if shot is None:
-            return float(n)
-        return (n / 1000.0) * (shot.physical_width / shot.dpi_scale)
+            raise MonitorTopologyError(
+                f"unknown screen number {screen_idx}"
+            )
+        log_w = shot.logical_width or (
+            shot.physical_width / max(shot.dpi_scale, 1.0)
+        )
+        return (n / 1000.0) * log_w
 
-    def _norm(self, x: float, y: float, screen_idx: int = 1):
+    def _norm(
+        self,
+        x: float,
+        y: float,
+        screen_idx: int | None = None,
+    ):
         """Logical screen pixels → normalized 0-1000 (for prompt injection)."""
         shot = self._shot(screen_idx)
         if shot is None:
-            return int(x), int(y)
-        log_w = shot.physical_width / shot.dpi_scale
-        log_h = shot.physical_height / shot.dpi_scale
+            raise MonitorTopologyError(
+                f"unknown screen number {screen_idx}"
+            )
+        log_w = shot.logical_width or (
+            shot.physical_width / max(shot.dpi_scale, 1.0)
+        )
+        log_h = shot.logical_height or (
+            shot.physical_height / max(shot.dpi_scale, 1.0)
+        )
         nx = (x - shot.logical_left) / max(log_w, 1) * 1000
         ny = (y - shot.logical_top) / max(log_h, 1) * 1000
         return int(round(nx)), int(round(ny))
@@ -1268,13 +1351,18 @@ class CompanionManager(QObject):
         """Resolve '@element name' → logical bbox via UIA (fast tier only)."""
         try:
             from ai.hybrid_pointer import find_target
-            t = find_target(name, skip_ocr=True, skip_vision=True)
+            shot = self._shot()
+            if shot is None:
+                return None
+            t = find_target(
+                name,
+                screenshot=shot,
+                skip_ocr=True,
+                skip_vision=True,
+            )
             if t is None:
                 return None
-            shot = self._shot(1)
-            scale = (shot.dpi_scale if shot else 1.0) or 1.0
-            l, tp, r, b = t.bbox
-            return (l / scale, tp / scale, r / scale, b / scale)
+            return t.bbox
         except Exception:
             return None
 
@@ -1729,9 +1817,17 @@ class CompanionManager(QObject):
             if not self._turns.is_current(session):
                 return
             images_b64 = [s.base64_jpeg for s in screenshots]
+            selected_monitor = select_monitor(
+                [screenshot.descriptor() for screenshot in screenshots]
+            )
+            self._active_screen_index = selected_monitor.index
             title = active_window_title()
             system = _build_system_prompt(
-                window_title=title, quiz_mode=True,
+                window_title=title,
+                quiz_mode=True,
+                extra=format_screen_context(
+                    [screenshot.descriptor() for screenshot in screenshots]
+                ),
             )
             ak = app_key(title)
             history = self._app_memory.setdefault(ak, [])

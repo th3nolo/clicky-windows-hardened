@@ -139,6 +139,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    manifest="clicky.manifest",
     icon="assets/icon.ico" if __import__("os").path.exists("assets/icon.ico") else None,
 )
 

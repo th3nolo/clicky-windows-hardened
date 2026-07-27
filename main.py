@@ -14,6 +14,7 @@ from config import cfg
 from audio.secure_temp import initialize_secure_audio_temp
 from privacy_controls import microphone_allowed
 from screen.capture_exclusion import install_qt_capture_exclusion
+from screen.dpi_awareness import enable_per_monitor_v2
 from ui.tray import TrayManager
 from ui.panel import CompanionPanel, AppState
 from ui.overlay import (
@@ -92,6 +93,7 @@ def _setup_logging():
 
 def main():
     _setup_logging()
+    enable_per_monitor_v2()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )

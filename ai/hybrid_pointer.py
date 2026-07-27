@@ -32,6 +32,8 @@ in LOGICAL screen pixels, ready to feed directly into the overlay pointer.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import logging
 import re
 from dataclasses import dataclass
@@ -156,15 +158,14 @@ def _find_via_uia(query: str, min_score: float = 0.5) -> Optional[Target]:
                 continue
 
     if not best:
-        log.debug("UIA: no match for %r (scanned %d nodes)", query, visited)
+        log.debug("UIA found no matching target (scanned %d nodes)", visited)
         return None
 
     score, node = best
     r = node.BoundingRectangle
     cx = int((r.left + r.right) // 2)
     cy = int((r.top + r.bottom) // 2)
-    log.info("UIA hit: %r -> %s [%s] @ (%d,%d) score=%.2f",
-             query, node.Name, node.ControlTypeName, cx, cy, score)
+    log.info("UIA target accepted (score=%.2f)", score)
     return Target(
         x=cx, y=cy,
         bbox=(int(r.left), int(r.top), int(r.right), int(r.bottom)),
@@ -198,21 +199,14 @@ def _get_ocr():
 
 def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
                   pil_image=None, min_score: float = 0.5) -> Optional[Target]:
-    """Run OCR on the primary screen, fuzzy-match the query against detected text."""
+    """Run OCR only on an explicitly supplied image."""
     ocr = _get_ocr()
     if ocr is None:
         return None
 
     try:
         if pil_image is None and screenshot_path is None:
-            # Capture primary screen at full resolution
-            import mss
-            from screen.capture_exclusion import capture_without_owned_windows
-            with mss.mss() as sct:
-                mon = sct.monitors[1]
-                raw = capture_without_owned_windows(lambda: sct.grab(mon))
-                from PIL import Image
-                pil_image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            return None
 
         import numpy as np
         if pil_image is not None:
@@ -246,14 +240,13 @@ def _find_via_ocr(query: str, screenshot_path: Optional[str] = None,
                 })
 
         if not best:
-            log.debug("OCR: no text matched %r", query)
+            log.debug("OCR found no matching target")
             return None
 
         score, hit = best
         l, t, r, b = hit["bbox"]
         cx, cy = (l + r) // 2, (t + b) // 2
-        log.info("OCR hit: %r -> %r @ (%d,%d) score=%.2f",
-                 query, hit["text"], cx, cy, score)
+        log.info("OCR target accepted (score=%.2f)", score)
         return Target(
             x=cx, y=cy, bbox=hit["bbox"],
             label=hit["text"], source="ocr",
@@ -365,17 +358,83 @@ def find_target(
     if not query or not query.strip():
         return None
 
+    def uia_to_logical(target):
+        if screenshot is None:
+            return None
+        descriptor = screenshot.descriptor()
+        if not descriptor.physical.contains(target.x, target.y):
+            return None
+        def map_x(value):
+            ratio = (
+                value - descriptor.physical.left
+            ) / max(descriptor.physical.width, 1)
+            return descriptor.logical.left + ratio * descriptor.logical.width
+
+        def map_y(value):
+            ratio = (
+                value - descriptor.physical.top
+            ) / max(descriptor.physical.height, 1)
+            return descriptor.logical.top + ratio * descriptor.logical.height
+
+        center = descriptor.physical_to_logical(target.x, target.y)
+        return Target(
+            x=int(round(center[0])),
+            y=int(round(center[1])),
+            bbox=(
+                int(round(map_x(target.bbox[0]))),
+                int(round(map_y(target.bbox[1]))),
+                int(round(map_x(target.bbox[2]))),
+                int(round(map_y(target.bbox[3]))),
+            ),
+            label=target.label,
+            source=target.source,
+            confidence=target.confidence,
+        )
+
+    def image_to_logical(target, image):
+        descriptor = screenshot.descriptor()
+        width, height = image.size
+        left, top, right, bottom = target.bbox
+        map_x = lambda value: (
+            descriptor.logical.left
+            + value / max(width, 1) * descriptor.logical.width
+        )
+        map_y = lambda value: (
+            descriptor.logical.top
+            + value / max(height, 1) * descriptor.logical.height
+        )
+        return Target(
+            x=int(round(map_x(target.x))),
+            y=int(round(map_y(target.y))),
+            bbox=(
+                int(round(map_x(left))),
+                int(round(map_y(top))),
+                int(round(map_x(right))),
+                int(round(map_y(bottom))),
+            ),
+            label=target.label,
+            source=target.source,
+            confidence=target.confidence,
+        )
+
     # Tier 1: UIA — fast, free, often perfect
-    if not skip_uia:
+    if not skip_uia and screenshot is not None:
         t = _find_via_uia(query)
         if t is not None and t.confidence >= 0.5:
-            return t
+            converted = uia_to_logical(t)
+            if converted is not None:
+                return converted
 
     # Tier 2: OCR — text-based fallback for canvas apps
-    if not skip_ocr:
+    if not skip_ocr and screenshot is not None:
+        if pil_image is None:
+            from PIL import Image
+
+            image_bytes = base64.b64decode(screenshot.base64_jpeg, validate=True)
+            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         t = _find_via_ocr(query, pil_image=pil_image)
         if t is not None and t.confidence >= 0.5:
-            return t
+            return image_to_logical(t, pil_image)
 
     # Tier 3: vision LLM grid — last resort
     if not skip_vision and screenshot is not None and llm_provider is not None:
@@ -383,7 +442,7 @@ def find_target(
         if t is not None:
             return t
 
-    log.info("All pointer tiers failed for query: %r", query)
+    log.info("All pointer tiers failed to resolve a target")
     return None
 
 
