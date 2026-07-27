@@ -16,6 +16,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -23,10 +24,12 @@ from xml.etree import ElementTree
 
 from PIL import Image
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from assets.make_icon import make_frame
 
 
-ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "packaging" / "AppxManifest.xml.in"
 STORE_MARKER_TEMPLATE = (
     ROOT / "packaging" / "UNSIGNED-STORE-SUBMISSION-INPUT.txt"
