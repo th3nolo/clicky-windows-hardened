@@ -158,11 +158,38 @@ documents, conversation history, or transcripts.
 
 ## Release and executable policy
 
-There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.
+There are no release artifacts. `build.bat` creates unsigned smoke-test binaries
+for local validation; `build.bat store-rc` creates a distinct clean-tree,
+commit-bound onedir that is only an input to future Microsoft Store packaging.
+Unsigned executables, onedir trees, and MSIX packages must not be distributed or
+sideloaded.
 
-A future release requires Authenticode signing, timestamping, verification of the application and installer signatures, final SHA-256 values, an SBOM, and a source-commit reference. It also requires a completed Windows Sandbox runtime gate, a passing post-run host verification, and exact-hash static scans of the commit-bound source archive, exported full distribution, and exported executable with Malwarebytes and VirusTotal. Any malicious or suspicious verdict blocks release; unsupported engines and scan failures must be recorded as non-votes rather than hidden by repackaging the artifact.
+A future release requires a completed Windows Sandbox runtime gate, passing
+post-run host verification, and exact-hash static scans of the commit-bound
+source archive, exported full distribution, and exported executable with
+Malwarebytes and VirusTotal. Any malicious or suspicious verdict blocks release;
+unsupported engines and scan failures must be recorded as non-votes rather than
+hidden by repackaging the artifact.
+
+The Store MSIX packager requires a caller-supplied Windows SDK `MakeAppx.exe`
+whose SHA-256 matches an explicitly reviewed value. It copies the entire onedir
+into a new preserved staging tree, generates only the manifest, identity record,
+and visual assets, packages without signing, unpacks the MSIX, and compares the
+manifest and Clicky subtree to staging. It never discovers a tool by newest
+version, installs an SDK, signs, submits, uploads, or overwrites prior outputs.
+
+The legal publisher decision is Manuel Parra and the developed-by brand is
+th3nolo. Store mode still requires the exact Identity Name, Publisher DN, and
+PublisherDisplayName copied from Partner Center Product identity. Guessed or
+validation-only identities are refused for Store input. Microsoft Store
+submission, certification, and signing are user-interactive gates.
 
 Consumer Malwarebytes scanning is a manual review gate, not a cryptographically authenticated automated attestation. Record the artifact SHA-256, scanner/product version, scan time, result, and exported report or screenshot. VirusTotal reports are supplementary multi-engine evidence and may share uploaded samples with security partners; look up the hash first and upload only artifacts that are safe to disclose.
+
+After certification, obtain the exact Store-delivered signed MSIX rather than
+reusing the submitted bytes. Verify, hash, and scan that MSIX and separately
+extract, hash, and scan its exact inner `Clicky.exe`. The Store package signature
+does not prove that the inner executable has an Authenticode signature.
 
 Never ask a user to bypass SmartScreen, disable antivirus, or add an exclusion.
 

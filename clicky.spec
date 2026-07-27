@@ -10,8 +10,8 @@ Output:
 
 SECURITY STATUS:
     LOCAL TEST ONLY — UNSIGNED — DO NOT DISTRIBUTE.
-    Installer packaging is disabled until an Authenticode signing and
-    post-signature verification pipeline is implemented.
+    Inno Setup packaging is disabled. The reviewed Store MSIX path consumes
+    one separately preserved, commit-bound onedir after runtime validation.
 
 We use --onedir (not --onefile) because faster-whisper and ctranslate2 ship
 large native DLLs. A one-file build extracts those files to a temporary

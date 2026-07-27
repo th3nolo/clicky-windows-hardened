@@ -142,9 +142,18 @@ Do not install these packages separately into the reviewed environment. Adding t
 
 ## Build and distribution
 
-`build.bat` creates an unsigned local smoke-test artifact from the frozen lock. It also records the executable SHA-256 and exports a CycloneDX SBOM.
+`build.bat` creates an unsigned local smoke-test artifact from the frozen lock.
+After all source changes are committed, `build.bat store-rc` creates the one
+clean-tree, commit-bound onedir input for Microsoft Store MSIX packaging. It
+also records the executable SHA-256 and exports a CycloneDX SBOM.
 
-Unsigned executables and installers must not be distributed. Authenticode signing and verification are release gates, and no release artifacts exist yet. Never instruct a recipient to bypass SmartScreen or add an antivirus exclusion. See [BUILD.md](BUILD.md).
+There is no public release. The release design uses legal publisher Manuel Parra
+and developed-by brand th3nolo, but Store packaging still requires the three
+exact Product identity values from Partner Center. Submission, certification,
+Store signing, and post-certification exact-byte verification are not automated
+or claimed complete. Unsigned executables, onedir trees, and MSIX packages must
+not be distributed. Never instruct a recipient to bypass SmartScreen or add an
+antivirus exclusion. See [BUILD.md](BUILD.md).
 
 ## Documentation
 

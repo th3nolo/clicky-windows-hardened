@@ -13,17 +13,65 @@ set "EXPECTED_UV_VERSION=0.11.19"
 set "EXPECTED_PYTHON_VERSION=3.12.10"
 set "PYPI_INDEX=https://pypi.org/simple"
 set "RESULT=1"
+set "BUILD_MODE=local"
+set "FOUND_UV_VERSION="
+set "SOURCE_COMMIT="
+set "UNTRACKED_SOURCE="
+set "CLICKY_SHA256="
 
 if /I "%~1"=="installer" (
     echo [ERROR] Installer builds are disabled.
-    echo An Authenticode signing and verification pipeline does not exist yet.
-    echo build.bat produces an unsigned LOCAL TEST ONLY portable artifact.
+    echo Store distribution uses the reviewed MSIX path, not Inno Setup.
     goto :cleanup
 )
 if not "%~1"=="" (
-    echo [ERROR] Unknown argument: %~1
-    echo Usage: build.bat
-    goto :cleanup
+    if /I not "%~1"=="store-rc" (
+        echo [ERROR] Unknown argument: %~1
+        echo Usage: build.bat [store-rc]
+        goto :cleanup
+    )
+)
+if /I "%~1"=="store-rc" (
+    set "BUILD_MODE=store-rc"
+    where git.exe >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] git.exe is required to bind the Store input to a commit.
+        goto :cleanup
+    )
+    for /f "tokens=*" %%H in ('git rev-parse --verify HEAD') do if not defined SOURCE_COMMIT set "SOURCE_COMMIT=%%H"
+    echo !SOURCE_COMMIT!| findstr.exe /R /X "[0-9a-f][0-9a-f]*" >nul
+    if errorlevel 1 (
+        echo [ERROR] Could not resolve the source commit.
+        goto :cleanup
+    )
+    if "!SOURCE_COMMIT:~39,1!"=="" (
+        echo [ERROR] Source commit is not a 40-character Git identity.
+        goto :cleanup
+    )
+    if not "!SOURCE_COMMIT:~40,1!"=="" (
+        echo [ERROR] Source commit is not a 40-character Git identity.
+        goto :cleanup
+    )
+    git diff --quiet -- .
+    if errorlevel 1 (
+        echo [ERROR] Store input requires a clean tracked worktree.
+        goto :cleanup
+    )
+    git diff --cached --quiet -- .
+    if errorlevel 1 (
+        echo [ERROR] Store input requires an empty Git index.
+        goto :cleanup
+    )
+    git ls-files --others --exclude-standard >nul
+    if errorlevel 1 (
+        echo [ERROR] Could not inspect untracked source files.
+        goto :cleanup
+    )
+    for /f "tokens=*" %%U in ('git ls-files --others --exclude-standard') do if not defined UNTRACKED_SOURCE set "UNTRACKED_SOURCE=%%U"
+    if defined UNTRACKED_SOURCE (
+        echo [ERROR] Store input contains an untracked source file: !UNTRACKED_SOURCE!
+        goto :cleanup
+    )
 )
 
 where uv.exe >nul 2>&1
@@ -60,7 +108,6 @@ if exist "dist" (
     echo [ERROR] dist\ already exists. Inspect and remove it before rebuilding.
     goto :cleanup
 )
-
 REM Ignore dependency-related environment overrides inherited from the caller.
 set "UV_INDEX="
 set "UV_EXTRA_INDEX_URL="
@@ -132,20 +179,40 @@ if not defined CLICKY_SHA256 (
     goto :cleanup
 )
 > "dist\Clicky\SHA256SUMS.txt" echo !CLICKY_SHA256!  Clicky.exe
-> "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (
-    echo UNSIGNED LOCAL TEST ARTIFACT
-    echo.
-    echo DO NOT DISTRIBUTE OR REPRESENT THIS BUILD AS A RELEASE.
-    echo It has not been Authenticode-signed or verified by a release pipeline.
-    echo Rebuild through the future signing pipeline before any distribution.
+if /I "%BUILD_MODE%"=="store-rc" (
+    > "dist\Clicky\SOURCE-COMMIT.txt" echo !SOURCE_COMMIT!
+    > "dist\Clicky\UNSIGNED-STORE-SUBMISSION-INPUT.txt" (
+        echo MICROSOFT STORE SUBMISSION INPUT
+        echo.
+        echo This unsigned inner onedir is not an independently distributable release.
+        echo Preserve these exact bytes as the input to the outer Store MSIX.
+        echo Release authenticity is established only by the exact Store-delivered
+        echo package and its independently verified package signature.
+    )
+) else (
+    > "dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt" (
+        echo UNSIGNED LOCAL TEST ARTIFACT
+        echo.
+        echo DO NOT DISTRIBUTE OR REPRESENT THIS BUILD AS A RELEASE.
+        echo It has not been signed or certified by the Microsoft Store.
+        echo Rebuild with build.bat store-rc only after the source is final.
+    )
 )
 
-echo [6/6] Unsigned portable local-test build complete.
+if /I "%BUILD_MODE%"=="store-rc" (
+    echo [6/6] Immutable unsigned Store input build complete.
+) else (
+    echo [6/6] Unsigned portable local-test build complete.
+)
 
 set "RESULT=0"
 echo.
 echo ================================================================
-echo   LOCAL TEST ONLY - UNSIGNED - DO NOT DISTRIBUTE
+if /I "%BUILD_MODE%"=="store-rc" (
+    echo   STORE SUBMISSION INPUT - UNSIGNED - DO NOT DISTRIBUTE
+) else (
+    echo   LOCAL TEST ONLY - UNSIGNED - DO NOT DISTRIBUTE
+)
 echo ================================================================
 echo Output: dist\Clicky\Clicky.exe
 echo SHA-256: !CLICKY_SHA256!

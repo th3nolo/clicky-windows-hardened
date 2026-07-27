@@ -1,8 +1,8 @@
 # Building Clicky for Windows — Hardened
 
-The build is reviewed for Windows x86-64 with Python `3.12.10` and uv `0.11.19` only. It produces unsigned local test artifacts. There are no releases yet.
+The build is reviewed for Windows x86-64 with Python `3.12.10` and uv `0.11.19` only. It can produce an unsigned local test artifact or the single immutable onedir input for a future Microsoft Store submission. There are no releases yet.
 
-Unsigned executables and installers must not be distributed. A release requires Authenticode signing and verification of both the installed application executable and the outer installer.
+Unsigned executables, onedir trees, and MSIX files must not be distributed or sideloaded. The Store path is not complete until Microsoft certifies and signs the package and the exact Store-delivered bytes pass the post-certification gates below.
 
 ## Build inputs
 
@@ -21,6 +21,19 @@ Run from a normal, non-administrator PowerShell or Command Prompt:
 ~~~bat
 build.bat
 ~~~
+
+That command is local-test-only. After every source change is committed and the
+worktree is clean, create the one immutable Store input exactly once with:
+
+~~~bat
+build.bat store-rc
+~~~
+
+`store-rc` refuses dirty tracked files, staged changes, and untracked source. It
+records the exact 40-character commit in `SOURCE-COMMIT.txt` and writes
+`UNSIGNED-STORE-SUBMISSION-INPUT.txt`. Preserve that complete `dist\Clicky`
+directory. Do not rebuild it between runtime validation, static scanning,
+adjudication, MSIX packaging, and Store submission.
 
 The script performs these operations:
 
@@ -55,7 +68,9 @@ dist\Clicky\sbom.cdx.json
 dist\Clicky\UNSIGNED-LOCAL-TEST-ONLY.txt
 ~~~
 
-The marker file states that the portable output is unsigned, local-test-only, and not distributable. Keep the entire artifact local.
+The local marker states that the portable output is unsigned, local-test-only,
+and not distributable. Store mode uses a distinct marker and source-commit
+binding so a local smoke build cannot be mistaken for submission input.
 
 ## Why the build is wheel-only
 
@@ -63,40 +78,71 @@ The marker file states that the portable output is unsigned, local-test-only, an
 
 `langdetect` and `pynput` are intentionally absent because their resolved dependency chains do not satisfy this policy. Do not add them to a local build environment.
 
-## Installer generation is disabled
+## Inno Setup generation is disabled
 
 Installer generation is intentionally unavailable. `build.bat installer` exits with an error before dependency or build work begins. `installer.iss` also contains an unconditional preprocessor error, so invoking Inno Setup directly fails closed.
 
-Do not remove or bypass either guard. No `Setup-Clicky.exe` should be produced by the current repository. Installer support can return only after a reviewed release pipeline can:
+Do not remove or bypass either guard. No `Setup-Clicky.exe` should be produced.
+The supported distribution design is Microsoft Store MSIX.
 
-- sign and verify `Clicky.exe` before packaging
-- package only that verified executable and its reviewed support files
-- sign and verify the completed installer
-- generate final hashes and an SBOM for the exact distributed bytes
+## MSIX packaging
 
-Setting an Inno Setup path or compiler digest does not enable installer generation.
+`tools\build_msix.py` consumes an existing onedir; it never rebuilds, signs,
+installs, submits, or uploads anything. It:
 
-## Mandatory release signing gate
+- requires the exact `SOURCE-COMMIT.txt` and Store-input marker
+- requires a caller-supplied Windows SDK `MakeAppx.exe` path and reviewed SHA-256
+- requires the exact Package Identity Name, Publisher DN, and
+  PublisherDisplayName copied from Partner Center
+- copies the complete onedir to a new preserved staging directory
+- generates deterministic package assets and a desktop full-trust manifest
+- produces an unsigned MSIX with SHA-256 block mapping
+- unpacks it again and proves that the Clicky subtree and manifest are unchanged
+- records the onedir, executable, staging, MSIX, tool, and commit identities
 
-Before any distribution, a controlled release process must:
+The legal publisher is Manuel Parra. The product/developer brand is th3nolo.
+Those decisions do not substitute for the exact Store-assigned identity values.
+
+For a non-Store structural validation only, use `--validation-only`. That mode
+uses a fixed conspicuous local identity, embeds an unsigned validation marker,
+and refuses Store identity arguments. Its output must never be submitted or
+distributed.
+
+For a Store input, copy all three values from **Partner Center → Product
+management → Product identity**, pass them verbatim, and include
+`--partner-center-confirmed`. Example placeholders are intentionally not
+provided because guessing any of those values creates the wrong package family.
+Run `python tools\build_msix.py --help` for the complete invocation.
+
+## Mandatory Store release gate
+
+Before any distribution, a controlled Store release process must:
 
 1. Build from the reviewed commit and frozen lock.
-2. Sign `Clicky.exe` with an organization-controlled Authenticode certificate.
-3. Verify the embedded signature and timestamp.
-4. Package the already-signed application directory.
-5. Sign the completed installer.
-6. Verify the installer signature and timestamp.
-7. Regenerate release hashes and the SBOM after the final bytes are produced.
-8. Publish the source commit, hashes, SBOM, signer identity, and verification instructions together.
+2. Preserve and hash the exact complete unsigned onedir and inner `Clicky.exe`.
+3. Run the isolated Windows runtime gate against that onedir.
+4. Complete the approved static scans against those exact bytes. Uploading an
+   unknown hash to VirusTotal requires explicit approval for those exact bytes.
+5. Obtain the exact Store identity values through Partner Center and package
+   that same onedir once.
+6. Submit the exact unsigned MSIX through Partner Center and pass certification.
+7. Obtain the exact Store-delivered signed MSIX, verify its Store signature, and
+   hash/scan both that package and its exact inner `Clicky.exe`.
+8. Publish the source commit, hashes, SBOM, Store signer identity, certification
+   status, and verification instructions together.
 
-Example verification commands for a future signed artifact are:
+Microsoft re-signs Store MSIX packages after certification. That package
+signature does not imply that the inner PyInstaller `Clicky.exe` has an
+Authenticode signature. Verify and report both objects separately.
+
+Example verification commands for a future Store-delivered package are:
 
 ~~~powershell
-Get-AuthenticodeSignature .\dist\Clicky\Clicky.exe | Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
-signtool verify /pa /all /v .\dist\Clicky\Clicky.exe
-signtool verify /pa /all /v .\dist\Setup-Clicky.exe
-Get-FileHash -Algorithm SHA256 .\dist\Clicky\Clicky.exe
-Get-FileHash -Algorithm SHA256 .\dist\Setup-Clicky.exe
+Get-AuthenticodeSignature .\Clicky-from-Store.msix | Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
+signtool verify /pa /all /v .\Clicky-from-Store.msix
+Get-AuthenticodeSignature .\unpacked\Clicky\Clicky.exe | Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
+Get-FileHash -Algorithm SHA256 .\Clicky-from-Store.msix
+Get-FileHash -Algorithm SHA256 .\unpacked\Clicky\Clicky.exe
 ~~~
 
 A valid signature does not replace source review or malware scanning. It establishes publisher identity and detects changes after signing.
@@ -109,4 +155,7 @@ PyInstaller false positives are possible, but that label is not evidence that a 
 
 ## Release status
 
-No signed release artifacts have been published. Until the signing pipeline above exists and is independently reviewed, this repository supports source review and local smoke builds only.
+No signed release artifacts have been published. The MSIX construction path is
+reviewable and testable, but Partner Center identity, submission, certification,
+Store signing, exact-byte post-certification retrieval, and scanning remain
+mandatory user-interactive release gates.

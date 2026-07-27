@@ -140,6 +140,27 @@ The Sandbox `PASS.txt` is runtime and containment evidence, not an antivirus ver
 
 A clean static scan is additional evidence, not proof that the software is malware-free. The executable and full distribution must remain unsigned and undistributed until the release policy in `SECURITY.md` is satisfied.
 
+### MSIX construction
+
+Do not rebuild the onedir after the isolated runtime and exact-byte scan gates.
+Record the SHA-256 of the selected Windows SDK `MakeAppx.exe`, review it, and
+pass both its path and exact digest to `tools\build_msix.py`.
+
+First exercise `--validation-only` with a new staging directory, MSIX path, and
+report path. Confirm MakeAppx validation succeeds; unpacking reproduces the exact
+Clicky subtree; all six PNG assets have the declared dimensions; the package has
+no `AppxSignature.p7x`; and its marker says validation-only.
+
+For Store input, obtain Package/Identity/Name, Package/Identity/Publisher, and
+Package/Properties/PublisherDisplayName from Partner Center Product identity.
+Pass them verbatim with `--partner-center-confirmed`. Confirm the generated report
+binds the commit, complete onedir tree, inner executable, preserved staging tree,
+MakeAppx executable, and unsigned MSIX.
+
+Do not sideload or distribute the unsigned package. After Store certification,
+download the exact Store-delivered MSIX, verify its package signature, then hash
+and scan that exact package and its separately extracted inner `Clicky.exe`.
+
 ## Manual security checks
 
 Use synthetic screen content, test accounts, and temporary process-scoped keys. Do not expose a real password manager, private document, production account, or personal conversation during testing.
