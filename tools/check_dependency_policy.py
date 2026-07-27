@@ -595,6 +595,9 @@ EXPECTED_BUILD_SCRIPT_SHA256 = (
 EXPECTED_STORE_MARKER_SHA256 = (
     "313db1ba95e3dd039f63f7e786c3de6e1090499f53051515893781d36652191d"
 )
+EXPECTED_MAKEAPPX_SHA256 = (
+    "1352d2b63187e67d4d8b7413047396d95eb262b9e7f25def70c7d22ea6d8625c"
+)
 
 
 _EXPECTED_PRE_EXPORT_GUARDS = (
@@ -1442,6 +1445,42 @@ def check_packaging_policy() -> None:
     ):
         if forbidden.casefold() in msix_source.casefold():
             fail(f"MSIX packaging tool contains forbidden capability: {forbidden}")
+
+    msix_workflow = ROOT / ".github" / "workflows" / "msix-validation.yml"
+    if not msix_workflow.is_file():
+        fail("MSIX validation workflow is required")
+    workflow_text = msix_workflow.read_text(encoding="utf-8")
+    for fragment in (
+        r"MAKEAPPX_PATH: C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\MakeAppx.exe",
+        f"MAKEAPPX_SHA256: {EXPECTED_MAKEAPPX_SHA256}",
+        "MAKEAPPX_FILE_VERSION: 10.0.22621.5040",
+        "MAKEAPPX_SIGNER_THUMBPRINT: 7920AC8FB05E0FFFE21E8FF4B4F03093BA6AC16E",
+        f"uses: actions/checkout@{EXPECTED_ACTIONS['actions/checkout']}",
+        f"uses: actions/setup-python@{EXPECTED_ACTIONS['actions/setup-python']}",
+        f"uses: astral-sh/setup-uv@{EXPECTED_ACTIONS['astral-sh/setup-uv']}",
+        "Get-AuthenticodeSignature -LiteralPath $tool.FullName",
+        "tools/build_msix.py",
+        "--validation-only",
+        "--makeappx-sha256 \"$env:MAKEAPPX_SHA256\"",
+        "$report.store_certification_complete -ne $false",
+        "Remove unsigned validation outputs",
+    ):
+        if fragment not in workflow_text:
+            fail(f"MSIX validation workflow is missing: {fragment}")
+    if workflow_text.index(
+        "Authenticate the fixed MakeAppx executable before use"
+    ) > workflow_text.index("Build and validate an unsigned structural MSIX"):
+        fail("MSIX workflow must authenticate MakeAppx before execution")
+    for forbidden in (
+        "pull_request_target",
+        "secrets.",
+        "actions/upload-artifact",
+        "signtool",
+        "Add-AppxPackage",
+        "Invoke-WebRequest",
+    ):
+        if forbidden.casefold() in workflow_text.casefold():
+            fail(f"MSIX validation workflow contains forbidden capability: {forbidden}")
 
 def check_editor_automation() -> None:
     candidates: set[Path] = set(ROOT.glob("*.code-workspace"))
