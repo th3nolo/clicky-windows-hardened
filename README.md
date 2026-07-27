@@ -27,6 +27,7 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 ## What it does
 
 - Push-to-talk voice questions through the global hotkey.
+- Push-to-talk barge-in that cancels the owned turn before a replacement capture.
 - Screen capture, multi-monitor coordinate mapping, and a click-through PyQt overlay.
 - Pointing and drawing instructions produced by supported vision models.
 - Cloud LLM support for Anthropic, OpenAI, Gemini, and GitHub Copilot.

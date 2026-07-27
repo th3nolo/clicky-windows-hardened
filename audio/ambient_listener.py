@@ -35,6 +35,8 @@ MIN_SPEECH_BLOCKS  = 3               # ~90ms of speech to start a segment
 SILENCE_BLOCKS_END = 20              # ~600ms of silence ends a segment
 MAX_SEGMENT_BLOCKS = 120             # ~3.6s max wake-word segment
 PRE_ROLL_BLOCKS    = 18              # ~540ms of pre-roll for the wake word
+_NO_CAPTURE = object()
+_LEGACY_CAPTURE = object()
 
 # Wake phrases — whisper tiny often mis-transcribes "clicky" so we cover variants
 WAKE_WORDS = (
@@ -80,6 +82,9 @@ class AmbientListener:
 
         # Recording buffer (hotkey push-to-talk OR post-wake capture)
         self._rec_buffer: list[bytes] = []
+        self._recording_lock = threading.RLock()
+        self._recording_id: object = _NO_CAPTURE
+        self._frame_callback: Optional[Callable[[bytes], None]] = None
 
         # Lazy tiny whisper for wake word
         self._wake_model = None
@@ -131,24 +136,71 @@ class AmbientListener:
                 pass
             self._stream = None
 
-    def start_recording(self) -> None:
-        """Switch to RECORDING mode; all audio buffered for STT."""
-        self._rec_buffer = []
-        self._mode = Mode.RECORDING
+    def start_recording(
+        self,
+        capture_id: object | None = None,
+        on_frame: Optional[Callable[[bytes], None]] = None,
+    ) -> bool:
+        """Start one identified recording and optionally forward live frames.
 
-    def stop_recording(self) -> bytes:
-        """Return buffered PCM16 bytes and resume standby."""
-        pcm = b"".join(self._rec_buffer)
-        self._rec_buffer = []
-        self._mode = Mode.STANDBY
-        self._reset_segment()
-        return pcm
+        The identifier prevents a stale hotkey release or wake timer from
+        draining a newer capture. ``None`` retains compatibility for callers
+        that do not yet need identified capture ownership.
+        """
 
-    def cancel_recording(self) -> None:
-        """Discard buffered speech and return to standby without exposing it."""
-        self._rec_buffer = []
-        self._mode = Mode.STANDBY
-        self._reset_segment()
+        token = _LEGACY_CAPTURE if capture_id is None else capture_id
+        with self._recording_lock:
+            if self._recording_id is not _NO_CAPTURE:
+                if self._recording_id == token:
+                    return False
+                raise RuntimeError("another microphone capture is already active")
+            self._rec_buffer = []
+            self._recording_id = token
+            self._frame_callback = on_frame
+            self._mode = Mode.RECORDING
+            return True
+
+    def stop_recording(self, capture_id: object | None = None) -> bytes | None:
+        """Finalize only the requested capture and resume standby.
+
+        A mismatched identifier is stale and returns ``None`` without changing
+        the active recording.
+        """
+
+        with self._recording_lock:
+            if self._recording_id is _NO_CAPTURE:
+                return b"" if capture_id is None else None
+            if capture_id is not None and self._recording_id != capture_id:
+                return None
+            pcm = b"".join(self._rec_buffer)
+            self._rec_buffer = []
+            self._recording_id = _NO_CAPTURE
+            self._frame_callback = None
+            self._mode = Mode.STANDBY
+            self._reset_segment()
+            return pcm
+
+    def cancel_recording(self, capture_id: object | None = None) -> bool:
+        """Discard only the requested capture and return to standby."""
+
+        with self._recording_lock:
+            if self._recording_id is _NO_CAPTURE:
+                return False
+            if capture_id is not None and self._recording_id != capture_id:
+                return False
+            self._rec_buffer = []
+            self._recording_id = _NO_CAPTURE
+            self._frame_callback = None
+            self._mode = Mode.STANDBY
+            self._reset_segment()
+            return True
+
+    @property
+    def recording_id(self) -> object | None:
+        with self._recording_lock:
+            if self._recording_id in (_NO_CAPTURE, _LEGACY_CAPTURE):
+                return None
+            return self._recording_id
 
     def set_wake_word_enabled(self, enabled: bool):
         self._wake_word_enabled = enabled
@@ -173,8 +225,22 @@ class AmbientListener:
         rms = float(np.sqrt(np.mean(pcm_float ** 2)))
         self._on_level(rms)
 
-        if self._mode == Mode.RECORDING:
-            self._rec_buffer.append(pcm_int16.tobytes())
+        frame_callback = None
+        frame = pcm_int16.tobytes()
+        with self._recording_lock:
+            is_recording = self._recording_id is not _NO_CAPTURE
+            if is_recording:
+                self._rec_buffer.append(frame)
+                frame_callback = self._frame_callback
+        if frame_callback is not None:
+            try:
+                frame_callback(frame)
+            except Exception:
+                # A network consumer must never be able to kill PortAudio's
+                # callback thread. The streaming session reports failures
+                # through its own bounded worker.
+                pass
+        if is_recording:
             return
 
         # Standby: VAD-based segment capture for wake-word

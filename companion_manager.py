@@ -7,6 +7,7 @@ Orchestrates:
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import math
 import re
@@ -29,6 +30,7 @@ from privacy_controls import (
 )
 from screen.capture import capture_all_screens
 from ui.panel import AppState
+from turn_coordinator import TurnCoordinator, TurnPhase, TurnSession
 from tutor import (
     active_window_title, app_key,
     is_locate, is_multistep, is_next, is_stop, is_sensitive_window,
@@ -267,6 +269,9 @@ class CompanionManager(QObject):
         self._history: List[Message] = []
         self._current_model: Optional[str] = None
         self._web_search_enabled = bool(cfg.web_search_enabled)
+        self._turns = TurnCoordinator()
+        self._input_lock = threading.RLock()
+        self._pressed_session: TurnSession | None = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
@@ -274,10 +279,6 @@ class CompanionManager(QObject):
         self._stt = None
         self._tts = None
         self._privacy_tts_notice_emitted = False
-
-        # Current in-flight generation — tracked so Esc / stop can cancel
-        self._current_task: Optional[asyncio.Future] = None
-        self._cancel_flag = False
 
         # Per-app memory: { window_title: [Message, ...] }
         self._app_memory: dict[str, List[Message]] = {}
@@ -349,6 +350,9 @@ class CompanionManager(QObject):
             pass   # silent — not user-facing on startup
 
     def shutdown(self):
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
         # Kill any audio that was playing when the user clicked Quit
         try:
             from audio.playback import stop_audio
@@ -362,7 +366,17 @@ class CompanionManager(QObject):
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        try:
+            self._loop.run_forever()
+        finally:
+            pending = tuple(asyncio.all_tasks(self._loop))
+            for task in pending:
+                task.cancel()
+            if pending:
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self._loop.close()
 
     # ── Sleep/wake watchdog ───────────────────────────────────────────────────
 
@@ -387,6 +401,9 @@ class CompanionManager(QObject):
 
     def _on_system_resume(self):
         """Called automatically after the laptop wakes from sleep."""
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
         # 1. Restart the mic stream (sounddevice handles become stale on resume)
         try:
             self._listener.stop()
@@ -405,28 +422,44 @@ class CompanionManager(QObject):
             self._thread.start()
 
         # 3. Reset state to IDLE so the panel shows the correct status
-        if self._state != AppState.IDLE:
-            self._emit_state(AppState.IDLE)
+        self._set_idle_state()
 
-    def _submit(self, coro):
+    def _submit(self, coro, session: TurnSession | None = None):
         if not self._loop:
-            return
+            coro.close()
+            if session is not None and self._turns.is_current(session):
+                self._turns.cancel_active(self._set_idle_state)
+            return None
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if session is not None:
+            self._turns.bind_task(session, fut)
 
         def _observe(f):
             try:
                 f.result()
+            except concurrent.futures.CancelledError:
+                return
             except Exception as e:
                 # A swallowed exception here used to leave the UI stuck on
                 # "Listening..." forever (GitHub issue #6). Surface it and
                 # always return to idle.
+                if session is not None and not self._turns.is_current(session):
+                    return
                 _log.exception("background task failed: %s", e)
                 try:
-                    self.sig_error.emit(str(e))
-                    self._emit_state(AppState.IDLE)
+                    if session is None:
+                        self.sig_error.emit(str(e))
+                        self._set_idle_state()
+                    else:
+                        self._emit_turn_signal(session, self.sig_error, str(e))
+                        self._finish_turn(session)
                 except Exception:
                     pass
+            finally:
+                if session is not None:
+                    self._turns.unbind_cancel(session, "turn-task")
         fut.add_done_callback(_observe)
+        return fut
 
     # ── Provider lazy init ────────────────────────────────────────────────────
 
@@ -500,20 +533,41 @@ class CompanionManager(QObject):
     # ── Input sources ─────────────────────────────────────────────────────────
 
     def on_hotkey_press(self):
-        if self._state != AppState.IDLE:
-            return
-        self._begin_capture()
+        with self._input_lock:
+            if (
+                self._pressed_session is not None
+                and self._turns.is_current(self._pressed_session)
+            ):
+                return
+            session = self._turns.start_capture()
+            if session is None:
+                return
+            if self._begin_capture(session):
+                self._pressed_session = session
+            else:
+                self._finish_turn(session)
 
     def on_hotkey_release(self):
-        if self._state == AppState.LISTENING:
-            self._submit(self._end_capture_and_process())
+        with self._input_lock:
+            session = self._pressed_session
+            self._pressed_session = None
+            if session is None or not self._turns.release_capture(session):
+                return
+            self._emit_state(AppState.THINKING, session)
+            self._submit(self._end_capture_and_process(session), session)
 
     def _handle_wake(self):
         """Triggered from ambient listener when wake-word is detected."""
-        if self._state != AppState.IDLE:
-            return
-        self._begin_capture()
-        self._submit(self._auto_stop_after_pause())
+        with self._input_lock:
+            if self._turns.active is not None:
+                return
+            session = self._turns.start_capture()
+            if session is None:
+                return
+            if not self._begin_capture(session):
+                self._finish_turn(session)
+                return
+            self._submit(self._auto_stop_after_pause(session), session)
 
     def _handle_level(self, rms: float):
         try:
@@ -523,52 +577,72 @@ class CompanionManager(QObject):
 
     # ── Capture flow ──────────────────────────────────────────────────────────
 
-    def _begin_capture(self):
+    def _begin_capture(self, session: TurnSession) -> bool:
         if not microphone_allowed(cfg):
-            self.sig_error.emit(
+            self._emit_turn_signal(session, self.sig_error,
                 "Microphone access is disabled. Open Setup & Diagnostics → "
                 "Privacy permissions to enable it."
             )
-            self._emit_state(AppState.IDLE)
-            return
+            return False
         try:
-            self._listener.start_recording()
+            started = self._listener.start_recording(session.sequence)
         except Exception as e:
             _log.exception("mic start failed")
-            self.sig_error.emit(
+            self._emit_turn_signal(session, self.sig_error,
                 f"Couldn't open the microphone: {e}\n"
                 "Check Tray → Setup & Diagnostics → Microphone."
             )
-            self._emit_state(AppState.IDLE)
-            return
-        self._emit_state(AppState.LISTENING)
+            return False
+        if not started:
+            return False
+        self._turns.bind_cancel(
+            session,
+            "recording",
+            lambda: self._listener.cancel_recording(session.sequence),
+        )
+        self._turns.bind_cancel(session, "playback", self._cancel_outputs)
+        self._emit_state(AppState.LISTENING, session)
+        return self._turns.is_current(session)
 
-    async def _auto_stop_after_pause(self):
+    async def _auto_stop_after_pause(self, session: TurnSession):
         """When triggered by wake word, wait for user to finish speaking."""
         import time
         max_total_s = 10.0
         start_t = time.monotonic()
-        while self._state == AppState.LISTENING:
+        while (
+            self._turns.is_current(session)
+            and self._turns.phase is TurnPhase.CAPTURING
+        ):
             await asyncio.sleep(0.15)
             if time.monotonic() - start_t > max_total_s:
                 break
-        await self._end_capture_and_process()
+        if not self._turns.release_capture(session):
+            return
+        self._emit_state(AppState.THINKING, session)
+        await self._end_capture_and_process(session)
 
-    async def _end_capture_and_process(self):
+    async def _end_capture_and_process(self, session: TurnSession):
+        if not self._turns.is_current(session):
+            return
         try:
-            pcm = self._listener.stop_recording()
+            pcm = self._listener.stop_recording(session.sequence)
+            self._turns.unbind_cancel(session, "recording")
         except Exception as e:
             _log.exception("mic stop failed")
-            self.sig_error.emit(f"Microphone capture failed: {e}")
-            self._emit_state(AppState.IDLE)
+            self._emit_turn_signal(
+                session, self.sig_error, f"Microphone capture failed: {e}"
+            )
+            self._finish_turn(session)
+            return
+        if pcm is None or not self._turns.is_current(session):
             return
         _log.info("captured %.1fs of audio", len(pcm) / 32000)
         if len(pcm) < 3200:  # < 0.1s of audio — ignore
-            self._emit_state(AppState.IDLE)
+            self._finish_turn(session)
             return
 
-        self._emit_state(AppState.THINKING)
         pointing_held = False  # track whether we told overlay to hold dwell
+        side_tasks: list[asyncio.Task] = []
 
         try:
             # 1. Transcribe — bounded so a hung/loading local STT model can
@@ -576,10 +650,11 @@ class CompanionManager(QObject):
             transcript = await asyncio.wait_for(
                 self._get_stt().transcribe(pcm), timeout=90,
             )
+            if not self._turns.is_current(session):
+                return
             _log.info("voice transcription completed (provider=%s)",
                       cfg.llm_provider())
             if not transcript.strip():
-                self._emit_state(AppState.IDLE)
                 return
 
             # ── Voice commands — short-circuit before LLM ──
@@ -591,34 +666,37 @@ class CompanionManager(QObject):
             ak = app_key(title)
 
             if is_next(transcript) and self._lesson_steps:
-                await self._advance_lesson_step(ak)
+                await self._advance_lesson_step(ak, session)
                 return
 
             # "say it again" — replay the last response without a new LLM call
             if is_repeat(transcript) and self._last_response:
-                self.sig_response_chunk.emit(self._last_response)
-                self.sig_response_done.emit(self._last_response)
-                self._emit_state(AppState.SPEAKING)
+                self._emit_turn_signal(
+                    session, self.sig_response_chunk, self._last_response
+                )
+                self._emit_turn_signal(
+                    session, self.sig_response_done, self._last_response
+                )
+                self._emit_state(AppState.SPEAKING, session)
                 try:
                     await self._get_tts().speak(self._last_response)
                 except Exception:
                     pass
-                self._emit_state(AppState.IDLE)
                 return
 
             # Journal voice queries — answered locally, no LLM call needed
             if is_journal_today(transcript):
                 msg = journal.summarise(journal.entries_today(),
                                         "Here's what you asked about today:\n")
-                await self._reply_local(msg)
+                await self._reply_local(msg, session)
                 return
             if is_journal_week(transcript):
                 msg = journal.summarise(journal.entries_this_week(),
                                         "Here's the past week:\n")
-                await self._reply_local(msg)
+                await self._reply_local(msg, session)
                 return
             if is_quiz_review(transcript):
-                await self._spaced_review()
+                await self._spaced_review(session)
                 return
 
             # User-created skills (run BEFORE the LLM, like built-ins above)
@@ -626,11 +704,13 @@ class CompanionManager(QObject):
                 skill = skills_pkg.match(transcript)
                 if skill:
                     msg = await skill["handler"](self, transcript)
+                    if not self._turns.is_current(session):
+                        return
                     if msg:
-                        await self._reply_local(msg)
+                        await self._reply_local(msg, session)
                     return
             except Exception as e:
-                self.sig_error.emit(f"Skill error: {e}")
+                self._emit_turn_signal(session, self.sig_error, f"Skill error: {e}")
 
             # 2. Screen capture — skipped if sensitive window (password manager etc.)
             #
@@ -648,11 +728,14 @@ class CompanionManager(QObject):
                 images_b64 = []
             else:
                 screenshots = capture_all_screens()
+            if not self._turns.is_current(session):
+                return
+            if not (sensitive or identity_q or not screen_permission):
                 images_b64 = [s.base64_jpeg for s in screenshots]
             # Fresh question → wipe the previous lesson's drawings and remember
             # this turn's screenshots for coordinate mapping.
             self._screens_ctx = screenshots
-            self.sig_clear_drawings.emit()
+            self._emit_turn_signal(session, self.sig_clear_drawings)
 
             # Local figure detection (OpenCV) — finds triangles/rects/circles
             # with EXACT normalized vertices so any LLM (even small Ollama
@@ -666,6 +749,8 @@ class CompanionManager(QObject):
                         detect_figures, screenshots[0].base64_jpeg,
                     )
                     fig_extra = figures_prompt(self._figures_ctx)
+                    if not self._turns.is_current(session):
+                        return
                 except Exception:
                     self._figures_ctx = []
 
@@ -685,6 +770,7 @@ class CompanionManager(QObject):
             if self._web_search_enabled:
                 from ai.web_search import search
                 search_task = asyncio.create_task(search(transcript))
+                side_tasks.append(search_task)
 
             if screenshots and locate_triggered:
                 shot = screenshots[0]
@@ -704,6 +790,8 @@ class CompanionManager(QObject):
                 except Exception:
                     target = None
 
+                if not self._turns.is_current(session):
+                    return
                 if target is not None and target.source in ("uia", "ocr"):
                     # UIA / OCR coordinates are PHYSICAL pixels; the overlay
                     # draws in LOGICAL pixels — divide by the DPI scale.
@@ -716,6 +804,7 @@ class CompanionManager(QObject):
                     async def _ready(pt=_pt):
                         return pt
                     locate_task = asyncio.create_task(_ready())
+                    side_tasks.append(locate_task)
                 elif cfg.anthropic_api_key:
                     # Path A — Anthropic Computer Use (best accuracy)
                     from ai.element_locator import detect_element
@@ -731,6 +820,7 @@ class CompanionManager(QObject):
                         screen_index=shot.index,
                         user_question=transcript,
                     ))
+                    side_tasks.append(locate_task)
                 else:
                     # Path B — Universal grid locator (any vision LLM)
                     try:
@@ -750,6 +840,7 @@ class CompanionManager(QObject):
                             user_question=transcript,
                             model=self._current_model,
                         ))
+                        side_tasks.append(locate_task)
                     except Exception:
                         # Universal locator should never crash the main flow
                         locate_task = None
@@ -760,6 +851,8 @@ class CompanionManager(QObject):
                     search_results = await search_task or ""
                 except Exception:
                     search_results = ""
+                if not self._turns.is_current(session):
+                    return
 
             detected = None
             detected_coord = None
@@ -768,6 +861,8 @@ class CompanionManager(QObject):
                     detected = await locate_task
                 except Exception:
                     detected = None
+                if not self._turns.is_current(session):
+                    return
             if detected:
                 # Short label guess — first noun phrase after "the"/"where"
                 label = _guess_label(transcript)
@@ -777,10 +872,11 @@ class CompanionManager(QObject):
                 detected_coord = (ndx, ndy, label)
                 # Fire the overlay NOW so the buddy flies over while the LLM
                 # still thinks. Hold dwell until TTS completes.
-                self.sig_point_hold.emit(True)
+                self._emit_turn_signal(session, self.sig_point_hold, True)
                 pointing_held = True
-                self.sig_point_at.emit(
-                    float(detected.x), float(detected.y), label,
+                self._emit_turn_signal(
+                    session, self.sig_point_at,
+                    float(detected.x), float(detected.y), label
                 )
 
             # ── Per-turn enrichment: code mode, language, OCR, attached docs ──
@@ -842,7 +938,6 @@ class CompanionManager(QObject):
             # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
             full_response = ""
             display_buf = ""
-            self._cancel_flag = False
             async for chunk in self._get_llm().stream_response(
                 user_text=transcript,
                 screenshots_b64=images_b64,
@@ -850,11 +945,11 @@ class CompanionManager(QObject):
                 system_prompt=system,
                 model=self._current_model,
             ):
-                if self._cancel_flag:
-                    break
+                if not self._turns.is_current(session):
+                    return
                 full_response += chunk
                 display_buf += chunk
-                self._parse_points(display_buf)
+                self._parse_points(display_buf, session)
                 display_buf = ANY_TAG_RE.sub("", display_buf)
                 m = ANY_PARTIAL_RE.search(display_buf)
                 if m:
@@ -864,9 +959,15 @@ class CompanionManager(QObject):
                     flush = display_buf
                     display_buf = ""
                 if flush:
-                    self.sig_response_chunk.emit(flush)
+                    self._emit_turn_signal(session, self.sig_response_chunk, flush)
             if display_buf:
-                self.sig_response_chunk.emit(ANY_TAG_RE.sub("", display_buf))
+                self._emit_turn_signal(
+                    session,
+                    self.sig_response_chunk,
+                    ANY_TAG_RE.sub("", display_buf),
+                )
+            if not self._turns.is_current(session):
+                return
 
             # 6. Update per-app history
             history.append(Message(role="user", content=transcript))
@@ -881,7 +982,7 @@ class CompanionManager(QObject):
                     self._lesson_step_idx = 0
 
             clean = ANY_TAG_RE.sub("", full_response).strip()
-            self.sig_response_done.emit(clean)
+            self._emit_turn_signal(session, self.sig_response_done, clean)
             self._last_response = clean   # for "say it again"
 
             # Log to knowledge journal (skipped in quiz mode — those Q&As aren't
@@ -914,7 +1015,7 @@ class CompanionManager(QObject):
 
             # 7. TTS — hold the point visible while we speak. Switch voice
             # to match the user's language for multilingual mode.
-            if self._cancel_flag:
+            if not self._turns.is_current(session):
                 return
             if self._multilang and lang_code != "en":
                 try:
@@ -923,39 +1024,44 @@ class CompanionManager(QObject):
                         tts.set_voice(multilang.voice_for(lang_code))
                 except Exception:
                     pass
-            self._emit_state(AppState.SPEAKING)
+            self._turns.set_phase(session, TurnPhase.SPEAKING)
+            self._emit_state(AppState.SPEAKING, session)
             try:
-                await self._play_lesson(full_response, clean)
+                await self._play_lesson(full_response, clean, session)
             except asyncio.CancelledError:
-                pass
+                raise
 
         except Exception as e:
-            self.sig_error.emit(str(e))
+            self._emit_turn_signal(session, self.sig_error, str(e))
 
         finally:
+            for task in side_tasks:
+                if not task.done():
+                    task.cancel()
             if pointing_held:
-                self.sig_point_release.emit()
-            self._emit_state(AppState.IDLE)
+                self._emit_turn_signal(session, self.sig_point_release)
+            self._finish_turn(session)
 
-    async def _reply_local(self, msg: str):
+    async def _reply_local(self, msg: str, session: TurnSession):
         """Show + speak a message that doesn't need an LLM round-trip."""
-        self.sig_response_chunk.emit(msg)
-        self.sig_response_done.emit(msg)
+        self._emit_turn_signal(session, self.sig_response_chunk, msg)
+        self._emit_turn_signal(session, self.sig_response_done, msg)
         self._last_response = msg
-        self._emit_state(AppState.SPEAKING)
+        self._turns.set_phase(session, TurnPhase.SPEAKING)
+        self._emit_state(AppState.SPEAKING, session)
         try:
             await self._get_tts().speak(msg)
         except Exception:
             pass
-        self._emit_state(AppState.IDLE)
 
-    async def _spaced_review(self):
+    async def _spaced_review(self, session: TurnSession):
         """SR-style review: pick due entries from the journal, ask one back."""
         due = journal.due_for_review(limit=1)
         if not due:
             await self._reply_local(
                 "Nothing due for review right now — keep learning, I'll quiz "
-                "you in a few days."
+                "you in a few days.",
+                session,
             )
             return
         entry = due[0]
@@ -966,9 +1072,9 @@ class CompanionManager(QObject):
             journal.mark_reviewed(int(entry["id"]), correct=True)
         except Exception:
             pass
-        await self._reply_local(msg)
+        await self._reply_local(msg, session)
 
-    async def _advance_lesson_step(self, ak: str):
+    async def _advance_lesson_step(self, ak: str, session: TurnSession):
         """User said 'next' — re-render the stored next lesson step via TTS,
         no new LLM round-trip needed."""
         self._lesson_step_idx += 1
@@ -981,14 +1087,14 @@ class CompanionManager(QObject):
             total = len(self._lesson_steps)
             msg = f"Step {self._lesson_step_idx + 1} of {total}: {step}"
 
-        self.sig_response_chunk.emit(msg)
-        self.sig_response_done.emit(msg)
-        self._emit_state(AppState.SPEAKING)
+        self._emit_turn_signal(session, self.sig_response_chunk, msg)
+        self._emit_turn_signal(session, self.sig_response_done, msg)
+        self._turns.set_phase(session, TurnPhase.SPEAKING)
+        self._emit_state(AppState.SPEAKING, session)
         try:
             await self._get_tts().speak(msg)
         except Exception:
             pass
-        self._emit_state(AppState.IDLE)
 
     # ── Coordinate mapping ────────────────────────────────────────────────────
     #
@@ -1049,15 +1155,17 @@ class CompanionManager(QObject):
         except Exception:
             return None
 
-    def _parse_points(self, text: str):
+    def _parse_points(self, text: str, session: TurnSession):
         """Live-during-stream tags: pointing and board-clear only. Drawing
         tags are deferred and played back in sync with narration."""
         for match in POINT_RE.finditer(text):
             x, y, label, scr = match.groups()
             lx, ly = self._denorm(float(x), float(y), int(scr))
-            self.sig_point_at.emit(lx, ly, label.strip())
+            self._emit_turn_signal(
+                session, self.sig_point_at, lx, ly, label.strip()
+            )
         if CLEAR_RE.search(text):
-            self.sig_clear_drawings.emit()
+            self._emit_turn_signal(session, self.sig_clear_drawings)
 
     # ── Vertex snapping (figure-detector assisted accuracy) ─────────────────
 
@@ -1212,7 +1320,12 @@ class CompanionManager(QObject):
                 out.append((clean, shapes))
         return out
 
-    async def _play_lesson(self, full_response: str, clean: str):
+    async def _play_lesson(
+        self,
+        full_response: str,
+        clean: str,
+        session: TurnSession,
+    ):
         """Narrate sentence by sentence, drawing each sentence's shapes as it
         is spoken — the cadence of a teacher at a whiteboard. Falls back to
         plain TTS when the response contains no drawings."""
@@ -1231,11 +1344,11 @@ class CompanionManager(QObject):
 
         draw_end = time.monotonic()
         for text, shapes in segments:
-            if self._cancel_flag:
-                break
+            if not self._turns.is_current(session):
+                return
             draw_end = max(draw_end, time.monotonic())
             for sh in shapes:
-                self.sig_draw.emit(sh)
+                self._emit_turn_signal(session, self.sig_draw, sh)
                 if _shape_length is not None:
                     dur = _shape_length(sh) / STROKE_SPEED_PX_S
                     dur = max(SHAPE_DRAW_MIN_S, min(SHAPE_DRAW_MAX_S, dur))
@@ -1255,9 +1368,45 @@ class CompanionManager(QObject):
             if remaining > 0:
                 await asyncio.sleep(min(remaining, 4.0) + 0.1)
 
-    def _emit_state(self, state: AppState):
+    def _emit_state(
+        self,
+        state: AppState,
+        session: TurnSession | None = None,
+    ) -> bool:
+        if session is not None:
+            ran, _ = self._turns.run_if_current(
+                session, self._set_state, state
+            )
+            return ran
+        self._set_state(state)
+        return True
+
+    def _set_state(self, state: AppState) -> None:
         self._state = state
         self.sig_state_changed.emit(state)
+
+    def _set_idle_state(self) -> None:
+        self._set_state(AppState.IDLE)
+
+    def _emit_turn_signal(self, session, signal, *args) -> bool:
+        ran, _ = self._turns.run_if_current(session, signal.emit, *args)
+        return ran
+
+    def _finish_turn(self, session: TurnSession) -> bool:
+        return self._turns.complete(session, self._set_idle_state)
+
+    def _cancel_outputs(self) -> None:
+        try:
+            from audio.playback import stop_audio
+            stop_audio()
+        except Exception:
+            pass
+        tts = self._tts
+        if tts and hasattr(tts, "stop"):
+            try:
+                tts.stop()
+            except Exception:
+                pass
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
@@ -1354,6 +1503,9 @@ class CompanionManager(QObject):
             cfg.set_mic_device_index(device_index if device_index >= 0 else None)
         except Exception as exc:
             self.sig_error.emit(f"Could not save microphone setting: {exc}")
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
         try:
             self._listener.stop()
         except Exception:
@@ -1373,6 +1525,9 @@ class CompanionManager(QObject):
 
     def refresh_privacy_permissions(self) -> None:
         """Apply persisted choices immediately without restarting Clicky."""
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
         self._tts = None
         self._privacy_tts_notice_emitted = False
         if microphone_allowed(cfg):
@@ -1383,8 +1538,6 @@ class CompanionManager(QObject):
         else:
             self._listener.stop()
             self._listener.cancel_recording()
-            if self._state == AppState.LISTENING:
-                self._emit_state(AppState.IDLE)
 
     def set_web_search(self, enabled: bool):
         self._web_search_enabled = bool(enabled)
@@ -1411,22 +1564,28 @@ class CompanionManager(QObject):
         if enabled and not was:
             # Kick off the first question immediately so the user doesn't
             # have to ask "begin quiz". Uses the active screen as context.
-            self._submit(self._kickoff_quiz())
+            session = self._turns.start_processing()
+            if session is not None:
+                self._turns.bind_cancel(session, "playback", self._cancel_outputs)
+                self._emit_state(AppState.THINKING, session)
+                self._submit(self._kickoff_quiz(session), session)
 
-    async def _kickoff_quiz(self):
+    async def _kickoff_quiz(self, session: TurnSession):
         """Called when quiz mode flips ON — generates the first question
         without waiting for a user utterance."""
-        if self._state != AppState.IDLE:
+        if not self._turns.is_current(session):
             return
         if not screen_capture_allowed(cfg):
-            self.sig_error.emit(
+            self._emit_turn_signal(session, self.sig_error,
                 "Quiz Mode needs screen capture permission. Open Setup & "
                 "Diagnostics → Privacy permissions."
             )
+            self._finish_turn(session)
             return
         try:
-            self._emit_state(AppState.THINKING)
             screenshots = capture_all_screens()
+            if not self._turns.is_current(session):
+                return
             images_b64 = [s.base64_jpeg for s in screenshots]
             title = active_window_title()
             system = _build_system_prompt(
@@ -1443,20 +1602,23 @@ class CompanionManager(QObject):
                 system_prompt=system,
                 model=self._current_model,
             ):
-                if self._cancel_flag:
-                    break
+                if not self._turns.is_current(session):
+                    return
                 full += chunk
-                self.sig_response_chunk.emit(chunk)
-            self.sig_response_done.emit(full)
-            self._emit_state(AppState.SPEAKING)
+                self._emit_turn_signal(session, self.sig_response_chunk, chunk)
+            self._emit_turn_signal(session, self.sig_response_done, full)
+            self._turns.set_phase(session, TurnPhase.SPEAKING)
+            self._emit_state(AppState.SPEAKING, session)
             try:
                 await self._get_tts().speak(full)
             except Exception:
                 pass
         except Exception as e:
-            self.sig_error.emit(f"Quiz start failed: {e}")
+            self._emit_turn_signal(
+                session, self.sig_error, f"Quiz start failed: {e}"
+            )
         finally:
-            self._emit_state(AppState.IDLE)
+            self._finish_turn(session)
 
     def set_privacy_guard(self, enabled: bool):
         self._privacy_guard = enabled
@@ -1571,23 +1733,10 @@ class CompanionManager(QObject):
     # ── Stop / cancel ─────────────────────────────────────────────────────────
 
     def stop(self):
-        """Cancel the current LLM stream + any in-flight TTS. Bound to Esc."""
-        self._cancel_flag = True
-        # Kill audio playback immediately — flips the global stop event so
-        # the chunked PortAudio loop bails out within ~50 ms.
-        try:
-            from audio.playback import stop_audio
-            stop_audio()
-        except Exception:
-            pass
-        # Some TTS providers also have their own cancel hook
-        tts = self._tts
-        if tts and hasattr(tts, "stop"):
-            try:
-                tts.stop()
-            except Exception:
-                pass
+        """Cancel the current owned turn and all of its resources. Bound to Esc."""
+        with self._input_lock:
+            self._pressed_session = None
+            self._turns.cancel_active(self._set_idle_state)
         # Clear any stored lesson so "stop" really means "back to zero"
         self._lesson_steps = []
         self._lesson_step_idx = 0
-        self._emit_state(AppState.IDLE)

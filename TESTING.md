@@ -156,6 +156,10 @@ Use synthetic screen content, test accounts, and temporary process-scoped keys. 
 9. Reopen **Privacy permissions** from the tray, revoke each permission, and confirm the capability stops immediately.
 10. Simulate termination during local transcription, restart Clicky, and confirm the abandoned `%LOCALAPPDATA%\Clicky\audio-temp\clicky-audio-*.wav` is removed without touching unrelated files.
 
+### Push-to-talk cancellation
+
+While Clicky is thinking and again while it is speaking, press and hold the push-to-talk shortcut. Confirm the prior generation and audio stop, exactly one new capture enters Listening, rapid release/repress remains responsive, and no text, drawing, point, error, or Idle state from the cancelled turn appears afterward.
+
 ### Provider keys and preferences
 
 1. Place a dummy marker value in one provider-key environment variable.

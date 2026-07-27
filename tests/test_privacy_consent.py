@@ -184,7 +184,7 @@ class PrivacyWiringTests(unittest.TestCase):
         )
         quiz_gate = source.index(
             'if not screen_capture_allowed(cfg):\n'
-            '            self.sig_error.emit(\n'
+            '            self._emit_turn_signal(session, self.sig_error,\n'
             '                "Quiz Mode needs screen capture permission.'
         )
         quiz_capture = source.index("capture_all_screens()", quiz_gate)

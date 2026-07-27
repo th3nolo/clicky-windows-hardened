@@ -105,6 +105,12 @@ Web search and journal logging are also off by default. After explicit activatio
 
 The Privacy Guard uses window-title matching. It can miss sensitive content and is not a substitute for closing or hiding confidential windows. Explicit screen permission is still required, but permission does not make the title heuristic comprehensive.
 
+Each microphone capture and generated response has one process-local turn
+identity. Starting a replacement push-to-talk turn invalidates the prior
+identity before cancelling its recording, transcription, generation, and
+playback resources. Late callbacks from an invalidated turn are refused before
+they can update Clicky's state or response UI.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries for local validation. Unsigned executables or installers must not be distributed.
