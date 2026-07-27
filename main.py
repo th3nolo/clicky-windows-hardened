@@ -343,6 +343,17 @@ def main():
         )
 
     tray.on_set_stt_provider.connect(_set_stt_provider)
+    def _set_stt_fallback(name: str):
+        if not manager.set_stt_fallback_provider(name):
+            return
+        tray.rebuild_menu()
+        selected = cfg.describe()
+        tray.show_notification(
+            "Speech fallback changed",
+            selected["stt_fallback"],
+        )
+
+    tray.on_set_stt_fallback.connect(_set_stt_fallback)
     tray.on_set_response_language.connect(manager.set_response_language)
     tray.on_set_custom_instructions.connect(manager.set_custom_instructions)
 

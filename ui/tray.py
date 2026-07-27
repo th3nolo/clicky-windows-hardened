@@ -57,6 +57,7 @@ class TrayManager(QObject):
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
+    on_set_stt_fallback   = pyqtSignal(str)
     on_set_transcription_vocabulary = pyqtSignal(list)
     on_set_response_language = pyqtSignal(str)  # "" = auto-detect, else ISO code
     on_set_custom_instructions = pyqtSignal(str)
@@ -280,6 +281,8 @@ class TrayManager(QObject):
         setup_menu = menu.addMenu("Setup && Diagnostics")
         self._build_mic_submenu(setup_menu)
         self._build_stt_submenu(setup_menu, providers)
+        readiness = setup_menu.addAction("Speech readiness && fallback…")
+        readiness.triggered.connect(self._open_stt_readiness)
         vocabulary = setup_menu.addAction("Transcription vocabulary…")
         vocabulary.triggered.connect(self._prompt_transcription_vocabulary)
         privacy_permissions = setup_menu.addAction("Privacy permissions…")
@@ -475,6 +478,13 @@ class TrayManager(QObject):
             act.setChecked(idx == getattr(self, "_active_mic_index", default_idx))
             act.triggered.connect(lambda checked, i=idx: self.on_set_mic_device.emit(i))
 
+    def _open_stt_readiness(self):
+        from ui.stt_readiness import SpeechReadinessDialog
+
+        dialog = SpeechReadinessDialog()
+        dialog.fallback_changed.connect(self.on_set_stt_fallback)
+        dialog.exec()
+
     def _build_stt_submenu(self, parent_menu: QMenu, providers: dict):
         """Expose whether microphone audio is live, cloud-batch, or local."""
         labels = {
@@ -486,7 +496,15 @@ class TrayManager(QObject):
         }
         active = providers.get("stt", "")
         mode = providers.get("stt_mode", "")
-        stt_menu = parent_menu.addMenu(f"Speech input: {mode}")
+        fallback = cfg.stt_fallback_provider()
+        fallback_name = (
+            "off"
+            if not fallback
+            else labels.get(fallback, fallback).split(" — ", 1)[0]
+        )
+        stt_menu = parent_menu.addMenu(
+            f"Speech input: {mode} | fallback: {fallback_name}"
+        )
         available = set(cfg.available_stt_providers())
         for name, label in labels.items():
             action = stt_menu.addAction(label)
