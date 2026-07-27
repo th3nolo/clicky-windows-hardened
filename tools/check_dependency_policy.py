@@ -590,13 +590,14 @@ class BatchCommand:
 # security review of the complete diff. Update this digest in the same reviewed
 # commit; never change it only to make CI pass.
 EXPECTED_BUILD_SCRIPT_SHA256 = (
-    "d8f3552ea6c9f79f18b8ed9bc8267430ca5ac9b636d238e79952d3713a2ea3fe"
+    "8fc1a1421e3ac783a842fbef0e8af3300b0f471a5542e8f2de97ac07c8d0ede2"
 )
 
 
 _EXPECTED_PRE_EXPORT_GUARDS = (
     'if /i "%~1"=="installer" (',
     'if not "%~1"=="" (',
+    'if /i "%~1"=="store-rc" (',
     "if errorlevel 1 (",
     'if not "!found_uv_version!"=="%expected_uv_version%" (',
     'if not exist "pyproject.toml" (',
@@ -1337,7 +1338,8 @@ def check_packaging_policy() -> None:
     module_doc = ast.get_docstring(spec_tree, clean=False) or ""
     for fragment in (
         "LOCAL TEST ONLY — UNSIGNED — DO NOT DISTRIBUTE.",
-        "Installer packaging is disabled until an Authenticode signing",
+        "Inno Setup packaging is disabled.",
+        "commit-bound onedir",
     ):
         if fragment not in module_doc:
             fail(f"clicky.spec module documentation is missing: {fragment}")
@@ -1357,6 +1359,8 @@ def check_packaging_policy() -> None:
         fail("clicky.spec must remain an inspectable one-directory build")
     if _literal_keyword(exe_calls[0], "upx") is not False:
         fail("clicky.spec EXE must keep UPX compression disabled")
+    if _literal_keyword(exe_calls[0], "manifest") != "clicky.manifest":
+        fail("clicky.spec must embed the reviewed per-monitor-v2 manifest")
     if _literal_keyword(collect_calls[0], "upx") is not False:
         fail("clicky.spec COLLECT must keep UPX compression disabled")
 
@@ -1368,6 +1372,61 @@ def check_packaging_policy() -> None:
     ):
         if forbidden in spec:
             fail(f"clicky.spec contains stale release/antivirus wording: {forbidden}")
+
+    build_text = (ROOT / "build.bat").read_text(encoding="utf-8-sig")
+    for fragment in (
+        'if /I "%~1"=="store-rc"',
+        "UNSIGNED-STORE-SUBMISSION-INPUT.txt",
+        "SOURCE-COMMIT.txt",
+        "git diff --quiet -- .",
+        "git diff --cached --quiet -- .",
+        "git ls-files --others --exclude-standard",
+    ):
+        if fragment not in build_text:
+            fail(f"build.bat is missing Store input gate: {fragment}")
+
+    manifest_template = ROOT / "packaging" / "AppxManifest.xml.in"
+    msix_tool = ROOT / "tools" / "build_msix.py"
+    if not manifest_template.is_file() or not msix_tool.is_file():
+        fail("reviewed MSIX template and packaging tool are required")
+    manifest_text = manifest_template.read_text(encoding="utf-8")
+    for fragment in (
+        "{{IDENTITY_NAME}}",
+        "{{PUBLISHER}}",
+        "{{PUBLISHER_DISPLAY_NAME}}",
+        'Name="Windows.Desktop"',
+        'uap10:RuntimeBehavior="packagedClassicApp"',
+        'uap10:TrustLevel="mediumIL"',
+        '<rescap:Capability Name="runFullTrust"',
+        'Executable="Clicky\\Clicky.exe"',
+        "developed by th3nolo",
+    ):
+        if fragment not in manifest_text:
+            fail(f"MSIX manifest template is missing: {fragment}")
+    msix_source = msix_tool.read_text(encoding="utf-8")
+    ast.parse(msix_source, filename=str(msix_tool))
+    for fragment in (
+        "--makeappx-sha256",
+        "--partner-center-confirmed",
+        "UNSIGNED-STORE-SUBMISSION-INPUT.txt",
+        "UNSIGNED-VALIDATION-ONLY.txt",
+        "AppxSignature.p7x",
+        "tree_identity(unpacked / \"Clicky\")",
+        '"legal_publisher": "Manuel Parra"',
+        '"brand": "th3nolo"',
+        '"store_certification_complete": False',
+    ):
+        if fragment not in msix_source:
+            fail(f"MSIX packaging tool is missing release gate: {fragment}")
+    for forbidden in (
+        "signtool",
+        "Add-AppxPackage",
+        "Invoke-WebRequest",
+        "urllib.request",
+        "requests.",
+    ):
+        if forbidden.casefold() in msix_source.casefold():
+            fail(f"MSIX packaging tool contains forbidden capability: {forbidden}")
 
 def check_editor_automation() -> None:
     candidates: set[Path] = set(ROOT.glob("*.code-workspace"))

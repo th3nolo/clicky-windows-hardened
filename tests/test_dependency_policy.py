@@ -409,8 +409,17 @@ class PackagingPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "installer.iss").write_bytes((ROOT / "installer.iss").read_bytes())
+            (root / "build.bat").write_bytes((ROOT / "build.bat").read_bytes())
             spec = (ROOT / "clicky.spec").read_text(encoding="utf-8")
             (root / "clicky.spec").write_text(spec, encoding="utf-8")
+            (root / "packaging").mkdir()
+            (root / "packaging" / "AppxManifest.xml.in").write_bytes(
+                (ROOT / "packaging" / "AppxManifest.xml.in").read_bytes()
+            )
+            (root / "tools").mkdir()
+            (root / "tools" / "build_msix.py").write_bytes(
+                (ROOT / "tools" / "build_msix.py").read_bytes()
+            )
 
             with mock.patch.object(policy, "ROOT", root):
                 policy.check_packaging_policy()
