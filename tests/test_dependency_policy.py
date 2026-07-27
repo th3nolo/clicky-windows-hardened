@@ -427,6 +427,12 @@ class PackagingPolicyTests(unittest.TestCase):
             (root / "tools" / "build_msix.py").write_bytes(
                 (ROOT / "tools" / "build_msix.py").read_bytes()
             )
+            (root / ".github" / "workflows").mkdir(parents=True)
+            (root / ".github" / "workflows" / "msix-validation.yml").write_bytes(
+                (
+                    ROOT / ".github" / "workflows" / "msix-validation.yml"
+                ).read_bytes()
+            )
 
             with mock.patch.object(policy, "ROOT", root):
                 policy.check_packaging_policy()

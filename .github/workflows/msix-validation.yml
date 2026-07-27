@@ -7,40 +7,142 @@ on:
 permissions:
   contents: read
 
+env:
+  MAKEAPPX_PATH: C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\MakeAppx.exe
+  MAKEAPPX_SHA256: 1352d2b63187e67d4d8b7413047396d95eb262b9e7f25def70c7d22ea6d8625c
+  MAKEAPPX_FILE_VERSION: 10.0.22621.5040
+  MAKEAPPX_SIGNER_SUBJECT: CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US
+  MAKEAPPX_SIGNER_THUMBPRINT: 7920AC8FB05E0FFFE21E8FF4B4F03093BA6AC16E
+  UV_DEFAULT_INDEX: https://pypi.org/simple
+  UV_INDEX_STRATEGY: first-index
+  UV_KEYRING_PROVIDER: disabled
+  UV_PYTHON_DOWNLOADS: never
+  PIP_INDEX_URL: ""
+  PIP_EXTRA_INDEX_URL: ""
+  PIP_FIND_LINKS: ""
+
 jobs:
-  inventory-reviewed-tool:
+  validate-package:
     runs-on: windows-2022
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
-      - name: Inventory preinstalled MakeAppx candidates without execution
+      - name: Check out the reviewed revision
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the pinned Python runtime
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12.10"
+          cache: ""
+          check-latest: false
+
+      - name: Set up the pinned uv toolchain
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.19"
+          enable-cache: false
+
+      - name: Authenticate the fixed MakeAppx executable before use
         shell: pwsh
         run: |
-          $root = "C:\Program Files (x86)\Windows Kits\10\bin"
-          if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-            throw "Windows SDK binary root is unavailable."
+          $tool = Get-Item -LiteralPath $env:MAKEAPPX_PATH -Force
+          if ($tool.PSIsContainer -or
+              ($tool.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "MakeAppx must be the fixed regular SDK file."
           }
-          $candidates = @(
-            Get-ChildItem -LiteralPath $root -Filter MakeAppx.exe -File -Recurse |
-              Sort-Object -Property FullName
+          $digest = (
+            Get-FileHash -Algorithm SHA256 -LiteralPath $tool.FullName
+          ).Hash.ToLowerInvariant()
+          if ($digest -cne $env:MAKEAPPX_SHA256) {
+            throw "MakeAppx SHA-256 differs from the reviewed executable."
+          }
+          if ($tool.VersionInfo.ProductVersion -cne $env:MAKEAPPX_FILE_VERSION) {
+            throw "MakeAppx product version differs from the reviewed executable."
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $tool.FullName
+          if ($signature.Status.ToString() -cne "Valid" -or
+              $null -eq $signature.SignerCertificate -or
+              $signature.SignerCertificate.Subject -cne $env:MAKEAPPX_SIGNER_SUBJECT -or
+              $signature.SignerCertificate.Thumbprint -cne
+                $env:MAKEAPPX_SIGNER_THUMBPRINT) {
+            throw "MakeAppx Authenticode identity differs from the reviewed executable."
+          }
+
+      - name: Install the frozen wheel-only environment
+        shell: pwsh
+        run: >-
+          uv sync --frozen --group build --no-build
+          --no-managed-python --no-python-downloads --python "3.12.10"
+          --default-index "https://pypi.org/simple"
+          --index-strategy first-index --keyring-provider disabled
+          --link-mode copy --no-cache
+
+      - name: Create bounded synthetic package input
+        shell: pwsh
+        run: |
+          $distribution = Join-Path $env:RUNNER_TEMP "clicky-msix-validation-input"
+          New-Item -ItemType Directory -Path $distribution -ErrorAction Stop |
+            Out-Null
+          [IO.File]::WriteAllBytes(
+            (Join-Path $distribution "Clicky.exe"),
+            [byte[]](0x4d, 0x5a, 0x00, 0x00)
           )
-          if ($candidates.Count -eq 0) {
-            throw "No preinstalled MakeAppx candidate was found."
+          [IO.File]::WriteAllText(
+            (Join-Path $distribution "SOURCE-COMMIT.txt"),
+            "$env:GITHUB_SHA`n",
+            [Text.Encoding]::ASCII
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $distribution "UNSIGNED-LOCAL-TEST-ONLY.txt"),
+            "UNSIGNED VALIDATION INPUT. DO NOT DISTRIBUTE.`n",
+            [Text.Encoding]::UTF8
+          )
+
+      - name: Build and validate an unsigned structural MSIX
+        shell: pwsh
+        run: >-
+          uv run --frozen --no-sync --python "3.12.10" python
+          tools/build_msix.py
+          --validation-only
+          --distribution "$env:RUNNER_TEMP\clicky-msix-validation-input"
+          --staging "$env:RUNNER_TEMP\clicky-msix-validation-staging"
+          --output "$env:RUNNER_TEMP\clicky-msix-validation.msix"
+          --report "$env:RUNNER_TEMP\clicky-msix-validation-report.json"
+          --source-commit "$env:GITHUB_SHA"
+          --version "1.2.0.0"
+          --makeappx "$env:MAKEAPPX_PATH"
+          --makeappx-sha256 "$env:MAKEAPPX_SHA256"
+
+      - name: Verify fail-closed validation report
+        shell: pwsh
+        run: |
+          $report = Get-Content -LiteralPath (
+            Join-Path $env:RUNNER_TEMP "clicky-msix-validation-report.json"
+          ) -Raw | ConvertFrom-Json
+          if ($report.validation_only -ne $true -or
+              $report.signed -ne $false -or
+              $report.store_submission_complete -ne $false -or
+              $report.store_certification_complete -ne $false -or
+              $report.source_commit -cne $env:GITHUB_SHA -or
+              $report.makeappx_sha256 -cne $env:MAKEAPPX_SHA256) {
+            throw "MSIX validation report did not preserve the release gates."
           }
-          $inventory = foreach ($candidate in $candidates) {
-            if ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-              throw "MakeAppx candidate is a reparse point: $($candidate.FullName)"
-            }
-            $signature = Get-AuthenticodeSignature -LiteralPath $candidate.FullName
-            [pscustomobject]@{
-              path = $candidate.FullName
-              sha256 = (
-                Get-FileHash -Algorithm SHA256 -LiteralPath $candidate.FullName
-              ).Hash.ToLowerInvariant()
-              file_version = $candidate.VersionInfo.FileVersion
-              product_version = $candidate.VersionInfo.ProductVersion
-              signature_status = $signature.Status.ToString()
-              signer_subject = $signature.SignerCertificate.Subject
-              signer_thumbprint = $signature.SignerCertificate.Thumbprint
-            }
-          }
-          $inventory | ConvertTo-Json -Depth 3
+
+      - name: Remove unsigned validation outputs
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath (
+            Join-Path $env:RUNNER_TEMP "clicky-msix-validation-input"
+          ) -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (
+            Join-Path $env:RUNNER_TEMP "clicky-msix-validation-staging"
+          ) -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (
+            Join-Path $env:RUNNER_TEMP "clicky-msix-validation.msix"
+          ) -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (
+            Join-Path $env:RUNNER_TEMP "clicky-msix-validation-report.json"
+          ) -Force -ErrorAction SilentlyContinue
