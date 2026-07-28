@@ -53,6 +53,7 @@ from tasks.tool_broker import (
     DeclaredToolStep,
     ModelGenerateArguments,
     ModelStreamAdapter,
+    ResearchCsvRenderArguments,
     TaskToolBroker,
     VerifyOutputArguments,
     WebFetchAdapter,
@@ -69,10 +70,13 @@ _INPUT_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SUPPORTED_ARGUMENTS = MappingProxyType(
     {
         DeclarativeTool.MODEL_GENERATE: frozenset(
-            {"prompt", "system_prompt"}
+            {"context", "prompt", "system_prompt"}
         ),
         DeclarativeTool.WEB_SEARCH: frozenset({"query", "max_results"}),
         DeclarativeTool.WEB_FETCH: frozenset({"url", "max_chars"}),
+        DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
+            {"records_json", "requested_rows", "source_context"}
+        ),
         DeclarativeTool.ARTIFACT_READ: frozenset({"artifact_id"}),
         DeclarativeTool.ARTIFACT_WRITE: frozenset(
             {
@@ -102,6 +106,9 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         DeclarativeTool.MODEL_GENERATE: frozenset({"system_prompt"}),
         DeclarativeTool.WEB_SEARCH: frozenset({"query"}),
         DeclarativeTool.WEB_FETCH: frozenset({"url"}),
+        DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
+            {"records_json", "requested_rows", "source_context"}
+        ),
         DeclarativeTool.ARTIFACT_READ: frozenset({"artifact_id"}),
         DeclarativeTool.ARTIFACT_WRITE: frozenset(
             {"artifact_id", "name", "content"}
@@ -209,6 +216,13 @@ class _ArtifactValue:
     name: str
     media_type: str
     content: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchCsvMetadata:
+    content_sha256: str
+    field_ids: tuple[str, ...]
+    requested_rows: int
 
 
 def compile_declarative_plan(
@@ -356,6 +370,7 @@ class DeclarativeSkillRunner:
         self._outputs: dict[str, object] = {}
         self._results: list[ToolResult] = []
         self._artifacts: list[Artifact] = []
+        self._research_csv: _ResearchCsvMetadata | None = None
         self._next_step = 0
         self._prepared: _PreparedStep | None = None
 
@@ -590,6 +605,11 @@ class DeclarativeSkillRunner:
                     values["system_prompt"],
                     "Model system prompt",
                 ),
+                context=_optional_text_value(
+                    values.get("context"),
+                    "Model context",
+                )
+                or "",
             )
         if step.tool is DeclarativeTool.WEB_SEARCH:
             return WebSearchArguments(
@@ -605,6 +625,38 @@ class DeclarativeSkillRunner:
                 max_chars=_integer_value(
                     values.get("max_chars", 1_400),
                     "Fetch character count",
+                ),
+            )
+        if step.tool is DeclarativeTool.RESEARCH_CSV_RENDER:
+            from research.csv_artifact import ResearchCsvSchema
+
+            output = self._definition.output
+            if (
+                output.output_type is not SkillOutputType.TABLE
+                or output.media_type != "text/csv"
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Research CSV rendering requires a declared CSV table"
+                )
+            schema = ResearchCsvSchema.from_columns(
+                tuple(field.field_id for field in output.fields)
+            )
+            return ResearchCsvRenderArguments(
+                records_json=_text_value(
+                    values["records_json"],
+                    "Research record JSON",
+                ),
+                source_context=_text_value(
+                    values["source_context"],
+                    "Research source context",
+                ),
+                requested_rows=_integer_value(
+                    values["requested_rows"],
+                    "Research requested row count",
+                ),
+                field_ids=schema.requested_field_ids,
+                maximum_output_bytes=(
+                    self._definition.limits.max_output_bytes
                 ),
             )
         if step.tool is DeclarativeTool.ARTIFACT_READ:
@@ -634,13 +686,39 @@ class DeclarativeSkillRunner:
                 ),
             )
         if step.tool is DeclarativeTool.VERIFY_OUTPUT:
+            artifact_id = _artifact_id_value(values["artifact_id"])
+            expected_sha256 = _optional_text_value(
+                values.get("expected_sha256"),
+                "Expected artifact digest",
+            )
+            research_csv_field_ids: tuple[str, ...] = ()
+            research_csv_requested_rows = None
+            if self._research_csv is not None:
+                source_output = self._artifact_source_output(artifact_id)
+                artifact_value = self._outputs[source_output]
+                assert isinstance(artifact_value, _ArtifactValue)
+                actual_sha256 = hashlib.sha256(
+                    artifact_value.content
+                ).hexdigest()
+                if (
+                    actual_sha256 != self._research_csv.content_sha256
+                    or (
+                        expected_sha256 is not None
+                        and expected_sha256 != actual_sha256
+                    )
+                ):
+                    raise DeclarativeRunnerOutputError(
+                        "Research CSV verifier digest does not match render"
+                    )
+                expected_sha256 = actual_sha256
+                research_csv_field_ids = self._research_csv.field_ids
+                research_csv_requested_rows = (
+                    self._research_csv.requested_rows
+                )
             return VerifyOutputArguments(
                 verifier_id=self._run.spec.verifier_id,
-                artifact_id=_artifact_id_value(values["artifact_id"]),
-                expected_sha256=_optional_text_value(
-                    values.get("expected_sha256"),
-                    "Expected artifact digest",
-                ),
+                artifact_id=artifact_id,
+                expected_sha256=expected_sha256,
                 expected_media_type=_optional_text_value(
                     values.get(
                         "expected_media_type",
@@ -662,6 +740,8 @@ class DeclarativeSkillRunner:
                 required_utf8_substrings=_string_tuple_value(
                     values.get("required_utf8_substrings", ())
                 ),
+                research_csv_field_ids=research_csv_field_ids,
+                research_csv_requested_rows=research_csv_requested_rows,
             )
         raise DeclarativeRunnerPlanningError(
             "Step tool is unavailable at call time"
@@ -691,7 +771,7 @@ class DeclarativeSkillRunner:
         for input_id, value in self._inputs.items():
             prompt = prompt.replace(
                 "{{input." + input_id + "}}",
-                _text_value(value, "Prompt input"),
+                _prompt_value(value),
             )
         if "{{" in prompt or "}}" in prompt:
             raise DeclarativeRunnerInputError(
@@ -704,6 +784,24 @@ class DeclarativeSkillRunner:
         prepared: _PreparedStep,
         execution: BrokerExecution,
     ) -> None:
+        if isinstance(prepared.arguments, ResearchCsvRenderArguments):
+            if execution.text is None:
+                raise DeclarativeRunnerOutputError(
+                    "Research CSV render returned no content"
+                )
+            content = execution.text.encode("utf-8")
+            if (
+                execution.result.output_digest
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research CSV render digest does not match its content"
+                )
+            self._research_csv = _ResearchCsvMetadata(
+                content_sha256=execution.result.output_digest,
+                field_ids=prepared.arguments.field_ids,
+                requested_rows=prepared.arguments.requested_rows,
+            )
         if execution.pending_artifact is not None:
             arguments = prepared.arguments
             if not isinstance(arguments, ArtifactWriteArguments):
@@ -1042,6 +1140,18 @@ def _text_value(value: object, label: str) -> str:
     ):
         raise DeclarativeRunnerInputError(f"{label} is invalid")
     return value
+
+
+def _prompt_value(value: object) -> str:
+    if isinstance(value, str):
+        return _text_value(value, "Prompt input")
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) is int:
+        return str(value)
+    if type(value) is float and math.isfinite(value):
+        return json.dumps(value, ensure_ascii=True, allow_nan=False)
+    raise DeclarativeRunnerInputError("Prompt input is invalid")
 
 
 def _optional_text_value(value: object, label: str) -> str | None:

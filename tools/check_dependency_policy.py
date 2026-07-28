@@ -1471,6 +1471,15 @@ def check_packaging_policy() -> None:
             "skills/declarative/manifest.json",
             "skills/declarative",
         ),
+        *{
+            (
+                f"skills/declarative/{path.name}",
+                "skills/declarative",
+            )
+            for path in (
+                ROOT / "skills" / "declarative"
+            ).glob("*.skill.json")
+        },
         ("skills/example_self_mode.py", "skills"),
         ("skills/manifest.json", "skills"),
     }

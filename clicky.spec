@@ -83,6 +83,10 @@ datas, binaries, hiddenimports = [], [], []
 # be verified against the shipped manifest before execution.
 datas += [
     ("skills/declarative/manifest.json", "skills/declarative"),
+    (
+        "skills/declarative/research-to-csv.skill.json",
+        "skills/declarative",
+    ),
     ("skills/example_self_mode.py", "skills"),
     ("skills/manifest.json", "skills"),
 ]

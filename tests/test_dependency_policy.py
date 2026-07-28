@@ -496,6 +496,14 @@ class PackagingPolicyTests(unittest.TestCase):
             (root / "build.bat").write_bytes((ROOT / "build.bat").read_bytes())
             spec = (ROOT / "clicky.spec").read_text(encoding="utf-8")
             (root / "clicky.spec").write_text(spec, encoding="utf-8")
+            declarative = root / "skills" / "declarative"
+            declarative.mkdir(parents=True)
+            for source in (
+                ROOT / "skills" / "declarative"
+            ).glob("*.skill.json"):
+                (declarative / source.name).write_bytes(
+                    source.read_bytes()
+                )
             (root / "packaging").mkdir()
             (root / "packaging" / "AppxManifest.xml.in").write_bytes(
                 (ROOT / "packaging" / "AppxManifest.xml.in").read_bytes()
@@ -527,6 +535,21 @@ class PackagingPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     AssertionError,
                     "keep Python bytecode external and inspectable",
+                ):
+                    policy.check_packaging_policy()
+                (root / "clicky.spec").write_text(
+                    spec.replace(
+                        "    (\n"
+                        '        "skills/declarative/research-to-csv.skill.json",\n'
+                        '        "skills/declarative",\n'
+                        "    ),\n",
+                        "",
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "package bundled skill source",
                 ):
                     policy.check_packaging_policy()
 

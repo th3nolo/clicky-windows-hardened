@@ -15,6 +15,7 @@ from research.csv_artifact import (
     ResearchCsvSchema,
     inspect_research_csv,
     render_research_csv,
+    render_research_json_to_csv,
 )
 from research.tools import (
     BoundedResearchToolAdapter,
@@ -40,4 +41,5 @@ __all__ = [
     "canonicalize_public_url",
     "inspect_research_csv",
     "render_research_csv",
+    "render_research_json_to_csv",
 ]

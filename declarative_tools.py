@@ -15,6 +15,7 @@ class DeclarativeTool(str, Enum):
     MODEL_GENERATE = "model.generate"
     WEB_SEARCH = "web.search"
     WEB_FETCH = "web.fetch"
+    RESEARCH_CSV_RENDER = "research.csv.render"
     ARTIFACT_READ = "artifact.read"
     ARTIFACT_WRITE = "artifact.write"
     CONNECTOR_READ = "connector.read"
@@ -29,6 +30,7 @@ TOOL_CAPABILITIES: Mapping[
         DeclarativeTool.MODEL_GENERATE: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.WEB_SEARCH: CapabilityId.WEB_SEARCH_BOUNDED,
         DeclarativeTool.WEB_FETCH: CapabilityId.WEB_FETCH_BOUNDED,
+        DeclarativeTool.RESEARCH_CSV_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.ARTIFACT_READ: CapabilityId.LOCAL_ARTIFACT_READ,
         DeclarativeTool.ARTIFACT_WRITE: CapabilityId.LOCAL_ARTIFACT_WRITE,
         DeclarativeTool.VERIFY_OUTPUT: CapabilityId.TASK_AGENT_RUN,

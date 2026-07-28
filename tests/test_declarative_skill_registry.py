@@ -359,7 +359,14 @@ class DeclarativeSkillRegistryTests(unittest.TestCase):
 
         snapshot = load_bundled_declarative_skills()
         combined = combined_skill_catalog(snapshot, loaded)
-        self.assertEqual(len(combined), len(entries))
+        self.assertEqual(
+            len(combined),
+            len(entries) + len(snapshot.catalog_entries),
+        )
+        self.assertIn(
+            "clicky.research_to_csv",
+            {entry.skill_id for entry in combined},
+        )
 
     def test_future_signed_external_and_remote_installation_remain_disabled(self):
         self.assertEqual(
