@@ -53,7 +53,10 @@ from tasks.tool_broker import (
     BrokerExecution,
     CalendarAvailabilityArguments,
     ConnectorReadAdapter,
+    ConnectorWriteAdapter,
     DeclaredToolStep,
+    GmailDraftArguments,
+    GmailSelectedThreadArguments,
     ModelGenerateArguments,
     ModelStreamAdapter,
     ResearchCsvRenderArguments,
@@ -81,8 +84,19 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
             {
                 "authorization_id",
                 "selected_calendar_ids_json",
+                "selected_thread_id",
                 "time_max",
                 "time_min",
+            }
+        ),
+        DeclarativeTool.CONNECTOR_WRITE: frozenset(
+            {
+                "authorization_id",
+                "bcc_addresses_json",
+                "body_text",
+                "cc_addresses_json",
+                "subject",
+                "to_addresses_json",
             }
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
@@ -117,12 +131,13 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         DeclarativeTool.MODEL_GENERATE: frozenset({"system_prompt"}),
         DeclarativeTool.WEB_SEARCH: frozenset({"query"}),
         DeclarativeTool.WEB_FETCH: frozenset({"url"}),
-        DeclarativeTool.CONNECTOR_READ: frozenset(
+        DeclarativeTool.CONNECTOR_READ: frozenset({"authorization_id"}),
+        DeclarativeTool.CONNECTOR_WRITE: frozenset(
             {
                 "authorization_id",
-                "selected_calendar_ids_json",
-                "time_max",
-                "time_min",
+                "body_text",
+                "subject",
+                "to_addresses_json",
             }
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
@@ -244,6 +259,44 @@ class _ResearchCsvMetadata:
     requested_rows: int
 
 
+def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_READ
+        and step.connector is ConnectorId.GOOGLE_CALENDAR
+        and step.capability is CapabilityId.CALENDAR_EVENT_READ
+    ):
+        return frozenset(
+            {
+                "authorization_id",
+                "selected_calendar_ids_json",
+                "time_max",
+                "time_min",
+            }
+        )
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_READ
+        and step.connector is ConnectorId.GMAIL
+        and step.capability is CapabilityId.GMAIL_MESSAGE_READ
+    ):
+        return frozenset({"authorization_id", "selected_thread_id"})
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_WRITE
+        and step.connector is ConnectorId.GMAIL
+        and step.capability is CapabilityId.GMAIL_DRAFT_WRITE
+    ):
+        return frozenset(
+            {
+                "authorization_id",
+                "bcc_addresses_json",
+                "body_text",
+                "cc_addresses_json",
+                "subject",
+                "to_addresses_json",
+            }
+        )
+    return frozenset()
+
+
 def compile_declarative_plan(
     definition: DeclarativeSkillDefinition,
     run: TaskRun,
@@ -282,15 +335,47 @@ def compile_declarative_plan(
         raise DeclarativeRunnerPlanningError(
             "Task grant must exactly match declared skill capabilities"
         )
+    available_connector_capabilities = {
+        ConnectorId.GOOGLE_CALENDAR: frozenset(
+            {CapabilityId.CALENDAR_EVENT_READ}
+        ),
+        ConnectorId.GMAIL: frozenset(
+            {
+                CapabilityId.GMAIL_MESSAGE_READ,
+                CapabilityId.GMAIL_DRAFT_WRITE,
+            }
+        ),
+    }
     for requirement in definition.connectors:
-        if (
-            requirement.connector is not ConnectorId.GOOGLE_CALENDAR
-            or requirement.capabilities
-            != frozenset({CapabilityId.CALENDAR_EVENT_READ})
-        ):
+        allowed = available_connector_capabilities.get(
+            requirement.connector,
+            frozenset(),
+        )
+        if not requirement.capabilities.issubset(allowed):
             raise DeclarativeRunnerPlanningError(
-                "Only Calendar availability is available to connector reads"
+                "Connector requirement is not available to the task broker"
             )
+    required_network_requests = sum(
+        2
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_WRITE
+            and step.capability is CapabilityId.GMAIL_DRAFT_WRITE
+        )
+        else int(
+            step.tool
+            in {
+                DeclarativeTool.WEB_SEARCH,
+                DeclarativeTool.WEB_FETCH,
+                DeclarativeTool.CONNECTOR_READ,
+                DeclarativeTool.CONNECTOR_WRITE,
+            }
+        )
+        for step in definition.steps
+    )
+    if definition.limits.max_network_requests < required_network_requests:
+        raise DeclarativeRunnerPlanningError(
+            "Task network limit cannot cover provider write verification"
+        )
     if definition.steps[-1].step_id != run.spec.verifier_step_id:
         raise DeclarativeRunnerPlanningError(
             "The declared verifier must be the final workflow step"
@@ -311,6 +396,13 @@ def compile_declarative_plan(
         )
         unknown = argument_ids - _SUPPORTED_ARGUMENTS[step.tool]
         missing = _REQUIRED_ARGUMENTS[step.tool] - argument_ids
+        if step.tool in {
+            DeclarativeTool.CONNECTOR_READ,
+            DeclarativeTool.CONNECTOR_WRITE,
+        }:
+            exact_connector_arguments = _connector_argument_ids(step)
+            unknown = argument_ids - exact_connector_arguments
+            missing = exact_connector_arguments - argument_ids
         if unknown or missing:
             raise DeclarativeRunnerPlanningError(
                 f"Step arguments do not match {step.tool.value}"
@@ -338,15 +430,22 @@ def compile_declarative_plan(
                 raise DeclarativeRunnerPlanningError(
                     "Verifier identity cannot be selected at runtime"
                 )
-        if (
-            step.tool is DeclarativeTool.CONNECTOR_READ
-            and (
-                step.connector is not ConnectorId.GOOGLE_CALENDAR
-                or step.capability is not CapabilityId.CALENDAR_EVENT_READ
-            )
+        if step.tool is DeclarativeTool.CONNECTOR_READ and (
+            step.capability
+            not in {
+                CapabilityId.CALENDAR_EVENT_READ,
+                CapabilityId.GMAIL_MESSAGE_READ,
+            }
         ):
             raise DeclarativeRunnerPlanningError(
-                "Connector read is not an approved Calendar operation"
+                "Connector read operation is unavailable"
+            )
+        if step.tool is DeclarativeTool.CONNECTOR_WRITE and (
+            step.connector is not ConnectorId.GMAIL
+            or step.capability is not CapabilityId.GMAIL_DRAFT_WRITE
+        ):
+            raise DeclarativeRunnerPlanningError(
+                "Connector write operation is unavailable"
             )
         declared.append(
             DeclaredToolStep(
@@ -420,6 +519,7 @@ class DeclarativeSkillRunner:
         web_search: WebSearchAdapter | None = None,
         web_fetch: WebFetchAdapter | None = None,
         connector_read: ConnectorReadAdapter | None = None,
+        connector_write: ConnectorWriteAdapter | None = None,
         artifact_root: Path | None = None,
     ) -> DeclarativeSkillRunner:
         plan = compile_declarative_plan(definition, run)
@@ -431,6 +531,7 @@ class DeclarativeSkillRunner:
             web_search=web_search,
             web_fetch=web_fetch,
             connector_read=connector_read,
+            connector_write=connector_write,
             artifact_root=artifact_root,
         )
         return cls(definition, run, plan, broker)
@@ -609,7 +710,10 @@ class DeclarativeSkillRunner:
             )
             if (
                 requirement is None
-                or not isinstance(arguments, ArtifactWriteArguments)
+                or not isinstance(
+                    arguments,
+                    (ArtifactWriteArguments, GmailDraftArguments),
+                )
             ):
                 raise DeclarativeRunnerPlanningError(
                     "Declared approval has no supported exact preview"
@@ -666,27 +770,75 @@ class DeclarativeSkillRunner:
                 ),
             )
         if step.tool is DeclarativeTool.CONNECTOR_READ:
-            return CalendarAvailabilityArguments(
-                authorization_id=_text_value(
-                    values["authorization_id"],
-                    "Calendar account authorization ID",
-                ),
-                selected_calendar_ids=_calendar_ids_value(
-                    values["selected_calendar_ids_json"]
-                ),
-                time_min=_text_value(
-                    values["time_min"],
-                    "Calendar availability start",
-                ),
-                time_max=_text_value(
-                    values["time_max"],
-                    "Calendar availability end",
-                ),
-                maximum_response_bytes=min(
-                    self._definition.limits.max_output_bytes,
-                    1024 * 1024,
-                ),
-            )
+            if step.capability is CapabilityId.CALENDAR_EVENT_READ:
+                return CalendarAvailabilityArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Calendar account authorization ID",
+                    ),
+                    selected_calendar_ids=_calendar_ids_value(
+                        values["selected_calendar_ids_json"]
+                    ),
+                    time_min=_text_value(
+                        values["time_min"],
+                        "Calendar availability start",
+                    ),
+                    time_max=_text_value(
+                        values["time_max"],
+                        "Calendar availability end",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
+            if step.capability is CapabilityId.GMAIL_MESSAGE_READ:
+                return GmailSelectedThreadArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Gmail account authorization ID",
+                    ),
+                    selected_thread_id=_text_value(
+                        values["selected_thread_id"],
+                        "Selected Gmail thread ID",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
+        if step.tool is DeclarativeTool.CONNECTOR_WRITE:
+            if step.capability is CapabilityId.GMAIL_DRAFT_WRITE:
+                return GmailDraftArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Gmail account authorization ID",
+                    ),
+                    to=_email_addresses_value(
+                        values["to_addresses_json"],
+                        required=True,
+                    ),
+                    cc=_email_addresses_value(
+                        values["cc_addresses_json"],
+                        required=False,
+                    ),
+                    bcc=_email_addresses_value(
+                        values["bcc_addresses_json"],
+                        required=False,
+                    ),
+                    subject=_text_value(
+                        values["subject"],
+                        "Gmail draft subject",
+                    ),
+                    body_text=_text_value(
+                        values["body_text"],
+                        "Gmail draft body",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
         if step.tool is DeclarativeTool.RESEARCH_CSV_RENDER:
             from research.csv_artifact import ResearchCsvSchema
 
@@ -1267,6 +1419,30 @@ def _calendar_ids_value(value: object) -> tuple[str, ...]:
     ):
         raise DeclarativeRunnerInputError(
             "Selected calendar IDs must be a bounded JSON array"
+        )
+    return tuple(parsed)
+
+
+def _email_addresses_value(
+    value: object,
+    *,
+    required: bool,
+) -> tuple[str, ...]:
+    text = _text_value(value, "Gmail recipient addresses")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DeclarativeRunnerInputError(
+            "Gmail recipient addresses must be a JSON array"
+        ) from exc
+    if (
+        not isinstance(parsed, list)
+        or (required and not parsed)
+        or len(parsed) > 50
+        or any(not isinstance(item, str) for item in parsed)
+    ):
+        raise DeclarativeRunnerInputError(
+            "Gmail recipient addresses must be a bounded JSON array"
         )
     return tuple(parsed)
 

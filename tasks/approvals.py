@@ -14,7 +14,7 @@ from tasks.models import ApprovalRequest, ToolCall
 
 MAX_TARGET_LABEL_CHARS = 255
 MAX_TARGET_REFERENCE_CHARS = 256
-MAX_PREVIEW_CHARS = 2_048
+MAX_PREVIEW_CHARS = 24 * 1024
 MAX_APPROVAL_REASON_CHARS = 2_000
 _REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -186,6 +186,33 @@ def task_artifact_target(
     )
 
 
+def gmail_draft_target(
+    *,
+    authorization_id: str,
+    preview_sha256: str,
+) -> ApprovalTarget:
+    """Bind approval to one connected account and exact draft preview."""
+
+    _bounded_reference(authorization_id)
+    _sha256(preview_sha256, "Gmail draft preview digest")
+    target_digest = hashlib.sha256(
+        _canonical_json(
+            {
+                "authorization_id": authorization_id,
+                "kind": ApprovalTargetKind.API_MUTATION.value,
+                "operation": "gmail.create_draft",
+                "preview_sha256": preview_sha256,
+            }
+        )
+    ).hexdigest()
+    return ApprovalTarget(
+        kind=ApprovalTargetKind.API_MUTATION,
+        reference=authorization_id,
+        label="Create one unsent Gmail draft",
+        target_digest=target_digest,
+    )
+
+
 def _bounded_reference(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -229,5 +256,6 @@ __all__ = [
     "ApprovalTarget",
     "ApprovalTargetKind",
     "build_approval_payload",
+    "gmail_draft_target",
     "task_artifact_target",
 ]

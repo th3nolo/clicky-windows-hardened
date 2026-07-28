@@ -1100,13 +1100,11 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,
                 DeclarativeTool.CONNECTOR_READ,
+                DeclarativeTool.CONNECTOR_WRITE,
                 DeclarativeTool.VERIFY_OUTPUT,
             },
         )
-        self.assertNotIn(
-            DeclarativeTool.CONNECTOR_WRITE,
-            INITIAL_TASK_BROKER_TOOLS,
-        )
+        self.assertNotIn("gmail.send", {item.value for item in CapabilityId})
         schema_source = (ROOT / "skills" / "schema.py").read_text(
             encoding="utf-8"
         )

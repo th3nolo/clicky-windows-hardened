@@ -480,6 +480,45 @@ The checked-in tests use synthetic transports and accounts. They do not prove
 live Google consent, network behavior, or the interactive Windows caller path.
 Keep connector reads build-unavailable in the baseline until those checks pass.
 
+### Gmail selected-thread read and verified draft
+
+Use a disposable Google test account containing only synthetic mail. In a test
+build with Task Agent plus the relevant connector feature explicitly enabled:
+
+1. Connect `gmail.message.read` alone and confirm consent requests only
+   `gmail.readonly`. Supply one exact synthetic thread ID; confirm Clicky calls
+   only `users.me.threads.get` with `format=full`, returns that thread's bounded
+   headers and text bodies, and omits attachments, unselected headers, mailbox
+   search results, and every other thread.
+2. Change the thread ID, run ID, account authorization ID, capability, or
+   argument digest. Confirm each mismatch fails before a token lease or request.
+3. Connect `gmail.draft.write` and confirm consent requests `gmail.compose`,
+   not `gmail.send`. Review the complete To/Cc/Bcc, subject, and plain-text body
+   preview, then approve exactly once.
+4. Confirm Clicky calls only `users.me.drafts.create`, never a message or draft
+   send endpoint, then performs one `users.me.drafts.get?format=raw` read-back.
+   The task succeeds only when the provider IDs and exact approved recipients,
+   subject, and body match.
+5. Reject or expire approval and confirm no draft is created. Change any
+   approved field or reuse the call ID and confirm the write is rejected before
+   provider access.
+6. Simulate an ambiguous create timeout and confirm Clicky reports
+   `connector_write_outcome_unknown` without retrying. Simulate a mismatched or
+   unavailable read-back and confirm it reports `connector_write_unverified`;
+   do not claim the draft was absent or retry automatically.
+7. Exercise 401, 403, 404, 429, timeout, oversized body, non-JSON body, malformed
+   MIME, attachment-only content, and provider identity mismatches. Confirm all
+   fail closed without tokens or message bodies in diagnostics.
+8. Confirm Task Center retains only bounded result/provider digests, byte
+   counts, provider request ID, and verified draft identifiers. The approved
+   body must not be persisted as task evidence.
+
+The checked-in tests use synthetic transports and accounts. They do not prove
+live Google consent, Gmail API behavior, or the interactive Windows caller
+path. Keep Gmail read/write build-unavailable in the baseline until those
+checks pass. Gmail sending intentionally remains outside the capability
+registry and first release.
+
 ### GitHub Copilot token storage
 
 Use a disposable GitHub test account if an end-to-end check is required. Confirm:

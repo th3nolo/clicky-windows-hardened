@@ -30,6 +30,7 @@ from tasks.approvals import (
     ApprovalPayload,
     ApprovalPreview,
     build_approval_payload,
+    gmail_draft_target,
     task_artifact_target,
 )
 from tasks.artifacts import (
@@ -68,6 +69,11 @@ MAX_VERIFIER_SUBSTRING_CHARS = 1_024
 MAX_DECLARED_STEPS = 32
 MAX_SELECTED_CALENDARS = 50
 MAX_CALENDAR_ID_CHARS = 1_024
+MAX_GMAIL_THREAD_ID_CHARS = 128
+MAX_GMAIL_RECIPIENTS = 50
+MAX_GMAIL_ADDRESS_CHARS = 320
+MAX_GMAIL_SUBJECT_CHARS = 500
+MAX_GMAIL_DRAFT_BODY_CHARS = 16 * 1024
 MAX_CONNECTOR_OUTPUT_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -170,10 +176,24 @@ class DeclaredToolStep:
                 not isinstance(self.connector, ConnectorId)
                 or definition.connector is not self.connector
                 or definition.feature is not FeatureCapability.CONNECTOR_READ
-                or self.capability is not CapabilityId.CALENDAR_EVENT_READ
+                or self.capability
+                not in {
+                    CapabilityId.CALENDAR_EVENT_READ,
+                    CapabilityId.GMAIL_MESSAGE_READ,
+                }
             ):
                 raise ValueError(
                     "Declared connector read operation is unavailable"
+                )
+        elif self.tool is DeclarativeTool.CONNECTOR_WRITE:
+            if (
+                self.connector is not ConnectorId.GMAIL
+                or definition.connector is not ConnectorId.GMAIL
+                or definition.feature is not FeatureCapability.CONNECTOR_WRITE
+                or self.capability is not CapabilityId.GMAIL_DRAFT_WRITE
+            ):
+                raise ValueError(
+                    "Declared connector write operation is unavailable"
                 )
         else:
             raise ValueError("Declared connector tool is unavailable")
@@ -324,6 +344,117 @@ class CalendarAvailabilityArguments:
             1,
             MAX_CONNECTOR_OUTPUT_BYTES,
             "Calendar response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GmailSelectedThreadArguments:
+    """One exact connected account and user-selected Gmail thread."""
+
+    authorization_id: str
+    selected_thread_id: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Gmail account authorization ID",
+        )
+        _bounded_token(
+            self.selected_thread_id,
+            _OPAQUE_ID,
+            MAX_GMAIL_THREAD_ID_CHARS,
+            "Selected Gmail thread ID",
+        )
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Gmail response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GmailDraftArguments:
+    """One exact unsent draft; sending is outside the capability vocabulary."""
+
+    authorization_id: str
+    to: tuple[str, ...] = field(repr=False)
+    subject: str = field(repr=False)
+    body_text: str = field(repr=False)
+    cc: tuple[str, ...] = field(default=(), repr=False)
+    bcc: tuple[str, ...] = field(default=(), repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Gmail account authorization ID",
+        )
+        all_addresses: list[str] = []
+        for values, label, required in (
+            (self.to, "To", True),
+            (self.cc, "Cc", False),
+            (self.bcc, "Bcc", False),
+        ):
+            if (
+                not isinstance(values, tuple)
+                or (required and not values)
+                or len(values) > MAX_GMAIL_RECIPIENTS
+            ):
+                raise TypeError(f"Gmail {label} recipients are invalid")
+            for address in values:
+                _bounded_text(
+                    address,
+                    MAX_GMAIL_ADDRESS_CHARS,
+                    f"Gmail {label} recipient",
+                    allow_newlines=False,
+                )
+                if (
+                    address.strip() != address
+                    or address.count("@") != 1
+                    or any(character.isspace() for character in address)
+                ):
+                    raise ValueError(f"Gmail {label} recipient is invalid")
+                all_addresses.append(address.casefold())
+            if len({item.casefold() for item in values}) != len(values):
+                raise ValueError(f"Gmail {label} recipients must be unique")
+        if len(set(all_addresses)) != len(all_addresses):
+            raise ValueError(
+                "Gmail recipients must be unique across headers"
+            )
+        _bounded_text(
+            self.subject,
+            MAX_GMAIL_SUBJECT_CHARS,
+            "Gmail draft subject",
+        )
+        if "\r" in self.subject or "\n" in self.subject:
+            raise ValueError("Gmail draft subject cannot contain newlines")
+        _bounded_text(
+            self.body_text,
+            MAX_GMAIL_DRAFT_BODY_CHARS,
+            "Gmail draft body",
+        )
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Gmail response limit",
+        )
+
+    def preview_bytes(self) -> bytes:
+        return _canonical_json(
+            {
+                "bcc": list(self.bcc),
+                "body_text": self.body_text,
+                "cc": list(self.cc),
+                "subject": self.subject,
+                "to": list(self.to),
+            }
         )
 
 
@@ -529,6 +660,8 @@ BrokerArguments = (
     | WebSearchArguments
     | WebFetchArguments
     | CalendarAvailabilityArguments
+    | GmailSelectedThreadArguments
+    | GmailDraftArguments
     | ResearchCsvRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
@@ -569,6 +702,9 @@ class ConnectorReadOutput:
                 "Connector provider request ID",
                 allow_newlines=False,
             )
+
+
+ConnectorWriteOutput = ConnectorReadOutput
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,8 +770,15 @@ ModelStreamAdapter = Callable[
 WebSearchAdapter = Callable[[str, int], Awaitable[str]]
 WebFetchAdapter = Callable[[str, int], Awaitable[str]]
 ConnectorReadAdapter = Callable[
-    [ToolCall, CalendarAvailabilityArguments],
+    [
+        ToolCall,
+        CalendarAvailabilityArguments | GmailSelectedThreadArguments,
+    ],
     Awaitable[ConnectorReadOutput],
+]
+ConnectorWriteAdapter = Callable[
+    [ToolCall, GmailDraftArguments],
+    Awaitable[ConnectorWriteOutput],
 ]
 
 
@@ -652,6 +795,7 @@ class TaskToolBroker:
         web_search: WebSearchAdapter | None = None,
         web_fetch: WebFetchAdapter | None = None,
         connector_read: ConnectorReadAdapter | None = None,
+        connector_write: ConnectorWriteAdapter | None = None,
         artifact_root: Path | None = None,
     ) -> None:
         if not isinstance(run, TaskRun):
@@ -733,7 +877,10 @@ class TaskToolBroker:
             self._web_fetch = web_fetch
         if connector_read is not None and not callable(connector_read):
             raise TypeError("Task connector read adapter is invalid")
+        if connector_write is not None and not callable(connector_write):
+            raise TypeError("Task connector write adapter is invalid")
         self._connector_read = connector_read
+        self._connector_write = connector_write
         self._artifact_manager = ArtifactAdoptionManager(
             run,
             workspace,
@@ -748,7 +895,7 @@ class TaskToolBroker:
     def approval_payload(
         self,
         call: ToolCall,
-        arguments: ArtifactWriteArguments,
+        arguments: ArtifactWriteArguments | GmailDraftArguments,
         *,
         approval_id: str,
         reason: str,
@@ -757,25 +904,44 @@ class TaskToolBroker:
         """Build the exact target and bounded preview before requesting access."""
 
         step = self._preflight(call, arguments, check_run_state=False)
-        if step.tool is not DeclarativeTool.ARTIFACT_WRITE:
-            raise TaskToolBrokerValidationError(
-                "Initial broker approval preview supports artifact writes"
+        if step.tool is DeclarativeTool.ARTIFACT_WRITE:
+            assert isinstance(arguments, ArtifactWriteArguments)
+            content_digest = hashlib.sha256(arguments.content).hexdigest()
+            excerpt = arguments.content.decode("utf-8")[:24 * 1024]
+            target = task_artifact_target(
+                artifact_id=arguments.artifact_id,
+                name=arguments.name,
+                content_sha256=content_digest,
             )
-        content_digest = hashlib.sha256(arguments.content).hexdigest()
-        excerpt = arguments.content.decode("utf-8")[:2_048]
+            media_type = arguments.media_type
+            byte_count = len(arguments.content)
+        elif step.tool is DeclarativeTool.CONNECTOR_WRITE:
+            if not isinstance(arguments, GmailDraftArguments):
+                raise TaskToolBrokerValidationError(
+                    "Gmail draft approval arguments are invalid"
+                )
+            preview_bytes = arguments.preview_bytes()
+            content_digest = hashlib.sha256(preview_bytes).hexdigest()
+            excerpt = preview_bytes.decode("utf-8")
+            target = gmail_draft_target(
+                authorization_id=arguments.authorization_id,
+                preview_sha256=content_digest,
+            )
+            media_type = "application/json"
+            byte_count = len(preview_bytes)
+        else:
+            raise TaskToolBrokerValidationError(
+                "Initial broker approval preview supports exact writes"
+            )
         return build_approval_payload(
             call,
             approval_id=approval_id,
             reason=reason,
             expires_at=expires_at,
-            target=task_artifact_target(
-                artifact_id=arguments.artifact_id,
-                name=arguments.name,
-                content_sha256=content_digest,
-            ),
+            target=target,
             preview=ApprovalPreview(
-                media_type=arguments.media_type,
-                byte_count=len(arguments.content),
+                media_type=media_type,
+                byte_count=byte_count,
                 content_sha256=content_digest,
                 excerpt=excerpt,
             ),
@@ -813,12 +979,7 @@ class TaskToolBroker:
             ) from exc
         self._tool_calls += 1
         self._call_ids.add(call.call_id)
-        if step.tool in {
-            DeclarativeTool.WEB_SEARCH,
-            DeclarativeTool.WEB_FETCH,
-            DeclarativeTool.CONNECTOR_READ,
-        }:
-            self._network_requests += 1
+        self._network_requests += _network_request_cost(step.tool)
         try:
             execution = await self._execute_validated(
                 call,
@@ -890,7 +1051,7 @@ class TaskToolBroker:
             raise TaskToolBrokerValidationError(
                 "Task broker call does not match its declared step"
             )
-        expected_type = _ARGUMENT_TYPES[step.tool]
+        expected_type = _argument_type(step)
         if type(arguments) is not expected_type:
             raise TaskToolBrokerValidationError(
                 "Task broker arguments do not match the declared tool"
@@ -916,15 +1077,11 @@ class TaskToolBroker:
                 )
         if self._tool_calls >= self._run.spec.limits.max_tool_calls:
             raise TaskToolBrokerLimitError("Task tool-call limit reached")
+        network_cost = _network_request_cost(step.tool)
         if (
-            step.tool
-            in {
-                DeclarativeTool.WEB_SEARCH,
-                DeclarativeTool.WEB_FETCH,
-                DeclarativeTool.CONNECTOR_READ,
-            }
-            and self._network_requests
-            >= self._run.spec.limits.max_network_requests
+            network_cost
+            and self._network_requests + network_cost
+            > self._run.spec.limits.max_network_requests
         ):
             raise TaskToolBrokerLimitError(
                 "Task network-request limit reached"
@@ -945,6 +1102,11 @@ class TaskToolBroker:
         elif isinstance(arguments, WebFetchArguments):
             self._require_output_capacity(arguments.max_chars * 4)
         elif isinstance(arguments, CalendarAvailabilityArguments):
+            self._require_output_capacity(arguments.maximum_response_bytes)
+        elif isinstance(
+            arguments,
+            (GmailSelectedThreadArguments, GmailDraftArguments),
+        ):
             self._require_output_capacity(arguments.maximum_response_bytes)
 
     async def _execute_validated(
@@ -970,6 +1132,10 @@ class TaskToolBroker:
             return self._text_execution(call, _require_text_output(text))
         if type(arguments) is CalendarAvailabilityArguments:
             return await self._read_connector(call, arguments)
+        if type(arguments) is GmailSelectedThreadArguments:
+            return await self._read_connector(call, arguments)
+        if type(arguments) is GmailDraftArguments:
+            return await self._write_connector(call, arguments)
         if type(arguments) is ResearchCsvRenderArguments:
             return self._render_research_csv(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
@@ -985,7 +1151,7 @@ class TaskToolBroker:
     async def _read_connector(
         self,
         call: ToolCall,
-        arguments: CalendarAvailabilityArguments,
+        arguments: CalendarAvailabilityArguments | GmailSelectedThreadArguments,
     ) -> BrokerExecution:
         if self._connector_read is None:
             raise TaskToolBrokerOperationError("connector_read_unavailable")
@@ -1016,6 +1182,47 @@ class TaskToolBroker:
                 provider_response_digest=(
                     output.provider_response_digest
                 ),
+                provider_response_bytes=output.provider_response_bytes,
+                provider_request_id=output.provider_request_id,
+            ),
+            text=text,
+            provider_response_digest=output.provider_response_digest,
+            provider_response_bytes=output.provider_response_bytes,
+            provider_request_id=output.provider_request_id,
+        )
+
+    async def _write_connector(
+        self,
+        call: ToolCall,
+        arguments: GmailDraftArguments,
+    ) -> BrokerExecution:
+        if self._connector_write is None:
+            raise TaskToolBrokerOperationError("connector_write_unavailable")
+        output = await self._connector_write(call, arguments)
+        if not isinstance(output, ConnectorReadOutput):
+            raise TaskToolBrokerOperationError("connector_output_invalid")
+        if (
+            len(output.content) > arguments.maximum_response_bytes
+            or output.provider_response_bytes
+            > arguments.maximum_response_bytes * 2 + 1
+        ):
+            raise TaskToolBrokerLimitError(
+                "Connector response exceeds its declared limit"
+            )
+        try:
+            text = output.content.decode("utf-8")
+            parsed = json.loads(text)
+            _validate_json_value(parsed)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_output_invalid"
+            ) from exc
+        self._reserve_output(len(output.content))
+        return BrokerExecution(
+            result=_succeeded_result(
+                call,
+                output.content,
+                provider_response_digest=output.provider_response_digest,
                 provider_response_bytes=output.provider_response_bytes,
                 provider_request_id=output.provider_request_id,
             ),
@@ -1351,6 +1558,20 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "time_max": arguments.time_max,
             "time_min": arguments.time_min,
         }
+    if type(arguments) is GmailSelectedThreadArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "selected_thread_id": arguments.selected_thread_id,
+        }
+    if type(arguments) is GmailDraftArguments:
+        preview = arguments.preview_bytes()
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "preview_bytes": len(preview),
+            "preview_sha256": hashlib.sha256(preview).hexdigest(),
+        }
     if type(arguments) is ResearchCsvRenderArguments:
         return {
             "field_ids": list(arguments.field_ids),
@@ -1406,12 +1627,44 @@ _ARGUMENT_TYPES = {
     DeclarativeTool.MODEL_GENERATE: ModelGenerateArguments,
     DeclarativeTool.WEB_SEARCH: WebSearchArguments,
     DeclarativeTool.WEB_FETCH: WebFetchArguments,
-    DeclarativeTool.CONNECTOR_READ: CalendarAvailabilityArguments,
     DeclarativeTool.RESEARCH_CSV_RENDER: ResearchCsvRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
     DeclarativeTool.VERIFY_OUTPUT: VerifyOutputArguments,
 }
+
+_CONNECTOR_ARGUMENT_TYPES = {
+    CapabilityId.CALENDAR_EVENT_READ: CalendarAvailabilityArguments,
+    CapabilityId.GMAIL_MESSAGE_READ: GmailSelectedThreadArguments,
+    CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
+}
+
+
+def _argument_type(step: DeclaredToolStep):
+    if step.tool in {
+        DeclarativeTool.CONNECTOR_READ,
+        DeclarativeTool.CONNECTOR_WRITE,
+    }:
+        try:
+            return _CONNECTOR_ARGUMENT_TYPES[step.capability]
+        except KeyError as exc:
+            raise TaskToolBrokerValidationError(
+                "Connector argument schema is unavailable"
+            ) from exc
+    return _ARGUMENT_TYPES[step.tool]
+
+
+def _network_request_cost(tool: DeclarativeTool) -> int:
+    if tool in {
+        DeclarativeTool.WEB_SEARCH,
+        DeclarativeTool.WEB_FETCH,
+        DeclarativeTool.CONNECTOR_READ,
+    }:
+        return 1
+    if tool is DeclarativeTool.CONNECTOR_WRITE:
+        # Gmail draft creation performs one write plus one read-back verify.
+        return 2
+    return 0
 
 
 def _validate_artifact_name(name: object, media_type: object) -> None:
@@ -1621,7 +1874,11 @@ __all__ = [
     "CalendarAvailabilityArguments",
     "ConnectorReadAdapter",
     "ConnectorReadOutput",
+    "ConnectorWriteAdapter",
+    "ConnectorWriteOutput",
     "DeclaredToolStep",
+    "GmailDraftArguments",
+    "GmailSelectedThreadArguments",
     "ModelGenerateArguments",
     "ResearchCsvRenderArguments",
     "TaskToolBroker",
