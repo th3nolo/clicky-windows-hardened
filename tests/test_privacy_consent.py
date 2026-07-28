@@ -233,7 +233,7 @@ class PrivacyWiringTests(unittest.TestCase):
 
     def test_manager_gates_every_screen_capture_path(self) -> None:
         source = (ROOT / "companion_manager.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("capture_all_screens()"), 2)
+        self.assertEqual(source.count("capture_all_screens()"), 3)
         self.assertIn(
             "if sensitive or identity_q or not screen_permission:", source
         )
@@ -244,6 +244,17 @@ class PrivacyWiringTests(unittest.TestCase):
         )
         quiz_capture = source.index("capture_all_screens()", quiz_gate)
         self.assertLess(quiz_gate, quiz_capture)
+        controller = (
+            ROOT / "walkthrough" / "controller.py"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            controller.count("if not self._screen_allowed():"),
+            2,
+        )
+        self.assertIn(
+            "self._capture_walkthrough_displays",
+            source,
+        )
 
     def test_manager_gates_microphone_and_cloud_tts(self) -> None:
         source = (ROOT / "companion_manager.py").read_text(encoding="utf-8")

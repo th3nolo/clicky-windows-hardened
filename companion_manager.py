@@ -60,6 +60,18 @@ from screen.topology import (
 )
 from ui.panel import AppState
 from turn_coordinator import TurnCoordinator, TurnPhase, TurnSession
+from walkthrough.controller import (
+    RejectingTargetGuard,
+    RenderPlan,
+    WalkthroughController,
+)
+from walkthrough.models import ShapeKind, WalkthroughStep
+from walkthrough.prompt import walkthrough_response_contract
+from walkthrough.protocol import (
+    MAX_PAYLOAD_BYTES,
+    WalkthroughProtocolError,
+    WalkthroughProtocolParser,
+)
 from tutor import (
     active_window_title, app_key,
     is_locate, is_multistep, is_next, is_stop, is_sensitive_window,
@@ -301,6 +313,8 @@ class CompanionManager(QObject):
     sig_dictation_result    = pyqtSignal(object)          # DictationRunOutcome
     sig_microphone_test_level = pyqtSignal(str, float)     # opaque id, local RMS
     sig_microphone_test_stopped = pyqtSignal(str, str)     # opaque id, reason
+    sig_walkthrough_progress = pyqtSignal(object)          # WalkthroughProgress
+    sig_walkthrough_ended = pyqtSignal(str)                # content-free reason
 
     def __init__(
         self,
@@ -310,6 +324,8 @@ class CompanionManager(QObject):
         ] = DEFAULT_BUILD_FEATURE_FLAGS,
         dictation_targets: SecureTargetGuard | None = None,
         dictation_insertion_backend=None,
+        walkthrough_target_guard=None,
+        walkthrough_capture=None,
     ):
         super().__init__()
         self._state: AppState = AppState.IDLE
@@ -321,6 +337,27 @@ class CompanionManager(QObject):
         self._pressed_session: TurnSession | None = None
         self._dictation_pressed: DictationSession | None = None
         self._microphone_test_id: str | None = None
+        walkthrough_targets = (
+            walkthrough_target_guard
+            if walkthrough_target_guard is not None
+            else RejectingTargetGuard()
+        )
+        self._walkthrough_parser = WalkthroughProtocolParser(
+            walkthrough_targets
+        )
+        self._walkthrough = WalkthroughController(
+            target_guard=walkthrough_targets,
+            screen_allowed=lambda: screen_capture_allowed(cfg),
+            capture_displays=(
+                walkthrough_capture
+                if walkthrough_capture is not None
+                else self._capture_walkthrough_displays
+            ),
+            on_render=self._render_walkthrough_plan,
+            on_clear=self._clear_walkthrough_visuals,
+            on_progress=self.sig_walkthrough_progress.emit,
+            on_end=self.sig_walkthrough_ended.emit,
+        )
         self._dictation_clipboard_owner = 0
         self._dictation_targets = (
             dictation_targets
@@ -429,6 +466,168 @@ class CompanionManager(QObject):
         """Return the model currently visible in the main panel."""
 
         return self._current_model
+
+    @staticmethod
+    def _capture_walkthrough_displays():
+        """Recapture through the excluded-window path and retain metadata only."""
+
+        screenshots = capture_all_screens()
+        return tuple(screenshot.descriptor() for screenshot in screenshots)
+
+    def _render_walkthrough_plan(self, plan: RenderPlan) -> None:
+        """Translate a typed display-only plan into overlay signals."""
+
+        if not isinstance(plan, RenderPlan):
+            return
+        if plan.point is not None:
+            self.sig_point_hold.emit(True)
+            self.sig_point_at.emit(
+                plan.point.x,
+                plan.point.y,
+                plan.point.label,
+            )
+        for shape in plan.shapes:
+            points = shape.points
+            if shape.kind in (ShapeKind.LINE, ShapeKind.ARROW):
+                self.sig_draw.emit(
+                    {
+                        "kind": shape.kind.value,
+                        "pts": list(points),
+                        "color": shape.color,
+                        "ttl": None,
+                    }
+                )
+            elif shape.kind is ShapeKind.RECTANGLE:
+                (x1, y1), (x2, y2) = points
+                self.sig_draw.emit(
+                    {
+                        "kind": "rect",
+                        "x1": x1,
+                        "y1": y1,
+                        "x2": x2,
+                        "y2": y2,
+                        "color": shape.color,
+                        "ttl": None,
+                    }
+                )
+            elif shape.kind is ShapeKind.CIRCLE:
+                (x, y), = points
+                self.sig_draw.emit(
+                    {
+                        "kind": "circle",
+                        "x": x,
+                        "y": y,
+                        "r": shape.radius,
+                        "color": shape.color,
+                        "ttl": None,
+                    }
+                )
+            elif shape.kind is ShapeKind.UNDERLINE:
+                self.sig_draw.emit(
+                    {
+                        "kind": "line",
+                        "pts": list(points),
+                        "color": shape.color,
+                        "ttl": None,
+                    }
+                )
+
+    def _clear_walkthrough_visuals(self) -> None:
+        self.sig_point_hold.emit(False)
+        self.sig_point_release.emit()
+        self.sig_clear_drawings.emit()
+
+    def continue_walkthrough(self) -> bool:
+        """Advance only from the explicit progress UI."""
+
+        with self._input_lock:
+            if not self._walkthrough.active or self._walkthrough.paused_for_voice:
+                return False
+            session = self._turns.start_processing()
+            if session is None:
+                return False
+            self._turns.bind_cancel(
+                session,
+                "walkthrough",
+                lambda: self._walkthrough.cancel("turn_superseded"),
+            )
+            self._turns.bind_cancel(
+                session,
+                "playback",
+                self._cancel_outputs,
+            )
+        self._emit_state(AppState.THINKING, session)
+        self._submit(self._advance_walkthrough(session), session)
+        return True
+
+    def cancel_walkthrough(self, reason: str = "cancelled") -> bool:
+        cancelled = self._walkthrough.cancel(reason)
+        if cancelled:
+            with self._input_lock:
+                self._turns.cancel_active(self._set_idle_state)
+            self._cancel_outputs()
+        return cancelled
+
+    async def _advance_walkthrough(
+        self,
+        session: TurnSession,
+        *,
+        from_voice: bool = False,
+    ) -> None:
+        if not self._turns.is_current(session):
+            return
+        try:
+            result = await self._walkthrough.advance(
+                from_voice=from_voice
+            )
+            if not self._turns.is_current(session):
+                return
+            if result.step is not None:
+                await self._present_walkthrough_step(
+                    result.step,
+                    session,
+                )
+            elif result.completed:
+                message = "Visual walkthrough complete."
+                self._emit_turn_signal(
+                    session,
+                    self.sig_response_done,
+                    message,
+                )
+            elif result.reason not in ("inactive", "stale"):
+                self._emit_turn_signal(
+                    session,
+                    self.sig_error,
+                    "The visual walkthrough stopped before the next step "
+                    "could be validated.",
+                )
+        finally:
+            self._finish_turn(session)
+
+    async def _present_walkthrough_step(
+        self,
+        step: WalkthroughStep,
+        session: TurnSession,
+    ) -> None:
+        if not self._turns.is_current(session):
+            return
+        self._last_response = step.narration
+        self._emit_turn_signal(
+            session,
+            self.sig_response_chunk,
+            step.narration,
+        )
+        self._emit_turn_signal(
+            session,
+            self.sig_response_done,
+            step.narration,
+        )
+        self._turns.set_phase(session, TurnPhase.SPEAKING)
+        self._emit_state(AppState.SPEAKING, session)
+        await self._speak_with_failure_fallback(
+            _speakable(step.narration),
+            session,
+        )
 
     def submit_owned_turn(
         self,
@@ -673,6 +872,7 @@ class CompanionManager(QObject):
 
     def shutdown(self):
         self.stop_microphone_test(reason="shutdown")
+        self._walkthrough.cancel("shutdown")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None
@@ -731,6 +931,7 @@ class CompanionManager(QObject):
     def _on_system_resume(self):
         """Called automatically after the laptop wakes from sleep."""
         self.stop_microphone_test(reason="device_reset")
+        self._walkthrough.cancel("device_reset")
         with self._input_lock:
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
@@ -1009,6 +1210,7 @@ class CompanionManager(QObject):
                 return
             if self._begin_capture(session):
                 self._pressed_session = session
+                self._walkthrough.pause_for_voice()
             else:
                 self._finish_turn(session)
 
@@ -1023,6 +1225,7 @@ class CompanionManager(QObject):
 
     def on_dictation_hotkey_press(self) -> None:
         """Capture one secure target, then open the owned microphone stream."""
+        self._walkthrough.cancel("dictation_started")
         with self._input_lock:
             if self._microphone_test_id is not None:
                 self.sig_dictation_error.emit(
@@ -1072,6 +1275,7 @@ class CompanionManager(QObject):
             if not self._begin_capture(session):
                 self._finish_turn(session)
                 return
+            self._walkthrough.pause_for_voice()
             self._submit(self._auto_stop_after_pause(session), session)
 
     def _handle_level(self, rms: float):
@@ -1376,12 +1580,18 @@ class CompanionManager(QObject):
             self._emit_turn_signal(
                 session, self.sig_error, f"Microphone capture failed: {e}"
             )
+            if self._walkthrough.paused_for_voice:
+                self._walkthrough.cancel("voice_input_failed")
             self._finish_turn(session)
             return
         if pcm is None or not self._turns.is_current(session):
+            if self._walkthrough.paused_for_voice:
+                self._walkthrough.cancel("voice_input_failed")
             return
         _log.info("captured %.1fs of audio", len(pcm) / 32000)
         if len(pcm) < 3200:  # < 0.1s of audio — ignore
+            if self._walkthrough.paused_for_voice:
+                self._walkthrough.cancel("voice_input_failed")
             self._finish_turn(session)
             return
 
@@ -1417,6 +1627,22 @@ class CompanionManager(QObject):
 
             title = active_window_title()
             ak = app_key(title)
+
+            if self._walkthrough.active:
+                if is_next(transcript):
+                    self._turns.bind_cancel(
+                        session,
+                        "walkthrough",
+                        lambda: self._walkthrough.cancel(
+                            "turn_superseded"
+                        ),
+                    )
+                    await self._advance_walkthrough(
+                        session,
+                        from_voice=True,
+                    )
+                    return
+                self._walkthrough.cancel("turn_superseded")
 
             if is_next(transcript) and self._lesson_steps:
                 await self._advance_lesson_step(ak, session)
@@ -1544,8 +1770,8 @@ class CompanionManager(QObject):
             #   • Otherwise → universal grid-based locator with the active
             #     vision LLM (Copilot GPT-4o, OpenAI, Gemini, Ollama llava).
             #     ~25-50px accuracy. Good enough for buttons/menus/icons.
-            locate_triggered = is_locate(transcript)
             multistep = is_multistep(transcript)
+            locate_triggered = is_locate(transcript) and not multistep
 
             search_task = None
             locate_task = None
@@ -1771,10 +1997,25 @@ class CompanionManager(QObject):
                     "textual screen map, OCR, and detected-figure context above; "
                     "do not claim direct visual inspection.\n"
                 )
+            walkthrough_requested = bool(
+                multistep
+                and screenshots
+                and provider_images
+                and supports_vision
+            )
+            if walkthrough_requested:
+                system += walkthrough_response_contract(
+                    tuple(
+                        screenshot.descriptor()
+                        for screenshot in screenshots
+                    )
+                )
 
             # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
             full_response = ""
             display_buf = ""
+            walkthrough_bytes = 0
+            walkthrough_overflow = False
             async for chunk in self._get_llm().stream_response(
                 user_text=transcript,
                 screenshots_b64=provider_images,
@@ -1784,6 +2025,23 @@ class CompanionManager(QObject):
             ):
                 if not self._turns.is_current(session):
                     return
+                if walkthrough_requested:
+                    if not isinstance(chunk, str):
+                        walkthrough_overflow = True
+                        full_response = ""
+                        continue
+                    chunk_size = len(chunk.encode("utf-8"))
+                    if (
+                        walkthrough_overflow
+                        or walkthrough_bytes + chunk_size
+                        > MAX_PAYLOAD_BYTES
+                    ):
+                        walkthrough_overflow = True
+                        full_response = ""
+                        continue
+                    walkthrough_bytes += chunk_size
+                    full_response += chunk
+                    continue
                 full_response += chunk
                 display_buf += chunk
                 self._parse_points(display_buf, session)
@@ -1797,7 +2055,7 @@ class CompanionManager(QObject):
                     display_buf = ""
                 if flush:
                     self._emit_turn_signal(session, self.sig_response_chunk, flush)
-            if display_buf:
+            if display_buf and not walkthrough_requested:
                 self._emit_turn_signal(
                     session,
                     self.sig_response_chunk,
@@ -1806,13 +2064,87 @@ class CompanionManager(QObject):
             if not self._turns.is_current(session):
                 return
 
+            if walkthrough_requested:
+                descriptors = tuple(
+                    screenshot.descriptor()
+                    for screenshot in screenshots
+                )
+                try:
+                    if walkthrough_overflow:
+                        raise WalkthroughProtocolError(
+                            "walkthrough payload is too large"
+                        )
+                    walkthrough = self._walkthrough_parser.parse(
+                        full_response,
+                        known_displays=frozenset(
+                            descriptor.stable_id
+                            for descriptor in descriptors
+                        ),
+                    )
+                    first_step = self._walkthrough.start(
+                        walkthrough,
+                        descriptors,
+                    )
+                except (
+                    WalkthroughProtocolError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                ):
+                    self._walkthrough.cancel(
+                        "validation_failed",
+                        notify=False,
+                    )
+                    message = (
+                        "The visual walkthrough response could not be "
+                        "validated. Nothing was drawn."
+                    )
+                    self._emit_turn_signal(
+                        session,
+                        self.sig_error,
+                        message,
+                    )
+                    self._emit_turn_signal(
+                        session,
+                        self.sig_response_done,
+                        message,
+                    )
+                    self._last_response = message
+                    history.append(Message(role="user", content=transcript))
+                    history.append(
+                        Message(role="assistant", content=message)
+                    )
+                    self._app_memory[ak] = history[-20:]
+                    return
+                history.append(Message(role="user", content=transcript))
+                history.append(
+                    Message(
+                        role="assistant",
+                        content=(
+                            f"Started a validated {len(walkthrough.steps)}-step "
+                            "visual walkthrough."
+                        ),
+                    )
+                )
+                self._app_memory[ak] = history[-20:]
+                await self._present_walkthrough_step(
+                    first_step,
+                    session,
+                )
+                return
+
             # 6. Update per-app history
             history.append(Message(role="user", content=transcript))
             history.append(Message(role="assistant", content=full_response))
             self._app_memory[ak] = history[-20:]
 
-            # Multistep: parse numbered steps for later "next" invocations
-            if multistep and not self._lesson_steps:
+            # Preserve the text-only lesson fallback when the selected model
+            # cannot receive screenshots. It remains narration-only.
+            if (
+                multistep
+                and not walkthrough_requested
+                and not self._lesson_steps
+            ):
                 steps = _split_steps(full_response)
                 if len(steps) > 1:
                     self._lesson_steps = steps
@@ -1875,6 +2207,8 @@ class CompanionManager(QObject):
             for task in side_tasks:
                 if not task.done():
                     task.cancel()
+            if self._walkthrough.paused_for_voice:
+                self._walkthrough.cancel("voice_input_failed")
             if pointing_held:
                 self._emit_turn_signal(session, self.sig_point_release)
             self._finish_turn(session)
@@ -2639,6 +2973,8 @@ class CompanionManager(QObject):
         """Apply persisted choices immediately without restarting Clicky."""
         if not microphone_allowed(cfg):
             self.stop_microphone_test(reason="permission_revoked")
+        if not screen_capture_allowed(cfg):
+            self._walkthrough.cancel("permission_revoked")
         with self._input_lock:
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
@@ -2865,6 +3201,7 @@ class CompanionManager(QObject):
     def stop(self):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
         self.stop_microphone_test(reason="cancelled")
+        self._walkthrough.cancel("cancelled")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None

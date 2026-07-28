@@ -87,11 +87,14 @@ hidden = [
     "tasks.region_context",
     "walkthrough.models",
     "walkthrough.protocol",
+    "walkthrough.controller",
+    "walkthrough.prompt",
 
     # First-run setup wizard
     "ui.setup_wizard",
     "ui.onboarding_demo",
     "ui.microphone_test",
+    "ui.walkthrough",
     "ui.stt_readiness",
     "ui.style_profiles",
     "ui.skills_catalog",
