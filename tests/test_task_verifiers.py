@@ -15,6 +15,7 @@ from tasks.verifiers import (
     FileExpectation,
     FileSnapshot,
     ResearchCsvFileExpectation,
+    ResearchDocxFileExpectation,
     ResearchMarkdownFileExpectation,
     RepositoryExpectation,
     RepositorySnapshot,
@@ -24,6 +25,7 @@ from tasks.verifiers import (
     verify_api_response,
     verify_file,
     verify_research_csv_file,
+    verify_research_docx_file,
     verify_research_markdown_file,
     verify_repository,
     verify_ui_state,
@@ -252,6 +254,81 @@ class TaskVerifierTests(unittest.TestCase):
         )
         self.assertFalse(wrong_sources.evidence.postcondition_met)
         self.assertFalse(wrong_sources.partial)
+
+    def test_research_docx_verifier_binds_safe_package_and_report_text(self):
+        from research.docx_artifact import DOCX_MEDIA_TYPE
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from tests.test_research_csv import batch, record
+        from tests.test_research_docx import _minimal_docx
+
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        report = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        from research.docx_artifact import (
+            research_markdown_to_docx_model,
+        )
+
+        model = research_markdown_to_docx_model(
+            report.content,
+            schema,
+            requested_sections=1,
+        )
+        content = _minimal_docx(model.paragraphs)
+        digest = hashlib.sha256(content).hexdigest()
+        snapshot = FileSnapshot(
+            artifact_id="research-docx",
+            name="research.docx",
+            media_type=DOCX_MEDIA_TYPE,
+            byte_count=len(content),
+            sha256=digest,
+            provenance_digest=DIGEST_A,
+            complete=True,
+        )
+        expectation = ResearchDocxFileExpectation(
+            file=FileExpectation(
+                expected_sha256=digest,
+                expected_media_type=DOCX_MEDIA_TYPE,
+                maximum_bytes=1024 * 1024,
+            ),
+            report_title=schema.title,
+            requested_field_ids=schema.requested_field_ids,
+            requested_sections=1,
+            report_sha256=report.sha256,
+            document_digest=model.document_digest,
+            source_digest=model.source_digest,
+        )
+        accepted = verify_research_docx_file(
+            snapshot,
+            expectation,
+            verifier_id="research-docx-v1",
+            content=content,
+        )
+        self.assertTrue(accepted.postcondition_met)
+
+        changed_text = verify_research_docx_file(
+            snapshot,
+            ResearchDocxFileExpectation(
+                file=expectation.file,
+                report_title=schema.title,
+                requested_field_ids=schema.requested_field_ids,
+                requested_sections=1,
+                report_sha256=report.sha256,
+                document_digest=DIGEST_B,
+                source_digest=model.source_digest,
+            ),
+            verifier_id="research-docx-v1",
+            content=content,
+        )
+        self.assertFalse(changed_text.postcondition_met)
 
     def test_api_response_verifier_binds_request_status_type_size_and_body(self):
         snapshot = ApiResponseSnapshot(

@@ -71,9 +71,11 @@ from tasks.models import (
 from tasks.verifiers import (
     FileExpectation,
     ResearchCsvFileExpectation,
+    ResearchDocxFileExpectation,
     ResearchMarkdownFileExpectation,
     verify_file,
     verify_research_csv_file,
+    verify_research_docx_file,
     verify_research_markdown_file,
 )
 
@@ -114,6 +116,10 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _INERT_ARTIFACT_MEDIA = frozenset(
     {
         "application/json",
+        (
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
         "text/csv",
         "text/markdown",
         "text/plain",
@@ -121,6 +127,10 @@ _INERT_ARTIFACT_MEDIA = frozenset(
 )
 _MEDIA_EXTENSIONS = {
     "application/json": frozenset({".json"}),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ): frozenset({".docx"}),
     "text/csv": frozenset({".csv"}),
     "text/markdown": frozenset({".md", ".markdown"}),
     "text/plain": frozenset({".txt"}),
@@ -757,6 +767,59 @@ class ResearchMarkdownRenderArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchDocxRenderArguments:
+    report_content: bytes = field(repr=False)
+    report_title: str
+    requested_sections: int
+    field_ids: tuple[str, ...]
+    report_sha256: str
+    source_digest: str
+    maximum_output_bytes: int
+
+    def __post_init__(self) -> None:
+        from research.docx_artifact import MAX_RESEARCH_DOCX_BYTES
+        from research.markdown_artifact import ResearchMarkdownSchema
+        from research.models import MAX_RESEARCH_BYTES
+
+        if (
+            not isinstance(self.report_content, bytes)
+            or not 1 <= len(self.report_content) <= MAX_RESEARCH_BYTES
+        ):
+            raise ValueError(
+                "Research DOCX source report is invalid"
+            )
+        ResearchMarkdownSchema(self.report_title, self.field_ids)
+        _bounded_integer(
+            self.requested_sections,
+            1,
+            100,
+            "Research DOCX requested section count",
+        )
+        if (
+            not isinstance(self.report_sha256, str)
+            or _SHA256.fullmatch(self.report_sha256) is None
+            or self.report_sha256
+            != hashlib.sha256(self.report_content).hexdigest()
+        ):
+            raise ValueError(
+                "Research DOCX source report digest is invalid"
+            )
+        if (
+            not isinstance(self.source_digest, str)
+            or _SHA256.fullmatch(self.source_digest) is None
+        ):
+            raise ValueError(
+                "Research DOCX source digest is invalid"
+            )
+        _bounded_integer(
+            self.maximum_output_bytes,
+            1,
+            MAX_RESEARCH_DOCX_BYTES,
+            "Research DOCX output limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactWriteArguments:
     artifact_id: str
     name: str
@@ -824,6 +887,12 @@ class VerifyOutputArguments:
     research_markdown_field_ids: tuple[str, ...] = ()
     research_markdown_requested_sections: int | None = None
     research_markdown_source_digest: str | None = None
+    research_docx_report_title: str | None = None
+    research_docx_field_ids: tuple[str, ...] = ()
+    research_docx_requested_sections: int | None = None
+    research_docx_report_sha256: str | None = None
+    research_docx_document_digest: str | None = None
+    research_docx_source_digest: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_token(
@@ -959,7 +1028,66 @@ class VerifyOutputArguments:
                     "Research Markdown verifier requires digest, "
                     "text/markdown, and a bounded maximum size"
                 )
-        if research_csv and research_markdown:
+        research_docx = any(
+            (
+                self.research_docx_report_title is not None,
+                bool(self.research_docx_field_ids),
+                self.research_docx_requested_sections is not None,
+                self.research_docx_report_sha256 is not None,
+                self.research_docx_document_digest is not None,
+                self.research_docx_source_digest is not None,
+            )
+        )
+        if research_docx:
+            from research.docx_artifact import (
+                DOCX_MEDIA_TYPE,
+                MAX_RESEARCH_DOCX_BYTES,
+            )
+            from research.markdown_artifact import ResearchMarkdownSchema
+
+            if (
+                self.research_docx_report_title is None
+                or self.research_docx_requested_sections is None
+                or self.research_docx_report_sha256 is None
+                or self.research_docx_document_digest is None
+                or self.research_docx_source_digest is None
+            ):
+                raise ValueError(
+                    "Research DOCX verifier metadata is incomplete"
+                )
+            ResearchMarkdownSchema(
+                self.research_docx_report_title,
+                self.research_docx_field_ids,
+            )
+            _bounded_integer(
+                self.research_docx_requested_sections,
+                1,
+                100,
+                "Research DOCX requested section count",
+            )
+            for value in (
+                self.research_docx_report_sha256,
+                self.research_docx_document_digest,
+                self.research_docx_source_digest,
+            ):
+                if (
+                    not isinstance(value, str)
+                    or _SHA256.fullmatch(value) is None
+                ):
+                    raise ValueError(
+                        "Research DOCX verifier digest is invalid"
+                    )
+            if (
+                self.expected_sha256 is None
+                or self.expected_media_type != DOCX_MEDIA_TYPE
+                or self.maximum_bytes is None
+                or self.maximum_bytes > MAX_RESEARCH_DOCX_BYTES
+            ):
+                raise ValueError(
+                    "Research DOCX verifier requires digest, media type, "
+                    "and a bounded maximum size"
+                )
+        if sum((research_csv, research_markdown, research_docx)) > 1:
             raise ValueError(
                 "Verifier cannot combine research artifact schemas"
             )
@@ -972,6 +1100,7 @@ class VerifyOutputArguments:
                 bool(self.required_utf8_substrings),
                 research_csv,
                 research_markdown,
+                research_docx,
             )
         ):
             raise ValueError("Verifier requires an explicit postcondition")
@@ -990,6 +1119,7 @@ BrokerArguments = (
     | NotionDraftRenderArguments
     | ResearchCsvRenderArguments
     | ResearchMarkdownRenderArguments
+    | ResearchDocxRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
     | VerifyOutputArguments
@@ -1248,7 +1378,14 @@ class TaskToolBroker:
         if step.tool is DeclarativeTool.ARTIFACT_WRITE:
             assert isinstance(arguments, ArtifactWriteArguments)
             content_digest = hashlib.sha256(arguments.content).hexdigest()
-            excerpt = arguments.content.decode("utf-8")[:24 * 1024]
+            from research.docx_artifact import DOCX_MEDIA_TYPE
+
+            if arguments.media_type == DOCX_MEDIA_TYPE:
+                from research.docx_artifact import safe_docx_text_preview
+
+                excerpt = safe_docx_text_preview(arguments.content)
+            else:
+                excerpt = arguments.content.decode("utf-8")[:24 * 1024]
             target = task_artifact_target(
                 artifact_id=arguments.artifact_id,
                 name=arguments.name,
@@ -1545,6 +1682,8 @@ class TaskToolBroker:
             return self._render_research_csv(call, arguments)
         if type(arguments) is ResearchMarkdownRenderArguments:
             return self._render_research_markdown(call, arguments)
+        if type(arguments) is ResearchDocxRenderArguments:
+            return self._render_research_docx(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
             return self._write_artifact(call, arguments)
         if type(arguments) is ArtifactReadArguments:
@@ -1915,6 +2054,43 @@ class TaskToolBroker:
             text=artifact.content.decode("utf-8"),
         )
 
+    def _render_research_docx(
+        self,
+        call: ToolCall,
+        arguments: ResearchDocxRenderArguments,
+    ) -> BrokerExecution:
+        from research.docx_artifact import (
+            render_research_markdown_to_docx,
+        )
+        from research.markdown_artifact import ResearchMarkdownSchema
+
+        try:
+            artifact = render_research_markdown_to_docx(
+                arguments.report_content,
+                ResearchMarkdownSchema(
+                    arguments.report_title,
+                    arguments.field_ids,
+                ),
+                requested_sections=arguments.requested_sections,
+                maximum_output_bytes=arguments.maximum_output_bytes,
+            )
+        except (ImportError, TypeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "research_docx_render_failed"
+            ) from exc
+        if (
+            artifact.report_sha256 != arguments.report_sha256
+            or artifact.source_digest != arguments.source_digest
+        ):
+            raise TaskToolBrokerOperationError(
+                "research_docx_render_failed"
+            )
+        self._reserve_output(len(artifact.content))
+        return BrokerExecution(
+            result=_succeeded_result(call, artifact.content),
+            content=artifact.content,
+        )
+
     def _render_notion_draft(
         self,
         call: ToolCall,
@@ -1975,6 +2151,7 @@ class TaskToolBroker:
         )
         research_verification = None
         research_markdown_verification = None
+        research_docx_verification = None
         if arguments.research_csv_requested_rows is not None:
             research_verification = verify_research_csv_file(
                 pending.file_snapshot(),
@@ -2015,6 +2192,36 @@ class TaskToolBroker:
                 content=content,
             )
             evidence = research_markdown_verification.evidence
+        elif arguments.research_docx_requested_sections is not None:
+            assert arguments.research_docx_report_title is not None
+            assert arguments.research_docx_report_sha256 is not None
+            assert arguments.research_docx_document_digest is not None
+            assert arguments.research_docx_source_digest is not None
+            research_docx_verification = verify_research_docx_file(
+                pending.file_snapshot(),
+                ResearchDocxFileExpectation(
+                    file=file_expectation,
+                    report_title=arguments.research_docx_report_title,
+                    requested_field_ids=(
+                        arguments.research_docx_field_ids
+                    ),
+                    requested_sections=(
+                        arguments.research_docx_requested_sections
+                    ),
+                    report_sha256=(
+                        arguments.research_docx_report_sha256
+                    ),
+                    document_digest=(
+                        arguments.research_docx_document_digest
+                    ),
+                    source_digest=(
+                        arguments.research_docx_source_digest
+                    ),
+                ),
+                verifier_id=arguments.verifier_id,
+                content=content,
+            )
+            evidence = research_docx_verification
         else:
             evidence = verify_file(
                 pending.file_snapshot(),
@@ -2277,6 +2484,18 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
                 arguments.source_context.encode("utf-8")
             ).hexdigest(),
         }
+    if type(arguments) is ResearchDocxRenderArguments:
+        return {
+            "field_ids": list(arguments.field_ids),
+            "maximum_output_bytes": arguments.maximum_output_bytes,
+            "report_bytes": len(arguments.report_content),
+            "report_sha256": arguments.report_sha256,
+            "report_title_sha256": hashlib.sha256(
+                arguments.report_title.encode("utf-8")
+            ).hexdigest(),
+            "requested_sections": arguments.requested_sections,
+            "source_digest": arguments.source_digest,
+        }
     if type(arguments) is ArtifactWriteArguments:
         return {
             "artifact_id": arguments.artifact_id,
@@ -2323,6 +2542,30 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "research_markdown_source_digest": (
                 arguments.research_markdown_source_digest
             ),
+            "research_docx_document_digest": (
+                arguments.research_docx_document_digest
+            ),
+            "research_docx_field_ids": list(
+                arguments.research_docx_field_ids
+            ),
+            "research_docx_report_sha256": (
+                arguments.research_docx_report_sha256
+            ),
+            "research_docx_report_title_sha256": (
+                hashlib.sha256(
+                    arguments.research_docx_report_title.encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                if arguments.research_docx_report_title is not None
+                else None
+            ),
+            "research_docx_requested_sections": (
+                arguments.research_docx_requested_sections
+            ),
+            "research_docx_source_digest": (
+                arguments.research_docx_source_digest
+            ),
             "verifier_id": arguments.verifier_id,
         }
     raise TypeError("Broker arguments use an unknown schema")
@@ -2336,6 +2579,7 @@ _ARGUMENT_TYPES = {
     DeclarativeTool.RESEARCH_MARKDOWN_RENDER: (
         ResearchMarkdownRenderArguments
     ),
+    DeclarativeTool.RESEARCH_DOCX_RENDER: ResearchDocxRenderArguments,
     DeclarativeTool.NOTION_DRAFT_RENDER: NotionDraftRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
@@ -2418,6 +2662,18 @@ def _validate_inert_artifact_content(
     media_type: str,
     content: bytes,
 ) -> None:
+    from research.docx_artifact import DOCX_MEDIA_TYPE
+
+    if media_type == DOCX_MEDIA_TYPE:
+        from research.docx_artifact import validate_safe_docx_package
+
+        try:
+            validate_safe_docx_package(content)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "DOCX artifact package is not inert and valid"
+            ) from exc
+        return
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -2609,6 +2865,7 @@ __all__ = [
     "NotionDraftRenderArguments",
     "NotionSelectedPageArguments",
     "ResearchCsvRenderArguments",
+    "ResearchDocxRenderArguments",
     "ResearchMarkdownRenderArguments",
     "ResolvedSlidesExportArguments",
     "ResolvedSheetsExportArguments",

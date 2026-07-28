@@ -298,6 +298,57 @@ class ResearchMarkdownFileVerification:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchDocxFileExpectation:
+    """Exact file, safe OOXML, and report-derived text postconditions."""
+
+    file: FileExpectation
+    report_title: str
+    requested_field_ids: tuple[str, ...]
+    requested_sections: int
+    report_sha256: str
+    document_digest: str
+    source_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileExpectation):
+            raise TypeError(
+                "Research DOCX file expectation must be typed"
+            )
+        from research.docx_artifact import (
+            DOCX_MEDIA_TYPE,
+            MAX_RESEARCH_DOCX_BYTES,
+        )
+        from research.markdown_artifact import ResearchMarkdownSchema
+
+        ResearchMarkdownSchema(
+            self.report_title,
+            self.requested_field_ids,
+        )
+        if type(self.requested_sections) is not int or not (
+            1 <= self.requested_sections <= 100
+        ):
+            raise ValueError(
+                "Research DOCX requested section count is invalid"
+            )
+        for value, label in (
+            (self.report_sha256, "report"),
+            (self.document_digest, "document"),
+            (self.source_digest, "source"),
+        ):
+            _sha256(value, f"Research DOCX {label} digest")
+        if (
+            self.file.expected_sha256 is None
+            or self.file.expected_media_type != DOCX_MEDIA_TYPE
+            or self.file.maximum_bytes is None
+            or self.file.maximum_bytes > MAX_RESEARCH_DOCX_BYTES
+        ):
+            raise ValueError(
+                "Research DOCX verification requires digest, media type, "
+                "and a bounded maximum size"
+            )
+
+
 def verify_file(
     snapshot: FileSnapshot,
     expectation: FileExpectation,
@@ -564,6 +615,95 @@ def verify_research_markdown_file(
         requested_sections=inspection.requested_sections,
         citation_count=inspection.citation_count,
         partial=partial,
+    )
+
+
+def verify_research_docx_file(
+    snapshot: FileSnapshot,
+    expectation: ResearchDocxFileExpectation,
+    *,
+    verifier_id: str,
+    content: bytes,
+) -> VerificationEvidence:
+    """Verify exact identity, inert OOXML, and report-derived plain text."""
+
+    if not isinstance(snapshot, FileSnapshot):
+        raise TypeError(
+            "Research DOCX verifier snapshot is invalid"
+        )
+    if not isinstance(expectation, ResearchDocxFileExpectation):
+        raise TypeError(
+            "Research DOCX verifier expectation is invalid"
+        )
+    if not isinstance(content, bytes):
+        raise TypeError(
+            "Research DOCX verifier content must be immutable bytes"
+        )
+    from research.docx_artifact import inspect_research_docx
+    from research.markdown_artifact import ResearchMarkdownSchema
+
+    file = expectation.file
+    integrity = (
+        len(content) == snapshot.byte_count
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+    checks = {
+        "complete_pending_file": snapshot.complete,
+        "content_integrity": integrity,
+        "expected_sha256": (
+            snapshot.sha256 == file.expected_sha256
+        ),
+        "expected_media_type": (
+            snapshot.media_type == file.expected_media_type
+        ),
+        "maximum_bytes": (
+            file.maximum_bytes is not None
+            and snapshot.byte_count <= file.maximum_bytes
+        ),
+    }
+    if file.minimum_bytes is not None:
+        checks["minimum_bytes"] = (
+            snapshot.byte_count >= file.minimum_bytes
+        )
+    inspection = inspect_research_docx(
+        content,
+        ResearchMarkdownSchema(
+            expectation.report_title,
+            expectation.requested_field_ids,
+        ),
+        requested_sections=expectation.requested_sections,
+        maximum_bytes=file.maximum_bytes,
+    )
+    checks["research_docx_structure"] = inspection.structurally_valid
+    checks["research_docx_sections"] = (
+        inspection.section_count == expectation.requested_sections
+    )
+    checks["research_docx_document"] = (
+        inspection.document_digest == expectation.document_digest
+    )
+    checks["research_docx_sources"] = (
+        inspection.source_digest == expectation.source_digest
+    )
+    return _evidence(
+        verifier_id=verifier_id,
+        subject_kind=VerificationSubjectKind.FILE,
+        subject_reference=snapshot.artifact_id,
+        subject_digest=snapshot.sha256,
+        checks=checks,
+        observed={
+            "byte_count": snapshot.byte_count,
+            "media_type": snapshot.media_type,
+            "provenance_digest": snapshot.provenance_digest,
+            "research_docx_citations": inspection.citation_count,
+            "research_docx_document_digest": inspection.document_digest,
+            "research_docx_paragraphs": inspection.paragraph_count,
+            "research_docx_parts": inspection.package_part_count,
+            "research_docx_report_sha256": expectation.report_sha256,
+            "research_docx_result": inspection.result_code,
+            "research_docx_sections": inspection.section_count,
+            "research_docx_source_digest": inspection.source_digest,
+            "requested_sections": expectation.requested_sections,
+        },
     )
 
 
@@ -977,6 +1117,7 @@ __all__ = [
     "FileSnapshot",
     "ResearchCsvFileExpectation",
     "ResearchCsvFileVerification",
+    "ResearchDocxFileExpectation",
     "ResearchMarkdownFileExpectation",
     "ResearchMarkdownFileVerification",
     "RepositoryExpectation",
@@ -988,6 +1129,7 @@ __all__ = [
     "verify_api_response",
     "verify_file",
     "verify_research_csv_file",
+    "verify_research_docx_file",
     "verify_research_markdown_file",
     "verify_repository",
     "verify_ui_state",

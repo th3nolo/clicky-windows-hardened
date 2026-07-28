@@ -78,6 +78,7 @@ hidden = [
     "notion_contracts",
     "research.models",
     "research.csv_artifact",
+    "research.docx_artifact",
     "research.markdown_artifact",
     "research.tools",
     "sheets_contracts",
@@ -143,6 +144,10 @@ datas += [
     ("skills/declarative/manifest.json", "skills/declarative"),
     (
         "skills/declarative/research-to-csv.skill.json",
+        "skills/declarative",
+    ),
+    (
+        "skills/declarative/research-to-docx.skill.json",
         "skills/declarative",
     ),
     (
