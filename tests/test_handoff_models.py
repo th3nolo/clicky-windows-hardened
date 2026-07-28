@@ -277,7 +277,10 @@ class HandoffReviewTests(unittest.TestCase):
         )
         self.assertEqual(
             required_capabilities(HandoffDestination.TASK_AGENT_NEW_RUN),
-            (CapabilityId.TASK_AGENT_RUN,),
+            (
+                CapabilityId.TASK_AGENT_RUN,
+                CapabilityId.TASK_REGION_CONTEXT,
+            ),
         )
         self.assertNotIn("focused", HandoffDestination.__members__)
         self.assertNotIn("existing", HandoffDestination.__members__)

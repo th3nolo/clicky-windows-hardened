@@ -19,6 +19,7 @@ from tasks.store import ApprovalRecord, TaskEvent, TaskRecord
 MAX_ACTIVE_TASKS = 64
 MAX_DISPLAY_GOAL_CHARS = 8_192
 MAX_DISPLAY_RESULT_CHARS = 2_000
+MAX_DISPLAY_OUTPUT_CHARS = 16_384
 MAX_ACTION_LABEL_CHARS = 512
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -179,6 +180,7 @@ class TaskDisplayContent:
     run_id: str
     goal: str = field(repr=False)
     requested_result: str = field(repr=False)
+    result_text: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _run_id(self.run_id)
@@ -192,6 +194,12 @@ class TaskDisplayContent:
             MAX_DISPLAY_RESULT_CHARS,
             "Task requested result",
         )
+        if self.result_text is not None:
+            _bounded_text(
+                self.result_text,
+                MAX_DISPLAY_OUTPUT_CHARS,
+                "Task result text",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +384,33 @@ class TaskCenterActionRegistry:
             if run_id not in self._contents:
                 raise ValueError("Task Center handle is not registered")
             self._handles.pop(run_id, None)
+
+    def publish_result(self, run_id: str, result_text: str) -> None:
+        """Publish one verified live result without persisting its contents."""
+
+        run_id = _run_id(run_id)
+        with self._lock:
+            content = self._contents.get(run_id)
+            if content is None:
+                raise ValueError("Task Center handle is not registered")
+            if content.result_text is not None:
+                raise ValueError("Task Center result was already published")
+            updated = TaskDisplayContent(
+                run_id=content.run_id,
+                goal=content.goal,
+                requested_result=content.requested_result,
+                result_text=result_text,
+            )
+            self._contents[run_id] = updated
+            handle = self._handles.get(run_id)
+            if handle is not None:
+                self._handles[run_id] = ActiveTaskHandle(
+                    content=updated,
+                    cancel_callback=handle.cancel_callback,
+                    approve_callback=handle.approve_callback,
+                    reject_callback=handle.reject_callback,
+                    approval=handle.approval,
+                )
 
     def display_content(self, run_id: str) -> TaskDisplayContent | None:
         with self._lock:

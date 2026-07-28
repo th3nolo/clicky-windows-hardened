@@ -78,6 +78,7 @@ class CapabilityId(str, Enum):
     WEB_SEARCH_BOUNDED = "web.search.bounded"
     WEB_FETCH_BOUNDED = "web.fetch.bounded"
     TASK_AGENT_RUN = "task_agent.run"
+    TASK_REGION_CONTEXT = "task_agent.region_context"
     GMAIL_MESSAGE_READ = "gmail.message.read"
     GMAIL_DRAFT_WRITE = "gmail.draft.write"
     CALENDAR_EVENT_READ = "google_calendar.event.read"
@@ -210,6 +211,13 @@ _DEFINITIONS = (
         "Run a brokered background task",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
+    ),
+    _definition(
+        CapabilityId.TASK_REGION_CONTEXT,
+        "Use one explicitly reviewed screen region in a new task",
+        FeatureCapability.TASK_AGENT,
+        UserPermissionId.TASK_AGENT,
+        approval=True,
     ),
     _definition(
         CapabilityId.GMAIL_MESSAGE_READ,

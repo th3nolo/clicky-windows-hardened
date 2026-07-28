@@ -162,6 +162,30 @@ class TaskCenterTests(unittest.TestCase):
         self.assertNotIn("Research public sources", exported)
         self.assertNotIn("name,source", exported)
 
+    def test_live_verified_result_is_one_use_and_content_stays_in_memory(self):
+        registry = TaskCenterActionRegistry()
+        run = make_run()
+        content = TaskDisplayContent(
+            run_id=run.run_id,
+            goal=run.spec.goal,
+            requested_result=run.spec.requested_result,
+        )
+        registry.register(
+            ActiveTaskHandle(
+                content=content,
+                cancel_callback=lambda: True,
+            )
+        )
+
+        registry.publish_result(run.run_id, "Bounded live result.")
+
+        displayed = registry.display_content(run.run_id)
+        self.assertIsNotNone(displayed)
+        self.assertEqual(displayed.result_text, "Bounded live result.")
+        self.assertNotIn("Bounded live result.", repr(displayed))
+        with self.assertRaisesRegex(ValueError, "already published"):
+            registry.publish_result(run.run_id, "Replacement")
+
     def test_model_evidence_requires_exact_model_call_identity(self):
         run = make_run()
         self.store.create_task(run)

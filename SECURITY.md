@@ -250,6 +250,26 @@ one-use preview approval and uses the existing insertion broker; it never sends
 or submits a form. The default build flag stays unavailable until the
 representative native Windows target matrix passes.
 
+The source also includes a build-gated new-Task-Agent region caller for
+controlled validation. Each accepted route derives a new run ID and an exact
+grant containing only `task_agent.run` and `task_agent.region_context`; it
+cannot steer another run or inherit artifact, connector, coding, workspace,
+shell, browser, insertion, or desktop-action authority. The already completed
+screen-handoff review is recorded as the exact, expiring approval for the one
+region-model call. A host broker rechecks Task Agent and screen permissions,
+the provider/model selection, validated image support, route identity, expiry,
+and JPEG digest immediately before consuming the bytes. Coding response
+providers are rejected. The selected provider receives the exact JPEG once,
+an empty history, a fixed prompt-injection boundary, and no tools. A separate
+Task Worker process supplies the existing bounded fault boundary while
+provider credentials remain in the trusted host. Task Center persists only
+content-free lifecycle, call, result, provider, and verifier evidence; the
+bounded result text remains in memory for the current session and is labeled
+as delivery-verified rather than factually verified. Cancel terminates the
+worker, cancels the provider coroutine, wipes the JPEG, and suppresses late
+results. The Task Agent build flag remains unavailable in the default build
+pending the native worker/provider/cancellation matrix.
+
 The bytearray buffers are overwritten before release and selection windows are
 destroyed, but provider and clipboard serialization, Python, Qt, image codecs,
 GPU/compositor memory, paging, crash dumps, and other same-user processes
