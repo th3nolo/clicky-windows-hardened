@@ -664,6 +664,29 @@ class OAuthTokenClientTests(unittest.TestCase):
                 transport.calls[0][1],
                 "https://oauth2.googleapis.com/revoke",
             )
+
+        transport = _FakeTransport(
+            OAuthHttpResponse(
+                status=200,
+                content_type="",
+                body=b"",
+            )
+        )
+        refresh_token = SecretValue(b"refresh-without-registration")
+        try:
+            result = OAuthTokenClient(transport).revoke(
+                ConnectorProviderId.GOOGLE,
+                request,
+                refresh_token,
+            )
+        finally:
+            refresh_token.close()
+        self.assertEqual(result.status, RevocationStatus.REVOKED)
+        self.assertEqual(
+            transport.calls[0][1],
+            "https://oauth2.googleapis.com/revoke",
+        )
+
         unused = SecretValue(b"unused")
         try:
             with self.assertRaises(TypeError):

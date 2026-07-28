@@ -35,6 +35,7 @@ jobs:
           tests.test_action_feature_gates
           tests.test_audio_temp_privacy
           tests.test_capability_registry
+          tests.test_connected_accounts
           tests.test_connector_base
           tests.test_connector_oauth
           tests.test_connector_token_store

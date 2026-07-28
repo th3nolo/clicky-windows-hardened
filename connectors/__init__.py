@@ -1,5 +1,17 @@
 """Narrow connected-account contracts and protected token storage."""
 
+from connectors.accounts import (
+    GOOGLE_OAUTH_CLIENT_ID_ENV,
+    AccountConnectRequest,
+    AccountConnectionAvailability,
+    AccountConnectionResult,
+    AccountConnectionStatus,
+    AccountDisconnectResult,
+    ConnectedAccountService,
+    ConnectedAccountServiceError,
+    DesktopOAuthBroker,
+    load_public_oauth_registrations,
+)
 from connectors.base import (
     ConnectedAccount,
     ConnectionHealth,
@@ -46,6 +58,7 @@ from connectors.oauth import (
     OAuthProviderUnavailableError,
     OAuthSessionState,
     OAuthTokenClient,
+    describe_authorization,
     prepare_authorization,
     require_desktop_oauth_policy,
 )
@@ -66,7 +79,14 @@ __all__ = [
     "AccessTokenCache",
     "AccessTokenLease",
     "AccessTokenMetadata",
+    "AccountConnectRequest",
+    "AccountConnectionAvailability",
+    "AccountConnectionResult",
+    "AccountConnectionStatus",
+    "AccountDisconnectResult",
     "ConnectedAccount",
+    "ConnectedAccountService",
+    "ConnectedAccountServiceError",
     "ConnectionHealth",
     "ConnectorAdapter",
     "ConnectorAuthorizationError",
@@ -90,6 +110,7 @@ __all__ = [
     "ConnectorTokenStorageError",
     "ConnectorTokenStoreError",
     "FixedOAuthHttpsTransport",
+    "GOOGLE_OAUTH_CLIENT_ID_ENV",
     "OAuthAuthorizationCode",
     "OAuthAuthorizationDeniedError",
     "OAuthAuthorizationSession",
@@ -114,6 +135,9 @@ __all__ = [
     "RefreshTokenMetadata",
     "RefreshTokenStore",
     "SecretValue",
+    "DesktopOAuthBroker",
+    "describe_authorization",
+    "load_public_oauth_registrations",
     "provider_for_connector",
     "prepare_authorization",
     "require_desktop_oauth_policy",

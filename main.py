@@ -167,6 +167,7 @@ def main():
 
     skills_catalog_panel = None
     task_center_panel = None
+    connected_accounts_panel = None
     if build_feature_available(ActionCapability.TASK_AGENT):
         import skills as skills_package
         from skills.registry import (
@@ -221,6 +222,51 @@ def main():
                 "Task Center unavailable",
                 "Task metadata could not be opened. Task actions remain "
                 "disabled.",
+            )
+
+    if any(
+        build_feature_available(capability)
+        for capability in (
+            ActionCapability.CONNECTOR_READ,
+            ActionCapability.CONNECTOR_WRITE,
+        )
+    ):
+        try:
+            from capability_registry import CAPABILITY_REGISTRY
+            from connectors.accounts import ConnectedAccountService
+            from ui.connected_accounts import ConnectedAccountsPanel
+
+            available_connector_capabilities = frozenset(
+                capability
+                for capability, definition
+                in CAPABILITY_REGISTRY.items()
+                if definition.connector is not None
+                and build_feature_available(definition.feature)
+            )
+            connected_accounts_panel = ConnectedAccountsPanel(
+                ConnectedAccountService(),
+                available_capabilities=(
+                    available_connector_capabilities
+                ),
+            )
+            _connected_accounts_keepalive[0] = (
+                connected_accounts_panel
+            )
+
+            def _show_connected_accounts():
+                connected_accounts_panel.refresh()
+                connected_accounts_panel.show()
+                connected_accounts_panel.raise_()
+                connected_accounts_panel.activateWindow()
+
+            tray.on_manage_connected_accounts.connect(
+                _show_connected_accounts
+            )
+        except Exception:
+            tray.show_notification(
+                "Connected Accounts unavailable",
+                "Account metadata could not be opened. Connector actions "
+                "remain disabled.",
             )
 
     # ── Wire signals ──────────────────────────────────────────────────────────
@@ -661,6 +707,7 @@ _setup_keepalive: list = [None]
 _style_profiles_keepalive: list = [None]
 _skills_catalog_keepalive: list = [None]
 _task_center_keepalive: list = [None]
+_connected_accounts_keepalive: list = [None]
 
 
 if __name__ == "__main__":

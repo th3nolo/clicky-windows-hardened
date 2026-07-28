@@ -560,7 +560,7 @@ class AccessTokenCache:
             raise TypeError("Access token must use SecretValue")
         now = _timestamp(self._clock(), "Access-token cache time")
         if metadata.expires_at <= now:
-            raise ConnectorAuthorizationError(
+            raise ConnectorTokenExpiredError(
                 "Expired access tokens cannot be cached"
             )
         entry = _AccessTokenEntry(

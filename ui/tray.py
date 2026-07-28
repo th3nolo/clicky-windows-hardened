@@ -59,6 +59,7 @@ class TrayManager(QObject):
     on_manage_style_profiles = pyqtSignal()
     on_manage_skills = pyqtSignal()
     on_open_task_center = pyqtSignal()
+    on_manage_connected_accounts = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
@@ -192,6 +193,17 @@ class TrayManager(QObject):
             task_center_action.triggered.connect(self.on_open_task_center)
             skills_action = menu.addAction("Skills…")
             skills_action.triggered.connect(self.on_manage_skills)
+        if any(
+            build_feature_available(capability)
+            for capability in (
+                ActionCapability.CONNECTOR_READ,
+                ActionCapability.CONNECTOR_WRITE,
+            )
+        ):
+            accounts_action = menu.addAction("Connected Accounts…")
+            accounts_action.triggered.connect(
+                self.on_manage_connected_accounts
+            )
 
         # ── Tutor toggles ──
         menu.addSeparator()

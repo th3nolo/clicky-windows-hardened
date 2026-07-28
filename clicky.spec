@@ -46,6 +46,7 @@ hidden = [
     "ai.lmstudio_provider",
     "ai.hybrid_pointer",
     "ai.figure_detector",
+    "connectors.accounts",
     "connectors.base",
     "connectors.oauth",
     "connectors.token_store",
@@ -64,6 +65,7 @@ hidden = [
     "ui.style_profiles",
     "ui.skills_catalog",
     "ui.task_center",
+    "ui.connected_accounts",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",
