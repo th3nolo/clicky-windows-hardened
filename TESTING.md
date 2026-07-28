@@ -564,6 +564,51 @@ quota, parsing, packaging, and broker boundaries, not a live Notion consent
 flow or interactive Windows behavior. Keep Notion connector reads
 build-unavailable until the confidential broker and this matrix pass.
 
+### Google Sheets verified-table export
+
+Use a disposable Google account and a previously adopted synthetic research
+CSV. In a test build with Task Agent and connector writes explicitly enabled:
+
+1. Connect only `google_sheets.values.write`. Confirm consent requests the
+   per-file `drive.file` scope, not full Drive or broad spreadsheet access.
+2. Select the adopted CSV by opaque artifact ID. Confirm the broker reopens
+   the protected artifact, matches its recorded size and SHA-256, requires
+   adoption/verifier evidence, and independently reparses a non-empty,
+   rectangular UTF-8 table before offering approval.
+3. Confirm the approval shows the destination account authorization, exact
+   title, data-row count, every column name, source size, and source SHA-256.
+   The raw idempotency key and table cells must not be exposed in task evidence.
+4. Approve once. Confirm the Drive lookup is limited to the app-private
+   `clickyExportId` property, spreadsheet MIME type, non-trashed files, and the
+   `drive.file` visibility boundary. Creation must set
+   `ignoreDefaultVisibility=true` and no sharing permission.
+5. Confirm values are written only to the derived `A1` range with
+   `valueInputOption=RAW`; leading `=`, `+`, `-`, and `@` strings must remain
+   literal data rather than formulas.
+6. Confirm success requires a bounded metadata read-back with the exact
+   spreadsheet ID, title, HTTPS Google Sheets URL, one grid sheet, sufficient
+   row/column capacity, and an exact value read-back of the approved table.
+7. Repeat the same operation key. An exact existing export must be returned
+   without a second write. An empty file left by an ambiguous create may be
+   completed once. A different request digest, title, source digest, duplicate
+   match, pre-existing different values, or altered metadata must fail as an
+   idempotency conflict without overwriting content.
+8. Reject or expire approval, alter the artifact bytes, change the account,
+   run, capability, source digest, title, or operation key, or provide fewer
+   than six remaining network calls. Confirm every case fails before the
+   connector mutation.
+9. Exercise 401, 403, 429, timeout, redirect, oversized/non-JSON response,
+   ambiguous create/update, malformed metadata, invalid URL, wrong row/column
+   counts, and mismatched values. Confirm no automatic create retry and no
+   success claim without exact read-back.
+
+The checked-in tests use synthetic accounts, adopted files, and transports.
+They prove source, approval, quota, idempotency, fixed-endpoint, parsing,
+packaging, and read-back contracts. They do not prove live Google OAuth,
+Drive/Sheets behavior, the interactive Task Center flow, or a real Windows
+package. Keep Sheets export build-unavailable in the baseline until those
+interactive checks pass.
+
 ### GitHub Copilot token storage
 
 Use a disposable GitHub test account if an end-to-end check is required. Confirm:

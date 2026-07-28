@@ -30,11 +30,20 @@ from notion_contracts import (
     MAX_NOTION_PROVIDER_REQUESTS,
     render_notion_local_draft,
 )
+from sheets_contracts import (
+    MAX_SHEETS_PROVIDER_EVIDENCE_BYTES,
+    MAX_SHEETS_PROVIDER_REQUESTS,
+    ValidatedSheetTable,
+    parse_validated_sheet_csv,
+    validate_sheets_idempotency_key,
+    validate_sheets_title,
+)
 from tasks.approvals import (
     ApprovalPayload,
     ApprovalPreview,
     build_approval_payload,
     gmail_draft_target,
+    google_sheets_export_target,
     task_artifact_target,
 )
 from tasks.artifacts import (
@@ -82,6 +91,9 @@ MAX_NOTION_PAGE_ID_CHARS = 64
 MAX_NOTION_DRAFT_TITLE_CHARS = 2_000
 MAX_NOTION_DRAFT_JSON_CHARS = 128 * 1024
 MAX_CONNECTOR_OUTPUT_BYTES = 1024 * 1024
+MAX_CONNECTOR_PROVIDER_EVIDENCE_BYTES = (
+    MAX_SHEETS_PROVIDER_EVIDENCE_BYTES
+)
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _NOTION_ID = re.compile(
@@ -199,10 +211,13 @@ class DeclaredToolStep:
                 )
         elif self.tool is DeclarativeTool.CONNECTOR_WRITE:
             if (
-                self.connector is not ConnectorId.GMAIL
-                or definition.connector is not ConnectorId.GMAIL
-                or definition.feature is not FeatureCapability.CONNECTOR_WRITE
-                or self.capability is not CapabilityId.GMAIL_DRAFT_WRITE
+                definition.feature is not FeatureCapability.CONNECTOR_WRITE
+                or self.connector is not definition.connector
+                or self.capability
+                not in {
+                    CapabilityId.GMAIL_DRAFT_WRITE,
+                    CapabilityId.SHEETS_VALUES_WRITE,
+                }
             ):
                 raise ValueError(
                     "Declared connector write operation is unavailable"
@@ -537,6 +552,64 @@ class NotionDraftRenderArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class SheetsExportArguments:
+    """One approved adopted CSV source and create-once spreadsheet target."""
+
+    authorization_id: str
+    source_artifact_id: str
+    source_sha256: str
+    title: str
+    idempotency_key: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Google Sheets account authorization ID",
+        )
+        _bounded_token(
+            self.source_artifact_id,
+            _IDENTIFIER,
+            128,
+            "Google Sheets source artifact ID",
+        )
+        if (
+            not isinstance(self.source_sha256, str)
+            or _SHA256.fullmatch(self.source_sha256) is None
+        ):
+            raise ValueError(
+                "Google Sheets source artifact digest is invalid"
+            )
+        validate_sheets_title(self.title)
+        validate_sheets_idempotency_key(self.idempotency_key)
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Google Sheets response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSheetsExportArguments:
+    """Broker-resolved table bytes; never accepted as caller arguments."""
+
+    request: SheetsExportArguments
+    table: ValidatedSheetTable = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, SheetsExportArguments):
+            raise TypeError("Resolved Google Sheets request is invalid")
+        if (
+            not isinstance(self.table, ValidatedSheetTable)
+            or self.table.source_sha256 != self.request.source_sha256
+        ):
+            raise ValueError("Resolved Google Sheets table is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchCsvRenderArguments:
     records_json: str = field(repr=False)
     source_context: str = field(repr=False)
@@ -740,6 +813,7 @@ BrokerArguments = (
     | CalendarAvailabilityArguments
     | GmailSelectedThreadArguments
     | GmailDraftArguments
+    | SheetsExportArguments
     | NotionSelectedPageArguments
     | NotionDraftRenderArguments
     | ResearchCsvRenderArguments
@@ -772,7 +846,7 @@ class ConnectorReadOutput:
         _bounded_integer(
             self.provider_response_bytes,
             0,
-            MAX_CONNECTOR_OUTPUT_BYTES,
+            MAX_CONNECTOR_PROVIDER_EVIDENCE_BYTES,
             "Connector provider response size",
         )
         if self.provider_request_id is not None:
@@ -831,7 +905,7 @@ class BrokerExecution:
             _bounded_integer(
                 self.provider_response_bytes,
                 0,
-                MAX_CONNECTOR_OUTPUT_BYTES,
+                MAX_CONNECTOR_PROVIDER_EVIDENCE_BYTES,
                 "Broker provider response size",
             )
             if self.provider_request_id is not None:
@@ -859,7 +933,10 @@ ConnectorReadAdapter = Callable[
     Awaitable[ConnectorReadOutput],
 ]
 ConnectorWriteAdapter = Callable[
-    [ToolCall, GmailDraftArguments],
+    [
+        ToolCall,
+        GmailDraftArguments | ResolvedSheetsExportArguments,
+    ],
     Awaitable[ConnectorWriteOutput],
 ]
 
@@ -879,6 +956,7 @@ class TaskToolBroker:
         connector_read: ConnectorReadAdapter | None = None,
         connector_write: ConnectorWriteAdapter | None = None,
         artifact_root: Path | None = None,
+        source_artifacts: tuple[Artifact, ...] = (),
     ) -> None:
         if not isinstance(run, TaskRun):
             raise TypeError("Task tool broker requires a TaskRun")
@@ -967,6 +1045,7 @@ class TaskToolBroker:
             run,
             workspace,
             adoption_root=artifact_root,
+            source_artifacts=source_artifacts,
         )
         self._tool_calls = 0
         self._network_requests = 0
@@ -977,7 +1056,11 @@ class TaskToolBroker:
     def approval_payload(
         self,
         call: ToolCall,
-        arguments: ArtifactWriteArguments | GmailDraftArguments,
+        arguments: (
+            ArtifactWriteArguments
+            | GmailDraftArguments
+            | SheetsExportArguments
+        ),
         *,
         approval_id: str,
         reason: str,
@@ -998,19 +1081,39 @@ class TaskToolBroker:
             media_type = arguments.media_type
             byte_count = len(arguments.content)
         elif step.tool is DeclarativeTool.CONNECTOR_WRITE:
-            if not isinstance(arguments, GmailDraftArguments):
-                raise TaskToolBrokerValidationError(
-                    "Gmail draft approval arguments are invalid"
+            if isinstance(arguments, GmailDraftArguments):
+                preview_bytes = arguments.preview_bytes()
+                content_digest = hashlib.sha256(preview_bytes).hexdigest()
+                excerpt = preview_bytes.decode("utf-8")
+                target = gmail_draft_target(
+                    authorization_id=arguments.authorization_id,
+                    preview_sha256=content_digest,
                 )
-            preview_bytes = arguments.preview_bytes()
-            content_digest = hashlib.sha256(preview_bytes).hexdigest()
-            excerpt = preview_bytes.decode("utf-8")
-            target = gmail_draft_target(
-                authorization_id=arguments.authorization_id,
-                preview_sha256=content_digest,
-            )
-            media_type = "application/json"
-            byte_count = len(preview_bytes)
+                media_type = "application/json"
+                byte_count = len(preview_bytes)
+            elif isinstance(arguments, SheetsExportArguments):
+                resolved = self._resolve_sheets_export(arguments)
+                preview_bytes = resolved.table.preview_bytes(
+                    authorization_id=arguments.authorization_id,
+                    title=arguments.title,
+                    idempotency_key=arguments.idempotency_key,
+                )
+                content_digest = arguments.source_sha256
+                excerpt = preview_bytes.decode("utf-8")
+                target = google_sheets_export_target(
+                    authorization_id=arguments.authorization_id,
+                    title=arguments.title,
+                    source_sha256=arguments.source_sha256,
+                    idempotency_key_sha256=hashlib.sha256(
+                        arguments.idempotency_key.encode("utf-8")
+                    ).hexdigest(),
+                )
+                media_type = "text/csv"
+                byte_count = resolved.table.source_bytes
+            else:
+                raise TaskToolBrokerValidationError(
+                    "Connector write approval arguments are invalid"
+                )
         else:
             raise TaskToolBrokerValidationError(
                 "Initial broker approval preview supports exact writes"
@@ -1138,6 +1241,15 @@ class TaskToolBroker:
             raise TaskToolBrokerValidationError(
                 "Task broker arguments do not match the declared tool"
             )
+        if (
+            isinstance(arguments, SheetsExportArguments)
+            and not self._run.grant.allows(
+                CapabilityId.LOCAL_ARTIFACT_READ
+            )
+        ):
+            raise TaskToolBrokerValidationError(
+                "Google Sheets export lacks local artifact read authority"
+            )
         expected_arguments_digest = broker_arguments_digest(arguments)
         if call.arguments_digest != expected_arguments_digest:
             raise TaskToolBrokerValidationError(
@@ -1191,6 +1303,7 @@ class TaskToolBroker:
                 GmailSelectedThreadArguments,
                 GmailDraftArguments,
                 NotionSelectedPageArguments,
+                SheetsExportArguments,
             ),
         ):
             self._require_output_capacity(arguments.maximum_response_bytes)
@@ -1221,6 +1334,8 @@ class TaskToolBroker:
         if type(arguments) is GmailSelectedThreadArguments:
             return await self._read_connector(call, arguments)
         if type(arguments) is GmailDraftArguments:
+            return await self._write_connector(call, arguments)
+        if type(arguments) is SheetsExportArguments:
             return await self._write_connector(call, arguments)
         if type(arguments) is NotionSelectedPageArguments:
             return await self._read_connector(call, arguments)
@@ -1288,17 +1403,33 @@ class TaskToolBroker:
     async def _write_connector(
         self,
         call: ToolCall,
-        arguments: GmailDraftArguments,
+        arguments: GmailDraftArguments | SheetsExportArguments,
     ) -> BrokerExecution:
         if self._connector_write is None:
             raise TaskToolBrokerOperationError("connector_write_unavailable")
-        output = await self._connector_write(call, arguments)
+        resolved_arguments: (
+            GmailDraftArguments | ResolvedSheetsExportArguments
+        )
+        if isinstance(arguments, SheetsExportArguments):
+            try:
+                resolved_arguments = self._resolve_sheets_export(arguments)
+            except TaskToolBrokerValidationError as exc:
+                raise TaskToolBrokerOperationError(
+                    "connector_write_source_changed"
+                ) from exc
+        else:
+            resolved_arguments = arguments
+        output = await self._connector_write(call, resolved_arguments)
         if not isinstance(output, ConnectorReadOutput):
             raise TaskToolBrokerOperationError("connector_output_invalid")
+        evidence_limit = (
+            MAX_SHEETS_PROVIDER_EVIDENCE_BYTES
+            if isinstance(arguments, SheetsExportArguments)
+            else arguments.maximum_response_bytes * 2 + 1
+        )
         if (
             len(output.content) > arguments.maximum_response_bytes
-            or output.provider_response_bytes
-            > arguments.maximum_response_bytes * 2 + 1
+            or output.provider_response_bytes > evidence_limit
         ):
             raise TaskToolBrokerLimitError(
                 "Connector response exceeds its declared limit"
@@ -1324,6 +1455,43 @@ class TaskToolBroker:
             provider_response_digest=output.provider_response_digest,
             provider_response_bytes=output.provider_response_bytes,
             provider_request_id=output.provider_request_id,
+        )
+
+    def _resolve_sheets_export(
+        self,
+        arguments: SheetsExportArguments,
+    ) -> ResolvedSheetsExportArguments:
+        try:
+            artifact, content = self._artifact_manager.read_adopted(
+                arguments.source_artifact_id
+            )
+        except ArtifactAdoptionError as exc:
+            raise TaskToolBrokerValidationError(
+                "Google Sheets source artifact is unavailable"
+            ) from exc
+        if (
+            not artifact.adopted
+            or artifact.media_type != "text/csv"
+            or artifact.sha256 != arguments.source_sha256
+            or artifact.byte_count != len(content)
+            or artifact.verification_result_id is None
+            or artifact.verification_evidence_digest is None
+        ):
+            raise TaskToolBrokerValidationError(
+                "Google Sheets source is not the approved verified table"
+            )
+        try:
+            table = parse_validated_sheet_csv(
+                content,
+                expected_sha256=arguments.source_sha256,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskToolBrokerValidationError(
+                "Google Sheets source table failed revalidation"
+            ) from exc
+        return ResolvedSheetsExportArguments(
+            request=arguments,
+            table=table,
         )
 
     async def _collect_model_text(
@@ -1684,6 +1852,17 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "preview_bytes": len(preview),
             "preview_sha256": hashlib.sha256(preview).hexdigest(),
         }
+    if type(arguments) is SheetsExportArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "idempotency_key_sha256": hashlib.sha256(
+                arguments.idempotency_key.encode("utf-8")
+            ).hexdigest(),
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "source_artifact_id": arguments.source_artifact_id,
+            "source_sha256": arguments.source_sha256,
+            "title": arguments.title,
+        }
     if type(arguments) is NotionSelectedPageArguments:
         return {
             "authorization_id": arguments.authorization_id,
@@ -1766,6 +1945,7 @@ _CONNECTOR_ARGUMENT_TYPES = {
     CapabilityId.GMAIL_MESSAGE_READ: GmailSelectedThreadArguments,
     CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
     CapabilityId.NOTION_PAGE_READ: NotionSelectedPageArguments,
+    CapabilityId.SHEETS_VALUES_WRITE: SheetsExportArguments,
 }
 
 
@@ -1799,6 +1979,9 @@ def _network_request_cost(
     }:
         return 1
     if tool is DeclarativeTool.CONNECTOR_WRITE:
+        if isinstance(arguments, SheetsExportArguments):
+            # Lookup, optional create, write, and exact metadata/value reads.
+            return MAX_SHEETS_PROVIDER_REQUESTS
         # Gmail draft creation performs one write plus one read-back verify.
         return 2
     return 0
@@ -2020,6 +2203,8 @@ __all__ = [
     "NotionDraftRenderArguments",
     "NotionSelectedPageArguments",
     "ResearchCsvRenderArguments",
+    "ResolvedSheetsExportArguments",
+    "SheetsExportArguments",
     "TaskToolBroker",
     "TaskToolBrokerError",
     "TaskToolBrokerLimitError",

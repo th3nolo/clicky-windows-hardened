@@ -652,6 +652,116 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("gmail.send", {item.value for item in CapabilityId})
 
+    def test_sheets_export_compiles_only_with_exact_source_and_six_calls(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_WRITE.value,
+            "capability": CapabilityId.SHEETS_VALUES_WRITE.value,
+            "depends_on": ["read_source"],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.sheets-one",
+                },
+                {
+                    "argument_id": "source_artifact_id",
+                    "source": "step_output",
+                    "reference": "source_artifact",
+                    "value": None,
+                },
+                {
+                    "argument_id": "source_sha256",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "a" * 64,
+                },
+                {
+                    "argument_id": "title",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Reviewed research",
+                },
+                {
+                    "argument_id": "idempotency_key",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "run.export-1",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_SHEETS.value,
+            "approval_id": "approve_sheets_export",
+        }
+        payload["steps"].insert(
+            0,
+            {
+                "step_id": "read_source",
+                "tool": DeclarativeTool.ARTIFACT_READ.value,
+                "capability": CapabilityId.LOCAL_ARTIFACT_READ.value,
+                "depends_on": [],
+                "arguments": [
+                    {
+                        "argument_id": "artifact_id",
+                        "source": "literal",
+                        "reference": None,
+                        "value": "research-csv",
+                    }
+                ],
+                "output_id": "source_artifact",
+                "connector": None,
+                "approval_id": None,
+            },
+        )
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.LOCAL_ARTIFACT_READ.value,
+            CapabilityId.SHEETS_VALUES_WRITE.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_SHEETS.value,
+                "capabilities": [CapabilityId.SHEETS_VALUES_WRITE.value],
+                "oauth_scopes": [OAuthScopeId.SHEETS_VALUES_WRITE.value],
+            }
+        ]
+        payload["approvals"].append(
+            {
+                "approval_id": "approve_sheets_export",
+                "capability": CapabilityId.SHEETS_VALUES_WRITE.value,
+                "reason": "Review the exact table export target.",
+                "preview_references": ["input.query"],
+            }
+        )
+        payload["limits"]["max_network_requests"] = 6
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "export verified table"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[1].capability,
+            CapabilityId.SHEETS_VALUES_WRITE,
+        )
+        self.assertEqual(
+            plan.declared_steps[1].connector,
+            ConnectorId.GOOGLE_SHEETS,
+        )
+        payload["limits"]["max_network_requests"] = 5
+        too_small = parsed_definition(payload)
+        too_small_run = make_run(
+            too_small,
+            {"query": "export verified table"},
+        )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "network limit",
+        ):
+            compile_declarative_plan(too_small, too_small_run)
+
     def test_notion_selected_page_reserves_exact_recursive_read_budget(self):
         payload = definition_payload()
         payload["steps"][0] = {

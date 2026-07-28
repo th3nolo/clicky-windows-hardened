@@ -39,7 +39,16 @@ from connectors.notion import (
     NotionSelectedPageRequest,
     NotionSelectedPageResult,
 )
+from connectors.google_sheets import (
+    GoogleSheetsExportAdapter,
+    GoogleSheetsExportOutcomeUnknownError,
+    GoogleSheetsExportRequest,
+    GoogleSheetsExportResult,
+    GoogleSheetsExportVerificationError,
+    GoogleSheetsIdempotencyConflictError,
+)
 from connectors.token_store import ConnectorTokenNotFoundError
+from sheets_contracts import MAX_SHEETS_PROVIDER_RESPONSE_BYTES
 from tasks.models import TaskRun, TaskState, ToolCall
 from tasks.tool_broker import (
     CalendarAvailabilityArguments,
@@ -48,6 +57,7 @@ from tasks.tool_broker import (
     GmailDraftArguments,
     GmailSelectedThreadArguments,
     NotionSelectedPageArguments,
+    ResolvedSheetsExportArguments,
     TaskToolBrokerOperationError,
     broker_arguments_digest,
 )
@@ -59,6 +69,10 @@ CalendarAdapterFactory = Callable[
 ]
 GmailAdapterFactory = Callable[[ConnectedAccount], GoogleGmailAdapter]
 NotionAdapterFactory = Callable[[ConnectedAccount], NotionSelectedPageAdapter]
+SheetsAdapterFactory = Callable[
+    [ConnectedAccount],
+    GoogleSheetsExportAdapter,
+]
 
 
 class CalendarConnectorReadBroker:
@@ -506,6 +520,118 @@ class GmailConnectorWriteBroker:
         )
 
 
+class GoogleSheetsConnectorWriteBroker:
+    """Export one broker-revalidated adopted CSV and require exact read-back."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: SheetsAdapterFactory = GoogleSheetsExportAdapter,
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: ResolvedSheetsExportArguments,
+    ) -> ConnectorWriteOutput:
+        if not isinstance(arguments, ResolvedSheetsExportArguments):
+            raise TaskToolBrokerOperationError(
+                "connector_write_not_supported"
+            )
+        broker_request = arguments.request
+        if (
+            not self._run.grant.allows(
+                CapabilityId.LOCAL_ARTIFACT_READ
+            )
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                broker_request,
+                tool_name="connector.write",
+                capability=CapabilityId.SHEETS_VALUES_WRITE,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_write_not_supported"
+            )
+        try:
+            request = GoogleSheetsExportRequest(
+                title=broker_request.title,
+                table=arguments.table,
+                idempotency_key=broker_request.idempotency_key,
+            )
+            account = self._accounts.get_account(
+                broker_request.authorization_id
+            )
+            if account.connector is not ConnectorId.GOOGLE_SHEETS:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Google Sheets account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=broker_request.authorization_id,
+                connector=ConnectorId.GOOGLE_SHEETS,
+                capability=CapabilityId.SHEETS_VALUES_WRITE,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=MAX_SHEETS_PROVIDER_RESPONSE_BYTES,
+                idempotency_key=request.idempotency_key,
+            )
+            lease = self._accounts.lease_access_token(
+                broker_request.authorization_id,
+                CapabilityId.SHEETS_VALUES_WRITE,
+            )
+            try:
+                execution = await self._adapter_factory(account).execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except GoogleSheetsExportOutcomeUnknownError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_outcome_unknown"
+            ) from exc
+        except GoogleSheetsIdempotencyConflictError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_idempotency_conflict"
+            ) from exc
+        except GoogleSheetsExportVerificationError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_unverified"
+            ) from exc
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(
+                execution.output,
+                GoogleSheetsExportResult,
+            )
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorWriteOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
+
+
 def _validate_service(
     run: TaskRun,
     account_service,
@@ -598,5 +724,6 @@ __all__ = [
     "CalendarConnectorReadBroker",
     "GmailConnectorReadBroker",
     "GmailConnectorWriteBroker",
+    "GoogleSheetsConnectorWriteBroker",
     "NotionConnectorReadBroker",
 ]
