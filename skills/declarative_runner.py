@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from capability_registry import CapabilityId, ConnectorId
 from declarative_tools import DeclarativeTool
+from docs_contracts import MAX_DOCS_PROVIDER_REQUESTS
 from notion_contracts import MAX_NOTION_PROVIDER_REQUESTS
 from sheets_contracts import MAX_SHEETS_PROVIDER_REQUESTS
 from slides_contracts import MAX_SLIDES_PROVIDER_REQUESTS
@@ -58,6 +59,8 @@ from tasks.tool_broker import (
     ConnectorReadAdapter,
     ConnectorWriteAdapter,
     DeclaredToolStep,
+    DocsCreateArguments,
+    DocsSelectedDocumentArguments,
     DriveSelectedFileArguments,
     GmailDraftArguments,
     GmailSelectedThreadArguments,
@@ -95,6 +98,7 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
             {
                 "authorization_id",
                 "selected_calendar_ids_json",
+                "selected_document_id",
                 "selected_file_id",
                 "selected_page_id",
                 "selected_thread_id",
@@ -108,7 +112,9 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
                 "bcc_addresses_json",
                 "body_text",
                 "cc_addresses_json",
+                "idempotency_key",
                 "subject",
+                "title",
                 "to_addresses_json",
             }
         ),
@@ -345,6 +351,27 @@ class _ResearchPdfMetadata:
 def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
     if (
         step.tool is DeclarativeTool.CONNECTOR_READ
+        and step.connector is ConnectorId.GOOGLE_DOCS
+        and step.capability is CapabilityId.DOCS_DOCUMENT_READ
+    ):
+        return frozenset(
+            {"authorization_id", "selected_document_id"}
+        )
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_WRITE
+        and step.connector is ConnectorId.GOOGLE_DOCS
+        and step.capability is CapabilityId.DOCS_DOCUMENT_CREATE
+    ):
+        return frozenset(
+            {
+                "authorization_id",
+                "body_text",
+                "idempotency_key",
+                "title",
+            }
+        )
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_READ
         and step.connector is ConnectorId.GOOGLE_DRIVE
         and step.capability is CapabilityId.DRIVE_SELECTED_FILE_READ
     ):
@@ -470,6 +497,12 @@ def compile_declarative_plan(
         ConnectorId.GOOGLE_DRIVE: frozenset(
             {CapabilityId.DRIVE_SELECTED_FILE_READ}
         ),
+        ConnectorId.GOOGLE_DOCS: frozenset(
+            {
+                CapabilityId.DOCS_DOCUMENT_CREATE,
+                CapabilityId.DOCS_DOCUMENT_READ,
+            }
+        ),
         ConnectorId.NOTION: frozenset(
             {CapabilityId.NOTION_PAGE_READ}
         ),
@@ -494,6 +527,11 @@ def compile_declarative_plan(
         if (
             step.tool is DeclarativeTool.CONNECTOR_READ
             and step.capability is CapabilityId.NOTION_PAGE_READ
+        )
+        else MAX_DOCS_PROVIDER_REQUESTS
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_WRITE
+            and step.capability is CapabilityId.DOCS_DOCUMENT_CREATE
         )
         else 2
         if (
@@ -584,6 +622,7 @@ def compile_declarative_plan(
             step.capability
             not in {
                 CapabilityId.CALENDAR_EVENT_READ,
+                CapabilityId.DOCS_DOCUMENT_READ,
                 CapabilityId.DRIVE_SELECTED_FILE_READ,
                 CapabilityId.GMAIL_MESSAGE_READ,
                 CapabilityId.NOTION_PAGE_READ,
@@ -598,6 +637,10 @@ def compile_declarative_plan(
                 step.capability,
             )
             not in {
+                (
+                    ConnectorId.GOOGLE_DOCS,
+                    CapabilityId.DOCS_DOCUMENT_CREATE,
+                ),
                 (
                     ConnectorId.GMAIL,
                     CapabilityId.GMAIL_DRAFT_WRITE,
@@ -916,6 +959,7 @@ class DeclarativeSkillRunner:
                     arguments,
                     (
                         ArtifactWriteArguments,
+                        DocsCreateArguments,
                         GmailDraftArguments,
                         SheetsExportArguments,
                         SlidesExportArguments,
@@ -977,6 +1021,21 @@ class DeclarativeSkillRunner:
                 ),
             )
         if step.tool is DeclarativeTool.CONNECTOR_READ:
+            if step.capability is CapabilityId.DOCS_DOCUMENT_READ:
+                return DocsSelectedDocumentArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Google Docs account authorization ID",
+                    ),
+                    selected_document_id=_text_value(
+                        values["selected_document_id"],
+                        "Selected Google document ID",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
             if step.capability is CapabilityId.DRIVE_SELECTED_FILE_READ:
                 return DriveSelectedFileArguments(
                     authorization_id=_text_value(
@@ -1045,6 +1104,29 @@ class DeclarativeSkillRunner:
                     ),
                 )
         if step.tool is DeclarativeTool.CONNECTOR_WRITE:
+            if step.capability is CapabilityId.DOCS_DOCUMENT_CREATE:
+                return DocsCreateArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Google Docs account authorization ID",
+                    ),
+                    title=_text_value(
+                        values["title"],
+                        "Google Docs title",
+                    ),
+                    body_text=_text_value(
+                        values["body_text"],
+                        "Google Docs body",
+                    ),
+                    idempotency_key=_text_value(
+                        values["idempotency_key"],
+                        "Google Docs idempotency key",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
             if step.capability is CapabilityId.GMAIL_DRAFT_WRITE:
                 return GmailDraftArguments(
                     authorization_id=_text_value(

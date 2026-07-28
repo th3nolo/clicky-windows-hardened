@@ -33,6 +33,15 @@ from connectors.google_drive import (
     GoogleDriveSelectedFileAdapter,
     MAX_DRIVE_FILE_CONTENT_BYTES,
 )
+from connectors.google_docs import (
+    GoogleDocsAdapter,
+    GoogleDocsCreateOutcomeUnknownError,
+    GoogleDocsCreateRequest,
+    GoogleDocsCreateResult,
+    GoogleDocsCreateVerificationError,
+    GoogleDocsIdempotencyConflictError,
+    GoogleDocsSelectedDocumentRequest,
+)
 from connectors.gmail import (
     GmailDraftOutcomeUnknownError,
     GmailDraftRequest,
@@ -64,12 +73,15 @@ from connectors.google_slides import (
     GoogleSlidesIdempotencyConflictError,
 )
 from connectors.token_store import ConnectorTokenNotFoundError
+from docs_contracts import GoogleDocsDocument
 from sheets_contracts import MAX_SHEETS_PROVIDER_RESPONSE_BYTES
 from tasks.models import TaskRun, TaskState, ToolCall
 from tasks.tool_broker import (
     CalendarAvailabilityArguments,
     ConnectorReadOutput,
     ConnectorWriteOutput,
+    DocsCreateArguments,
+    DocsSelectedDocumentArguments,
     DriveSelectedFileArguments,
     GmailDraftArguments,
     GmailSelectedThreadArguments,
@@ -90,6 +102,7 @@ DriveAdapterFactory = Callable[
     [ConnectedAccount],
     GoogleDriveSelectedFileAdapter,
 ]
+DocsAdapterFactory = Callable[[ConnectedAccount], GoogleDocsAdapter]
 NotionAdapterFactory = Callable[[ConnectedAccount], NotionSelectedPageAdapter]
 SheetsAdapterFactory = Callable[
     [ConnectedAccount],
@@ -452,6 +465,195 @@ class DriveConnectorReadBroker:
                 "connector_evidence_invalid"
             )
         return ConnectorReadOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
+
+
+class GoogleDocsConnectorReadBroker:
+    """Turn one exact task grant into one selected Google document read."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: DocsAdapterFactory = GoogleDocsAdapter,
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: DocsSelectedDocumentArguments,
+    ) -> ConnectorReadOutput:
+        if (
+            not isinstance(arguments, DocsSelectedDocumentArguments)
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                arguments,
+                tool_name="connector.read",
+                capability=CapabilityId.DOCS_DOCUMENT_READ,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_read_not_supported"
+            )
+        try:
+            request = GoogleDocsSelectedDocumentRequest(
+                selected_document_id=arguments.selected_document_id,
+            )
+            account = self._accounts.get_account(
+                arguments.authorization_id
+            )
+            if account.connector is not ConnectorId.GOOGLE_DOCS:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Google Docs account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=arguments.authorization_id,
+                connector=ConnectorId.GOOGLE_DOCS,
+                capability=CapabilityId.DOCS_DOCUMENT_READ,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=arguments.maximum_response_bytes,
+            )
+            lease = self._accounts.lease_access_token(
+                arguments.authorization_id,
+                CapabilityId.DOCS_DOCUMENT_READ,
+            )
+            try:
+                execution = await self._adapter_factory(account).execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(execution.output, GoogleDocsDocument)
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorReadOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
+
+
+class GoogleDocsConnectorWriteBroker:
+    """Create one exact reviewed Google document with read-back evidence."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: DocsAdapterFactory = GoogleDocsAdapter,
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: DocsCreateArguments,
+    ) -> ConnectorWriteOutput:
+        if (
+            not isinstance(arguments, DocsCreateArguments)
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                arguments,
+                tool_name="connector.write",
+                capability=CapabilityId.DOCS_DOCUMENT_CREATE,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_write_not_supported"
+            )
+        try:
+            request = GoogleDocsCreateRequest(
+                title=arguments.title,
+                body_text=arguments.body_text,
+                idempotency_key=arguments.idempotency_key,
+            )
+            account = self._accounts.get_account(
+                arguments.authorization_id
+            )
+            if account.connector is not ConnectorId.GOOGLE_DOCS:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Google Docs account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=arguments.authorization_id,
+                connector=ConnectorId.GOOGLE_DOCS,
+                capability=CapabilityId.DOCS_DOCUMENT_CREATE,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=arguments.maximum_response_bytes,
+                idempotency_key=request.idempotency_key,
+            )
+            lease = self._accounts.lease_access_token(
+                arguments.authorization_id,
+                CapabilityId.DOCS_DOCUMENT_CREATE,
+            )
+            try:
+                execution = await self._adapter_factory(account).execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except GoogleDocsCreateOutcomeUnknownError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_outcome_unknown"
+            ) from exc
+        except GoogleDocsIdempotencyConflictError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_idempotency_conflict"
+            ) from exc
+        except GoogleDocsCreateVerificationError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_unverified"
+            ) from exc
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(execution.output, GoogleDocsCreateResult)
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorWriteOutput(
             content=execution.output.to_json_bytes(),
             provider_response_digest=execution.result.response_digest,
             provider_response_bytes=execution.result.response_bytes,
@@ -966,6 +1168,8 @@ __all__ = [
     "DriveConnectorReadBroker",
     "GmailConnectorReadBroker",
     "GmailConnectorWriteBroker",
+    "GoogleDocsConnectorReadBroker",
+    "GoogleDocsConnectorWriteBroker",
     "GoogleSheetsConnectorWriteBroker",
     "GoogleSlidesConnectorWriteBroker",
     "NotionConnectorReadBroker",

@@ -310,6 +310,36 @@ class ConnectedAccountsUiTests(unittest.TestCase):
             frozenset({CapabilityId.DRIVE_SELECTED_FILE_READ}),
         )
 
+    def test_docs_row_exposes_separate_read_and_create_authorities(self):
+        labels = [
+            self.panel._connector_combo.itemText(index)
+            for index in range(self.panel._connector_combo.count())
+        ]
+        self.assertIn("Google Docs", labels)
+        self.panel._connector_combo.setCurrentText("Google Docs")
+
+        request = self.panel.selected_connect_request()
+
+        self.assertIsNotNone(request)
+        self.assertEqual(request.connector, ConnectorId.GOOGLE_DOCS)
+        self.assertEqual(
+            request.capabilities,
+            frozenset({CapabilityId.DOCS_DOCUMENT_READ}),
+        )
+        self.panel._scope_checks[
+            CapabilityId.DOCS_DOCUMENT_CREATE
+        ].setChecked(True)
+        request = self.panel.selected_connect_request()
+        self.assertEqual(
+            request.capabilities,
+            frozenset(
+                {
+                    CapabilityId.DOCS_DOCUMENT_CREATE,
+                    CapabilityId.DOCS_DOCUMENT_READ,
+                }
+            ),
+        )
+
     def test_cancelled_review_opens_no_browser_or_account_operation(self):
         self.confirmations.accepted = False
 

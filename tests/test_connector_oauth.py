@@ -223,6 +223,18 @@ class OAuthPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             GOOGLE_PROVIDER_SCOPES[
+                OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ
+            ],
+            "https://www.googleapis.com/auth/drive.file",
+        )
+        self.assertEqual(
+            GOOGLE_PROVIDER_SCOPES[
+                OAuthScopeId.DOCS_DOCUMENT_CREATE
+            ],
+            "https://www.googleapis.com/auth/drive.file",
+        )
+        self.assertEqual(
+            GOOGLE_PROVIDER_SCOPES[
                 OAuthScopeId.CALENDAR_EVENTS_READ
             ],
             "https://www.googleapis.com/auth/calendar.events.freebusy",

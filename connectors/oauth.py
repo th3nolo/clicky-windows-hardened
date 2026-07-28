@@ -208,6 +208,12 @@ GOOGLE_PROVIDER_SCOPES: Mapping[OAuthScopeId, str] = MappingProxyType(
         OAuthScopeId.CALENDAR_EVENTS_WRITE: (
             "https://www.googleapis.com/auth/calendar.events"
         ),
+        OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ: (
+            "https://www.googleapis.com/auth/drive.file"
+        ),
+        OAuthScopeId.DOCS_DOCUMENT_CREATE: (
+            "https://www.googleapis.com/auth/drive.file"
+        ),
         OAuthScopeId.DRIVE_SELECTED_FILE_READ: (
             "https://www.googleapis.com/auth/drive.file"
         ),

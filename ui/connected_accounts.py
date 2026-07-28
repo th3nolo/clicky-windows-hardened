@@ -907,6 +907,7 @@ def _connector_label(connector: ConnectorId) -> str:
     return {
         ConnectorId.GMAIL: "Gmail",
         ConnectorId.GOOGLE_CALENDAR: "Google Calendar",
+        ConnectorId.GOOGLE_DOCS: "Google Docs",
         ConnectorId.GOOGLE_DRIVE: "Google Drive",
         ConnectorId.NOTION: "Notion",
         ConnectorId.GOOGLE_SHEETS: "Google Sheets",
