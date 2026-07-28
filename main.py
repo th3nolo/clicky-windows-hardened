@@ -148,6 +148,9 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    from ui.walkthrough import WalkthroughPanel
+
+    walkthrough_panel = WalkthroughPanel()
     import secrets
 
     task_store = None
@@ -492,6 +495,18 @@ def main():
     # Teaching drawings — generic shape channel with progressive animation
     manager.sig_draw.connect(overlay.add_shape)
     manager.sig_clear_drawings.connect(overlay.clear_annotations)
+    manager.sig_walkthrough_progress.connect(
+        walkthrough_panel.show_progress
+    )
+    manager.sig_walkthrough_ended.connect(
+        walkthrough_panel.end_walkthrough
+    )
+    walkthrough_panel.continue_requested.connect(
+        manager.continue_walkthrough
+    )
+    walkthrough_panel.cancel_requested.connect(
+        manager.cancel_walkthrough
+    )
 
     # Errors
     manager.sig_error.connect(
