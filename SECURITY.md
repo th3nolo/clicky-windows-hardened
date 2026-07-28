@@ -210,6 +210,17 @@ receives the same terms through its supported prompt field. Other STT providers
 ignore them. Clicky never mines vocabulary from window titles, screenshots,
 clipboard content, attached documents, conversation history, or transcripts.
 
+The region-handoff contracts are non-authorizing. A selection is bound to one
+stable monitor identity, physical and logical bounds, per-axis DPI, complete
+topology digest, capture generation, short expiry, and exact content digest.
+The contract contains no screenshot bytes or OCR text. A later handoff must
+show an explicit Tutor, Compose, or new Task Agent destination and the data
+class that may leave the process. Focus cannot select a destination, and a
+selection grants no insertion, connector, coding, task, or desktop-action
+authority. Topology, DPI, capture-generation, bounds, or expiry changes fail
+closed. The selection overlay and routing caller are not implemented yet, so
+region handoff remains unavailable in this revision.
+
 ## Release and executable policy
 
 There are no release artifacts. `build.bat` creates unsigned smoke-test binaries

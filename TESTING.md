@@ -805,6 +805,20 @@ oversized values, duplicate records, and DPAPI failures must fail closed
 without partial rows or content-bearing diagnostics. Export returns plaintext
 only to its explicit caller and never writes a file on its own.
 
+### Region-handoff contracts
+
+Run `python -m unittest -v tests.test_handoff_models`. The contract suite uses
+synthetic mixed-DPI monitors with negative origins and proves that zero-area,
+oversized, off-monitor, expired, cross-generation, changed-topology, changed-
+DPI, and invalid-mask selections fail closed. It also proves that screenshot
+bytes and OCR text are not contract fields, focus cannot infer a destination,
+and Compose or new-Task destinations expose only their existing required
+capability identifiers.
+
+This is source-only evidence. Do not report a selection UI, capture, provider
+handoff, or Task Agent handoff as available until the later overlay and routing
+tasks are wired and validated on native Windows.
+
 ### Web search
 
 Keep web search disabled for the baseline. After explicit activation with synthetic queries, confirm that ordinary public HTTPS results can be processed. Do not weaken a rejection to make an HTTP, private-address, redirect, unexpected-content-type, missing-peer, or oversized-response case pass. Those cases belong in the offline tests.
