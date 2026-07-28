@@ -1,6 +1,7 @@
 # Permissioned Desktop Automation security boundary
 
-Status: source-only policy contract; unavailable in release builds.
+Status: source-only policy, review, and one-shot executor; unavailable in
+release builds.
 
 ## Authority boundary
 
@@ -14,9 +15,11 @@ permission, is granted to one task run, and always requires action approval.
 Tutor, Dictation, Compose, screen capture, response providers, and pointing
 cannot satisfy any of those requirements.
 
-The source adds a read-only focused-control inspector, review highlighter, and
-global stop ownership, but no executor. A policy-eligible or visibly reviewed
-target is not an authorization to act.
+The source adds a read-only focused-control inspector, review highlighter,
+global stop ownership, and a one-shot semantic UIA executor. A policy-eligible
+or visibly reviewed target is not an authorization to act. The executor is
+reachable only through the trusted broker after the Task Agent consumes one
+exact action approval.
 
 ## Exact target identity
 
@@ -42,9 +45,15 @@ model output, and the current foreground location are not target identity.
 
 ## V1 semantic actions
 
-The only modeled actions are focus, invoke, select, toggle, expand, collapse,
-scroll, and set a simple non-sensitive value. Each non-focus action requires
-its matching UI Automation pattern.
+The only modeled and executable actions are focus, invoke, select, toggle,
+expand, collapse, scroll, and set a bounded printable single-line value. Each
+non-focus action requires its matching UI Automation pattern. Invoke requires
+one declared observable postcondition; toggle requires the desired state;
+scroll requires exact amounts for both axes; and set-value approval displays
+the exact value while receipts retain only its SHA-256 evidence. Set-value
+text passes the same transient credential, two-factor, payment, security,
+account-change, administrator, and destructive-content classifier as target
+labels; a match fails closed without retaining the value in diagnostics.
 
 Raw mouse clicks, pointer coordinates, keyboard input, paste, shell commands,
 browser scripting, arbitrary accessibility methods, and fallback to a similar
@@ -71,16 +80,44 @@ Invalid or oversized classification input fails closed.
 
 Approval cannot override these denials.
 
+## Approval, worker, and result boundary
+
+One request binds the run, call, visible review, target identity, target
+presentation, semantic action, and all action-specific arguments. The Task
+Agent must enter and leave `waiting_for_approval`; the broker consumes that
+one-use approval before launching any worker. It immediately revalidates the
+same focused target and active highlight and refuses a stale, hidden, changed,
+expired, stopped, or already-consumed action.
+
+The worker processes exactly one bounded JSON frame over private pipes. The
+host launches the exact Clicky executable or reviewed Python entry point
+suspended, assigns it to a kill-on-close Windows Job Object, then resumes it.
+The source-test path resolves the virtual environment's exact base interpreter
+and starts it with Python isolated mode, explicitly adding only the reviewed
+application root and locked environment site-packages path. This avoids a
+virtual-environment redirector child bypassing the one-process job limit.
+The job is limited to one process, 256 MiB, and five seconds of host wall wait
+and job CPU time. Its minimal environment contains Windows and temporary
+directory paths plus a worker sentinel; ambient credentials, provider keys,
+proxy settings, `PATH`, and `PYTHONPATH` are omitted. Windows Job UI
+restrictions are intentionally not applied because they would prevent UI
+Automation. This boundary limits trusted Clicky worker lifetime and resources;
+it is not a sandbox for untrusted code and does not claim network isolation.
+
+The global Escape stop invalidates the run before terminating the bound job.
+There is no action retry. A nonce-bound HMAC authenticates the single worker
+receipt to its pipe exchange. Success requires action-specific observed
+post-state. A failed observation is `failed_verification`; an exception or
+transport/authentication failure after request delivery is `outcome_unknown`;
+and only a proven pre-delivery failure is safe to classify as pre-action or
+cancelled. Callers must never retry an unknown outcome automatically.
+
 ## Remaining implementation gates
 
 No release may expose the feature until later reviewed changes provide:
 
-1. disposable native Windows proof for the inspector, visible non-interactive
-   highlight, mixed-DPI routing, immediate revalidation, queue cancellation,
-   and global stop already present in source;
-2. a one-use task grant and exact step approval bound to the highlighted
-   review digest;
-3. allowlisted pattern executors with bounded time and no coordinate fallback;
-4. post-action state verification and truthful failure/partial results;
-5. Task Center evidence and adversarial Windows tests; and
-6. interactive packaged Windows and signed-release exact-byte validation.
+1. Task Center action review, receipt display, and adversarial integration;
+2. disposable native Windows proof for target inspection, highlight,
+   mixed-DPI routing, every UIA pattern and postcondition, stop races, timeout,
+   process-tree termination, and unknown-outcome handling; and
+3. interactive packaged Windows and signed-release exact-byte validation.

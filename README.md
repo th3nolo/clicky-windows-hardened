@@ -109,12 +109,22 @@ message; response content is not sent to that fallback and barge-in cancels it.
   Credential, two-factor, payment, purchase, security, administrator,
   account-change, secure-desktop, destructive, hidden, disabled, protected,
   background, unsupported-pattern, and changed targets are denied. Raw
-  mouse/keyboard input and an action executor do not exist. The source also
+  mouse/keyboard input and coordinate fallback do not exist. The source also
   contains a metadata-only focused-control inspector, mixed-DPI target
   routing, a non-activating click-through review highlight, immediate exact
-  revalidation, a handle-specific Escape hotkey, and run/queue cancellation.
-  A missing or expired highlight and a changed target fail closed. Policy or
-  review eligibility grants no action authority. See
+  revalidation, a handle-specific Escape hotkey, and run/queue cancellation;
+  plus a source-only executor for exactly one approved `focus`, `invoke`,
+  `select`, `toggle`, `expand`, `collapse`, `scroll`, or simple `set_value`
+  UIA pattern call. The broker consumes the exact Task Agent approval before
+  launch, revalidates the visible review, binds stop to a single-process
+  kill-on-close worker, never retries, and authenticates a nonce-bound result.
+  Each action has an explicit machine-observed postcondition. A failed
+  postcondition is not success, and any transport failure after request
+  delivery is an unknown outcome. A missing or expired highlight and a changed
+  target fail closed. Policy or review eligibility grants no action authority.
+  The worker receives no ambient provider keys, proxy settings, `PATH`, or
+  `PYTHONPATH`; it is trusted Clicky code and is not represented as a sandbox
+  for untrusted code. See
   [DESKTOP_AUTOMATION_SECURITY.md](DESKTOP_AUTOMATION_SECURITY.md).
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state

@@ -136,10 +136,17 @@ class WindowsDesktopTargetInspector:
         import uiautomation as auto
 
         with auto.UIAutomationInitializerInThread():
-            return self._observe_initialized(auto)
+            return self.observe_initialized(auto)
 
-    def _observe_initialized(self, auto: object) -> DesktopObservation:
-        focused = auto.GetFocusedControl()
+    def observe_initialized(
+        self,
+        auto: object,
+        focused: object | None = None,
+    ) -> DesktopObservation:
+        """Inspect one already-selected control without performing an action."""
+
+        if focused is None:
+            focused = auto.GetFocusedControl()
         if focused is None:
             raise RuntimeError("No focused UI Automation control")
 
