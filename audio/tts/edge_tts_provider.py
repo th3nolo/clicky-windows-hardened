@@ -4,6 +4,7 @@ import edge_tts
 
 from audio.tts.base_tts import BaseTTS
 from audio.playback import play_mp3_async
+from audio.tts.voice_catalog import reviewed_voice
 
 # High-quality Microsoft neural voice — no API key required
 VOICE = "en-US-AvaNeural"
@@ -17,11 +18,10 @@ class EdgeTTSProvider(BaseTTS):
     """
 
     def __init__(self, voice: str = VOICE):
-        self._voice = voice
+        self._voice = reviewed_voice("edge_tts", voice).voice_id
 
     def set_voice(self, voice: str) -> None:
-        if voice and isinstance(voice, str):
-            self._voice = voice
+        self._voice = reviewed_voice("edge_tts", voice).voice_id
 
     async def speak(self, text: str) -> None:
         if not text.strip():

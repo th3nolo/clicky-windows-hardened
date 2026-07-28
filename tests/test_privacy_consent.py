@@ -262,10 +262,10 @@ class PrivacyWiringTests(unittest.TestCase):
         self.assertIn("if not microphone_allowed(cfg):", source)
         self.assertIn("if not cloud_tts_allowed(cfg):", source)
         tts_gate = source.index("if not cloud_tts_allowed(cfg):")
-        edge_import = source.index(
-            "from audio.tts.edge_tts_provider import EdgeTTSProvider"
+        factory_import = source.index(
+            "from audio.tts.factory import create_tts_provider"
         )
-        self.assertLess(tts_gate, edge_import)
+        self.assertLess(tts_gate, factory_import)
 
 
 if __name__ == "__main__":

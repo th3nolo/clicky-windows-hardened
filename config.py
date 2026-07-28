@@ -33,6 +33,8 @@ _PREFERENCE_STRING_LIMITS = {
     "whisper_language": 16,
     "response_language": 16,
     "custom_instructions": 32 * 1024,
+    "edge_tts_voice_id": 256,
+    "openai_tts_voice_id": 256,
     "elevenlabs_voice_id": 256,
     "hotkey": 128,
     "dictation_hotkey": 128,
@@ -382,8 +384,20 @@ class Config:
     custom_instructions: str = field(
         default_factory=lambda: _preference("custom_instructions", DEFAULT_SYSTEM_PROMPT)
     )
+    edge_tts_voice_id: str = field(
+        default_factory=lambda: _preference(
+            "edge_tts_voice_id",
+            "en-US-AvaNeural",
+        )
+    )
+    openai_tts_voice_id: str = field(
+        default_factory=lambda: _preference("openai_tts_voice_id", "alloy")
+    )
     elevenlabs_voice_id: str = field(
-        default_factory=lambda: _preference("elevenlabs_voice_id", "")
+        default_factory=lambda: _preference(
+            "elevenlabs_voice_id",
+            "EXAVITQu4vr4xnSDxMaL",
+        )
     )
     hotkey: str = field(default_factory=lambda: _preference("hotkey", "ctrl+win"))
     dictation_hotkey: str = field(
@@ -678,6 +692,38 @@ class Config:
             return "openai"
         return "edge_tts"
 
+    def get_tts_voice(self, provider: str | None = None) -> str:
+        from audio.tts.voice_catalog import selected_voice
+
+        selected_provider = self.tts_provider() if provider is None else provider
+        preference_names = {
+            "edge_tts": "edge_tts_voice_id",
+            "openai": "openai_tts_voice_id",
+            "elevenlabs": "elevenlabs_voice_id",
+        }
+        try:
+            candidate = getattr(self, preference_names[selected_provider])
+        except KeyError as exc:
+            raise ValueError("Unsupported TTS provider") from exc
+        return selected_voice(selected_provider, candidate).voice_id
+
+    def set_tts_voice(self, provider: str, voice_id: str) -> str:
+        from audio.tts.voice_catalog import reviewed_voice
+
+        preference_names = {
+            "edge_tts": "edge_tts_voice_id",
+            "openai": "openai_tts_voice_id",
+            "elevenlabs": "elevenlabs_voice_id",
+        }
+        try:
+            preference_name = preference_names[provider]
+        except KeyError as exc:
+            raise ValueError("Unsupported TTS provider") from exc
+        selected = reviewed_voice(provider, voice_id).voice_id
+        _save_preferences(**{preference_name: selected})
+        setattr(self, preference_name, selected)
+        return selected
+
     def search_provider(self) -> str:
         if self.tavily_api_key:
             return "tavily"
@@ -699,6 +745,7 @@ class Config:
             ),
             "stt_fallback": fallback_label(self.stt_fallback_provider()),
             "tts": self.tts_provider(),
+            "tts_voice": self.get_tts_voice(),
             "search": self.search_provider(),
             "ollama_model": self.ollama_model,
             "ollama_vision_model": self.get_ollama_model("vision"),

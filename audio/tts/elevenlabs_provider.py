@@ -2,6 +2,7 @@ import httpx
 
 from audio.tts.base_tts import BaseTTS
 from audio.playback import play_mp3_async
+from audio.tts.voice_catalog import reviewed_voice
 from config import cfg
 
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -11,8 +12,11 @@ DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # Sarah — natural, clear
 class ElevenLabsProvider(BaseTTS):
     """ElevenLabs TTS — premium quality. Free tier: 10k chars/month."""
 
-    def __init__(self):
-        self._voice_id = cfg.elevenlabs_voice_id or DEFAULT_VOICE_ID
+    def __init__(self, voice_id: str = DEFAULT_VOICE_ID):
+        self._voice_id = reviewed_voice(
+            "elevenlabs",
+            voice_id,
+        ).voice_id
 
     async def speak(self, text: str) -> None:
         if not text.strip():

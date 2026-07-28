@@ -102,6 +102,7 @@ hidden = [
     "ui.setup_wizard",
     "ui.onboarding_demo",
     "ui.microphone_test",
+    "ui.voice_picker",
     "ui.walkthrough",
     "ui.stt_readiness",
     "ui.style_profiles",
@@ -134,6 +135,9 @@ hidden = [
     "audio.stt.whisper_cpp_stt",
 
     # Lazy TTS providers
+    "audio.tts.factory",
+    "audio.tts.voice_catalog",
+    "audio.tts.voice_preview",
     "audio.tts.edge_tts_provider",
     "audio.tts.openai_tts_provider",
     "audio.tts.elevenlabs_provider",

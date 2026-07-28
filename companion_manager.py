@@ -315,6 +315,7 @@ class CompanionManager(QObject):
     sig_dictation_result    = pyqtSignal(object)          # DictationRunOutcome
     sig_microphone_test_level = pyqtSignal(str, float)     # opaque id, local RMS
     sig_microphone_test_stopped = pyqtSignal(str, str)     # opaque id, reason
+    sig_tts_preview_stopped = pyqtSignal(str, bool, str)    # opaque id, ok, reason
     sig_walkthrough_progress = pyqtSignal(object)          # WalkthroughProgress
     sig_walkthrough_ended = pyqtSignal(str)                # content-free reason
     sig_task_followup_transcript = pyqtSignal(str)
@@ -342,6 +343,8 @@ class CompanionManager(QObject):
         self._task_followup_voice_armed = False
         self._dictation_pressed: DictationSession | None = None
         self._microphone_test_id: str | None = None
+        self._tts_preview_id: str | None = None
+        self._tts_preview_future: concurrent.futures.Future | None = None
         walkthrough_targets = (
             walkthrough_target_guard
             if walkthrough_target_guard is not None
@@ -877,6 +880,7 @@ class CompanionManager(QObject):
 
     def shutdown(self):
         self.stop_microphone_test(reason="shutdown")
+        self.stop_tts_voice_preview(reason="shutdown")
         self._walkthrough.cancel("shutdown")
         if self._consume_task_followup_voice_capture():
             self.sig_task_followup_transcript.emit("")
@@ -1152,16 +1156,13 @@ class CompanionManager(QObject):
                 self._privacy_tts_notice_emitted = True
             return self._tts
         if self._tts is None or isinstance(self._tts, DisabledTTSProvider):
+            from audio.tts.factory import create_tts_provider
+
             provider = cfg.tts_provider()
-            if provider == "elevenlabs":
-                from audio.tts.elevenlabs_provider import ElevenLabsProvider
-                self._tts = ElevenLabsProvider()
-            elif provider == "openai":
-                from audio.tts.openai_tts_provider import OpenAITTSProvider
-                self._tts = OpenAITTSProvider()
-            else:
-                from audio.tts.edge_tts_provider import EdgeTTSProvider
-                self._tts = EdgeTTSProvider()
+            self._tts = create_tts_provider(
+                provider,
+                cfg.get_tts_voice(provider),
+            )
         return self._tts
 
     async def _speak_with_failure_fallback(
@@ -1201,10 +1202,13 @@ class CompanionManager(QObject):
 
     def on_hotkey_press(self):
         with self._input_lock:
-            if self._microphone_test_id is not None:
+            if (
+                self._microphone_test_id is not None
+                or self._tts_preview_id is not None
+            ):
                 self.sig_error.emit(
-                    "Stop the local microphone test before starting speech "
-                    "input."
+                    "Stop the active voice test or preview before starting "
+                    "speech input."
                 )
                 return
             if (
@@ -1234,10 +1238,13 @@ class CompanionManager(QObject):
         """Capture one secure target, then open the owned microphone stream."""
         self._walkthrough.cancel("dictation_started")
         with self._input_lock:
-            if self._microphone_test_id is not None:
+            if (
+                self._microphone_test_id is not None
+                or self._tts_preview_id is not None
+            ):
                 self.sig_dictation_error.emit(
-                    "Stop the local microphone test before starting Global "
-                    "Dictation."
+                    "Stop the active voice test or preview before starting "
+                    "Global Dictation."
                 )
                 return
             active = self._dictation_pressed
@@ -1273,6 +1280,7 @@ class CompanionManager(QObject):
         with self._input_lock:
             if (
                 self._microphone_test_id is not None
+                or self._tts_preview_id is not None
                 or self._turns.active is not None
             ):
                 return
@@ -1296,9 +1304,12 @@ class CompanionManager(QObject):
     def _begin_dictation_capture(self, session: DictationSession) -> bool:
         """Start STT without exposing dictated content to the tutor UI."""
 
-        if self._microphone_test_id is not None:
+        if (
+            self._microphone_test_id is not None
+            or self._tts_preview_id is not None
+        ):
             self.sig_dictation_error.emit(
-                "Stop the local microphone test before starting Global "
+                "Stop the active voice test or preview before starting Global "
                 "Dictation."
             )
             return False
@@ -1497,11 +1508,15 @@ class CompanionManager(QObject):
             self.discard_dictation_preview(outcome)
 
     def _begin_capture(self, session: TurnSession) -> bool:
-        if self._microphone_test_id is not None:
+        if (
+            self._microphone_test_id is not None
+            or self._tts_preview_id is not None
+        ):
             self._emit_turn_signal(
                 session,
                 self.sig_error,
-                "Stop the local microphone test before starting speech input.",
+                "Stop the active voice test or preview before starting "
+                "speech input.",
             )
             return False
         if not microphone_allowed(cfg):
@@ -2209,13 +2224,21 @@ class CompanionManager(QObject):
             # to match the user's language for multilingual mode.
             if not self._turns.is_current(session):
                 return
-            if self._multilang and lang_code != "en":
+            if cfg.tts_provider() == "edge_tts":
                 try:
                     tts = self._get_tts()
                     if hasattr(tts, "set_voice"):
-                        tts.set_voice(multilang.voice_for(lang_code))
-                except Exception:
-                    pass
+                        tts.set_voice(
+                            multilang.voice_for(lang_code)
+                            if self._multilang and lang_code != "en"
+                            else cfg.get_tts_voice("edge_tts")
+                        )
+                except (TypeError, ValueError) as exc:
+                    self._emit_turn_signal(
+                        session,
+                        self.sig_error,
+                        f"The reviewed speech voice is unavailable: {exc}",
+                    )
             self._turns.set_phase(session, TurnPhase.SPEAKING)
             self._emit_state(AppState.SPEAKING, session)
             try:
@@ -2882,6 +2905,7 @@ class CompanionManager(QObject):
             if (
                 self._turns.active is not None
                 or self._dictation.active is not None
+                or self._tts_preview_id is not None
             ):
                 self.sig_error.emit(
                     "Stop the active voice operation before testing the "
@@ -2998,6 +3022,8 @@ class CompanionManager(QObject):
         """Apply persisted choices immediately without restarting Clicky."""
         if not microphone_allowed(cfg):
             self.stop_microphone_test(reason="permission_revoked")
+        if not cloud_tts_allowed(cfg):
+            self.stop_tts_voice_preview(reason="permission_revoked")
         if (
             not microphone_allowed(cfg)
             or not user_permission_allowed(
@@ -3060,6 +3086,7 @@ class CompanionManager(QObject):
                 or self._turns.active is not None
                 or self._dictation.active is not None
                 or self._microphone_test_id is not None
+                or self._tts_preview_id is not None
             ):
                 self._task_followup_voice_armed = False
                 self.sig_error.emit(
@@ -3239,15 +3266,164 @@ class CompanionManager(QObject):
             "Requires a WebRTC signalling server (planned for a future release)."
         )
 
-    # ── Voice picker (ElevenLabs / Edge) ─────────────────────────────────────
+    # ── Reviewed voice selection and preview ─────────────────────────────────
 
-    def set_tts_voice(self, voice: str):
+    def set_tts_voice(self, provider: str, voice_id: str) -> bool:
+        """Persist one reviewed voice for exactly one TTS provider."""
+
         try:
-            tts = self._get_tts()
-            if hasattr(tts, "set_voice"):
-                tts.set_voice(voice)
+            cfg.set_tts_voice(provider, voice_id)
+        except (OSError, TypeError, ValueError) as exc:
+            self.sig_error.emit(f"Could not save speech voice: {exc}")
+            return False
+        if provider == cfg.tts_provider():
+            self.stop_tts_voice_preview(reason="selection_changed")
+            self._cancel_outputs()
+            self._tts = None
+        return True
+
+    def start_tts_voice_preview(
+        self,
+        preview_id: str,
+        provider: str,
+        voice_id: str,
+    ) -> bool:
+        """Claim one bounded cloud preview without a fallback provider."""
+
+        if (
+            not isinstance(preview_id, str)
+            or not preview_id
+            or len(preview_id) > 128
+        ):
+            self.sig_error.emit("The voice preview request was invalid.")
+            return False
+        if provider != cfg.tts_provider():
+            self.sig_error.emit(
+                "Voice preview is limited to the active TTS provider. "
+                "Clicky did not contact a provider."
+            )
+            return False
+        if not cloud_tts_allowed(cfg):
+            self.sig_error.emit(
+                "Cloud text-to-speech permission is required before preview. "
+                "Clicky did not contact a provider."
+            )
+            return False
+        try:
+            from audio.tts.voice_catalog import reviewed_voice
+
+            reviewed_voice(provider, voice_id)
+        except (TypeError, ValueError) as exc:
+            self.sig_error.emit(
+                f"The selected speech voice is not reviewed: {exc}"
+            )
+            return False
+        with self._input_lock:
+            if (
+                self._turns.active is not None
+                or self._dictation.active is not None
+                or self._microphone_test_id is not None
+                or self._tts_preview_id is not None
+            ):
+                self.sig_error.emit(
+                    "Stop the active voice operation before previewing a voice."
+                )
+                return False
+            self._tts_preview_id = preview_id
+        future = self._submit(
+            self._run_tts_voice_preview(preview_id, provider, voice_id)
+        )
+        if future is None:
+            with self._input_lock:
+                if self._tts_preview_id == preview_id:
+                    self._tts_preview_id = None
+            self.sig_tts_preview_stopped.emit(
+                preview_id,
+                False,
+                "worker_unavailable",
+            )
+            return False
+        with self._input_lock:
+            if self._tts_preview_id == preview_id:
+                self._tts_preview_future = future
+        return True
+
+    async def _run_tts_voice_preview(
+        self,
+        preview_id: str,
+        provider: str,
+        voice_id: str,
+    ) -> None:
+        succeeded = False
+        reason = "failed"
+        try:
+            from audio.tts.voice_preview import speak_voice_preview
+
+            await speak_voice_preview(
+                provider,
+                voice_id,
+                cloud_tts_permission=cloud_tts_allowed(cfg),
+            )
+            succeeded = True
+            reason = "completed"
+        except asyncio.TimeoutError:
+            reason = "timeout"
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        except Exception as exc:
+            self.sig_error.emit(f"Voice preview failed: {exc}")
+        finally:
+            try:
+                from audio.playback import stop_audio
+
+                stop_audio()
+            except Exception:
+                pass
+            self._finish_tts_voice_preview(preview_id, succeeded, reason)
+
+    def _finish_tts_voice_preview(
+        self,
+        preview_id: str,
+        succeeded: bool,
+        reason: str,
+    ) -> bool:
+        with self._input_lock:
+            if self._tts_preview_id != preview_id:
+                return False
+            self._tts_preview_id = None
+            self._tts_preview_future = None
+        self.sig_tts_preview_stopped.emit(
+            preview_id,
+            bool(succeeded),
+            str(reason),
+        )
+        return True
+
+    def stop_tts_voice_preview(
+        self,
+        preview_id: str | None = None,
+        reason: str = "stopped",
+    ) -> bool:
+        with self._input_lock:
+            active = self._tts_preview_id
+            if active is None or (
+                preview_id is not None and preview_id != active
+            ):
+                return False
+            future = self._tts_preview_future
+            self._tts_preview_id = None
+            self._tts_preview_future = None
+        if future is not None and not future.done():
+            future.cancel()
+        try:
+            from audio.playback import stop_audio
+
+            stop_audio()
         except Exception:
             pass
+        self.sig_tts_preview_stopped.emit(active, False, str(reason))
+        return True
 
     # ── Toggle setters for the rest of the new features ──────────────────────
 
@@ -3272,6 +3448,7 @@ class CompanionManager(QObject):
     def stop(self):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
         self.stop_microphone_test(reason="cancelled")
+        self.stop_tts_voice_preview(reason="cancelled")
         self._walkthrough.cancel("cancelled")
         if self._consume_task_followup_voice_capture():
             self.sig_task_followup_transcript.emit("")

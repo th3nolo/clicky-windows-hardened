@@ -102,6 +102,7 @@ jobs:
           tests.test_task_tool_broker
           tests.test_task_verifiers
           tests.test_task_worker
+          tests.test_tts_voice_selection
           tests.test_turn_coordinator
           tests.test_validation_boundary
           tests.test_windows_runtime_validation
