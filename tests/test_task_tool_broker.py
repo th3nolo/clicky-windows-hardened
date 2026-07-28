@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,7 @@ from tasks.tool_broker import (
     ArtifactWriteArguments,
     DeclaredToolStep,
     ModelGenerateArguments,
+    ResearchCsvRenderArguments,
     TaskToolBroker,
     TaskToolBrokerLimitError,
     TaskToolBrokerValidationError,
@@ -248,6 +250,25 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, model_text)
         self.assertEqual(self.adapter_calls["model"], 1)
         self.assertEqual(workspace.verify(), (0, 0))
+
+    def test_model_evidence_context_is_bounded_and_digest_bound(self):
+        plain = ModelGenerateArguments(
+            prompt="Return records.",
+            system_prompt="Return JSON only.",
+        )
+        contextual = ModelGenerateArguments(
+            prompt="Return records.",
+            system_prompt="Return JSON only.",
+            context=(
+                "[1] Public profile — "
+                "https://creator.example/one\nPublic evidence."
+            ),
+        )
+
+        self.assertNotEqual(
+            broker_arguments_digest(plain),
+            broker_arguments_digest(contextual),
+        )
 
     async def test_wrong_schema_digest_and_step_fail_before_adapter(self):
         model_step = declared_step(
@@ -730,6 +751,138 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(short_run.state, TaskState.CANCELLED)
         self.assertEqual(short_workspace.verify(), (0, 0))
 
+    async def test_research_csv_renderer_binds_records_to_observed_sources(self):
+        render_step = declared_step(
+            "render",
+            DeclarativeTool.RESEARCH_CSV_RENDER,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("render",),
+        )
+        broker, _, _ = self.create_broker((render_step, verify_step))
+        source = "https://creator.example/one"
+        arguments = ResearchCsvRenderArguments(
+            records_json=json.dumps(
+                {
+                    "records": [
+                        {
+                            "entity": {
+                                "value": "Creator one",
+                                "source_urls": [source],
+                            },
+                            "public_url": {
+                                "value": source,
+                                "source_urls": [source],
+                            },
+                            "rationale": {
+                                "value": "Matches the request.",
+                                "source_urls": [source],
+                            },
+                            "requested_fields": {},
+                        }
+                    ]
+                }
+            ),
+            source_context=(
+                f"[1] Creator one — {source}\nPublic evidence."
+            ),
+            requested_rows=1,
+            field_ids=(),
+            maximum_output_bytes=64 * 1024,
+        )
+
+        result = await broker.execute(
+            call_for(render_step, arguments),
+            arguments,
+        )
+
+        self.assertEqual(result.result.status, ToolResultStatus.SUCCEEDED)
+        self.assertIn("Creator one", result.text)
+        self.assertEqual(
+            result.result.output_digest,
+            hashlib.sha256(result.text.encode("utf-8")).hexdigest(),
+        )
+
+    async def test_research_csv_renderer_never_pads_or_accepts_new_sources(self):
+        render_step = declared_step(
+            "render",
+            DeclarativeTool.RESEARCH_CSV_RENDER,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("render",),
+        )
+        source = "https://creator.example/one"
+        broker, _, _ = self.create_broker((render_step, verify_step))
+        shortfall = ResearchCsvRenderArguments(
+            records_json=json.dumps({"records": []}),
+            source_context=f"[1] Creator one — {source}",
+            requested_rows=2,
+            field_ids=(),
+            maximum_output_bytes=64 * 1024,
+        )
+        short = await broker.execute(
+            call_for(render_step, shortfall),
+            shortfall,
+        )
+        self.assertEqual(short.result.status, ToolResultStatus.PARTIAL)
+        self.assertEqual(
+            short.result.error_code,
+            "research_csv_row_shortfall",
+        )
+        self.assertEqual(short.text.count("\n"), 1)
+
+        rejected_broker, _, _ = self.create_broker(
+            (render_step, verify_step),
+            run_id="task-broker-invented-source",
+        )
+        invented = ResearchCsvRenderArguments(
+            records_json=json.dumps(
+                {
+                    "records": [
+                        {
+                            "entity": {
+                                "value": "Invented",
+                                "source_urls": [
+                                    "https://invented.example/profile"
+                                ],
+                            },
+                            "public_url": {
+                                "value": source,
+                                "source_urls": [source],
+                            },
+                            "rationale": {
+                                "value": "Invented rationale",
+                                "source_urls": [source],
+                            },
+                            "requested_fields": {},
+                        }
+                    ]
+                }
+            ),
+            source_context=f"[1] Creator one — {source}",
+            requested_rows=1,
+            field_ids=(),
+            maximum_output_bytes=64 * 1024,
+        )
+        rejected = await rejected_broker.execute(
+            call_for(
+                render_step,
+                invented,
+                run_id="task-broker-invented-source",
+            ),
+            invented,
+        )
+        self.assertEqual(rejected.result.status, ToolResultStatus.FAILED)
+        self.assertEqual(
+            rejected.result.error_code,
+            "research_csv_render_failed",
+        )
+        self.assertIsNone(rejected.text)
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
@@ -943,6 +1096,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.MODEL_GENERATE,
                 DeclarativeTool.WEB_SEARCH,
                 DeclarativeTool.WEB_FETCH,
+                DeclarativeTool.RESEARCH_CSV_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,
                 DeclarativeTool.VERIFY_OUTPUT,

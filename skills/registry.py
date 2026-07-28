@@ -55,8 +55,13 @@ _BUNDLED_MANIFEST_NAME = "manifest.json"
 
 # Immutable package trust anchor.  The checked-in manifest is transparent
 # metadata, but cannot authorize a different sidecar definition by itself.
-# WIN-RES-003 will add the first reviewed bundled definition and digest here.
-_BUNDLED_DECLARATIVE_SKILL_DIGESTS = MappingProxyType({})
+_BUNDLED_DECLARATIVE_SKILL_DIGESTS = MappingProxyType(
+    {
+        "research-to-csv.skill.json": (
+            "08cccc0490780a429cd1e1d23e0c2f176a4447600c8ca6a891f612bca1cd2eca"
+        )
+    }
+)
 
 
 class SkillRegistryError(ValueError):

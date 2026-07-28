@@ -321,6 +321,24 @@ def _render_cited_search_results(
     return "\n\n".join(parts)
 
 
+def cited_source_urls(value: str) -> tuple[str, ...]:
+    """Extract only normalized cited HTTPS result URLs from brokered search."""
+
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > MAX_RESEARCH_RESPONSE_BYTES
+    ):
+        raise ResearchToolError(
+            "Cited research context is invalid"
+        )
+    hits = _parse_cited_search_results(
+        value,
+        maximum=MAX_RESEARCH_SEARCH_SOURCES,
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    return tuple(hit.public_url for hit in hits)
+
+
 def _bounded_text(value: object, *, maximum: int, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -349,4 +367,5 @@ __all__ = [
     "ResearchToolLimitError",
     "ResearchToolLimits",
     "ResearchToolSnapshot",
+    "cited_source_urls",
 ]

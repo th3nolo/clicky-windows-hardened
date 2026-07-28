@@ -14,6 +14,7 @@ from research.csv_artifact import (
     ResearchCsvSchema,
     inspect_research_csv,
     render_research_csv,
+    render_research_json_to_csv,
 )
 from research.models import (
     ResearchBatch,
@@ -81,6 +82,114 @@ def rewrite(content: bytes, mutate) -> bytes:
 class ResearchCsvArtifactTests(unittest.TestCase):
     def setUp(self) -> None:
         self.schema = ResearchCsvSchema(("audience",))
+
+    def test_strict_model_json_renders_only_observed_sourced_records(self):
+        source = "https://creator.example/one"
+        artifact = render_research_json_to_csv(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "entity": {
+                                "value": "Creator one",
+                                "source_urls": [source],
+                            },
+                            "public_url": {
+                                "value": source,
+                                "source_urls": [source],
+                            },
+                            "rationale": {
+                                "value": "Matches the public request.",
+                                "source_urls": [source],
+                            },
+                            "requested_fields": {
+                                "audience": {
+                                    "value": "Software developers",
+                                    "source_urls": [source],
+                                }
+                            },
+                        }
+                    ]
+                }
+            ),
+            self.schema,
+            requested_rows=1,
+            maximum_output_bytes=64 * 1024,
+            allowed_source_urls=(source,),
+            retrieved_at=NOW,
+        )
+
+        self.assertTrue(artifact.complete)
+        self.assertEqual(artifact.row_count, 1)
+        self.assertIn(b"Creator one", artifact.content)
+
+    def test_strict_model_json_rejects_unobserved_or_duplicate_sources(self):
+        source = "https://creator.example/one"
+        payload = {
+            "records": [
+                {
+                    "entity": {
+                        "value": "Creator one",
+                        "source_urls": ["https://invented.example/one"],
+                    },
+                    "public_url": {
+                        "value": source,
+                        "source_urls": [source],
+                    },
+                    "rationale": {
+                        "value": "Matches the public request.",
+                        "source_urls": [source],
+                    },
+                    "requested_fields": {
+                        "audience": {
+                            "value": "Software developers",
+                            "source_urls": [source],
+                        }
+                    },
+                }
+            ]
+        }
+        with self.assertRaisesRegex(
+            ResearchCsvError,
+            "unobserved source",
+        ):
+            render_research_json_to_csv(
+                json.dumps(payload),
+                self.schema,
+                requested_rows=1,
+                maximum_output_bytes=64 * 1024,
+                allowed_source_urls=(source,),
+                retrieved_at=NOW,
+            )
+        with self.assertRaisesRegex(
+            ResearchCsvError,
+            "unique",
+        ):
+            render_research_json_to_csv(
+                json.dumps({"records": []}),
+                self.schema,
+                requested_rows=1,
+                maximum_output_bytes=64 * 1024,
+                allowed_source_urls=(source, source),
+                retrieved_at=NOW,
+            )
+
+    def test_strict_model_json_reports_row_shortfall_without_padding(self):
+        artifact = render_research_json_to_csv(
+            json.dumps({"records": []}),
+            self.schema,
+            requested_rows=2,
+            maximum_output_bytes=64 * 1024,
+            allowed_source_urls=("https://creator.example/one",),
+            retrieved_at=NOW,
+        )
+
+        self.assertFalse(artifact.complete)
+        self.assertEqual(artifact.row_count, 0)
+        self.assertEqual(
+            artifact.partial_reason,
+            "requested_rows_not_reached:0/2",
+        )
 
     def test_renderer_is_deterministic_source_complete_and_excel_safe(self):
         records = batch(

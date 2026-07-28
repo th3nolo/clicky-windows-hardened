@@ -8,7 +8,7 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from research.models import (
     MAX_FIELD_ID_CHARS,
@@ -16,7 +16,11 @@ from research.models import (
     MAX_RESEARCH_ROWS,
     MAX_SOURCES_PER_FIELD,
     ResearchBatch,
+    ResearchField,
+    ResearchLimits,
+    ResearchRecord,
     ResearchValidationError,
+    ResearchValue,
     canonicalize_public_url,
 )
 
@@ -38,6 +42,10 @@ _BASE_SUFFIX = (
     "rationale_sources",
     "retrieved_at",
 )
+_RECORD_FIELDS = frozenset(
+    {"entity", "public_url", "rationale", "requested_fields"}
+)
+_VALUE_FIELDS = frozenset({"source_urls", "value"})
 
 
 class ResearchCsvError(ValueError):
@@ -100,6 +108,42 @@ class ResearchCsvSchema:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+
+    @classmethod
+    def from_columns(
+        cls,
+        columns: tuple[str, ...],
+    ) -> ResearchCsvSchema:
+        if (
+            not isinstance(columns, tuple)
+            or len(columns) < len(_BASE_PREFIX) + len(_BASE_SUFFIX)
+            or columns[: len(_BASE_PREFIX)] != _BASE_PREFIX
+            or columns[-len(_BASE_SUFFIX) :] != _BASE_SUFFIX
+        ):
+            raise ResearchCsvError(
+                "Research CSV columns are not a supported schema"
+            )
+        dynamic = columns[
+            len(_BASE_PREFIX) : -len(_BASE_SUFFIX)
+        ]
+        if len(dynamic) % 2:
+            raise ResearchCsvError(
+                "Research CSV dynamic columns are incomplete"
+            )
+        fields: list[str] = []
+        for index in range(0, len(dynamic), 2):
+            field_id = dynamic[index]
+            if dynamic[index + 1] != f"{field_id}_sources":
+                raise ResearchCsvError(
+                    "Research CSV source columns are not paired"
+                )
+            fields.append(field_id)
+        schema = cls(tuple(fields))
+        if schema.columns != columns:
+            raise ResearchCsvError(
+                "Research CSV columns are not canonical"
+            )
+        return schema
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +353,109 @@ def render_research_csv(
     )
 
 
+def render_research_json_to_csv(
+    records_json: str,
+    schema: ResearchCsvSchema,
+    *,
+    requested_rows: int,
+    maximum_output_bytes: int,
+    allowed_source_urls: tuple[str, ...],
+    retrieved_at: datetime | None = None,
+) -> ResearchCsvArtifact:
+    """Parse strict inert model JSON, bind sources, then render canonical CSV."""
+
+    if (
+        not isinstance(records_json, str)
+        or not records_json
+        or len(records_json.encode("utf-8")) > MAX_RESEARCH_BYTES
+        or "\x00" in records_json
+    ):
+        raise ResearchCsvError("Research record JSON is invalid")
+    if not isinstance(schema, ResearchCsvSchema):
+        raise TypeError("Research JSON rendering requires a typed schema")
+    _bounded_integer(
+        requested_rows,
+        1,
+        MAX_RESEARCH_ROWS,
+        "Research JSON requested row count",
+    )
+    _bounded_integer(
+        maximum_output_bytes,
+        1,
+        MAX_RESEARCH_BYTES,
+        "Research JSON output limit",
+    )
+    if (
+        not isinstance(allowed_source_urls, tuple)
+        or not 1 <= len(allowed_source_urls) <= 64
+    ):
+        raise ResearchCsvError(
+            "Research JSON needs bounded observed sources"
+        )
+    allowed = tuple(
+        canonicalize_public_url(url, require_https=True)
+        for url in allowed_source_urls
+    )
+    if len(allowed) != len(set(allowed)):
+        raise ResearchCsvError(
+            "Observed research sources must be unique"
+        )
+    timestamp = retrieved_at or datetime.now(timezone.utc)
+    if (
+        not isinstance(timestamp, datetime)
+        or timestamp.tzinfo is None
+        or timestamp.utcoffset() is None
+    ):
+        raise ResearchCsvError(
+            "Research JSON retrieval time must be timezone-aware"
+        )
+    try:
+        payload = json.loads(
+            records_json,
+            object_pairs_hook=_reject_duplicate_json_fields,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, UnicodeError, ResearchCsvError) as exc:
+        raise ResearchCsvError(
+            "Research record JSON is malformed"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"records"}
+        or not isinstance(payload["records"], list)
+        or len(payload["records"]) > requested_rows
+    ):
+        raise ResearchCsvError(
+            "Research record JSON envelope is invalid"
+        )
+    try:
+        records = tuple(
+            _record_from_json(
+                item,
+                schema=schema,
+                allowed_sources=frozenset(allowed),
+                retrieved_at=timestamp,
+            )
+            for item in payload["records"]
+        )
+    except ResearchValidationError as exc:
+        raise ResearchCsvError(
+            "Research record JSON contains invalid sourced values"
+        ) from exc
+    limits = ResearchLimits(
+        max_rows=requested_rows,
+        max_fields_per_record=len(schema.requested_field_ids),
+        max_sources_per_record=64,
+        max_total_sources=min(2_048, max(1, len(allowed))),
+        max_output_bytes=maximum_output_bytes,
+    )
+    return render_research_csv(
+        ResearchBatch(records, limits),
+        schema,
+        requested_rows=requested_rows,
+    )
+
+
 def inspect_research_csv(
     content: bytes,
     schema: ResearchCsvSchema,
@@ -451,6 +598,112 @@ def _source_cell(urls: tuple[str, ...]) -> str:
     )
 
 
+def _record_from_json(
+    value: object,
+    *,
+    schema: ResearchCsvSchema,
+    allowed_sources: frozenset[str],
+    retrieved_at: datetime,
+) -> ResearchRecord:
+    if not isinstance(value, dict) or set(value) != _RECORD_FIELDS:
+        raise ResearchCsvError("Research JSON record fields are invalid")
+    requested = value["requested_fields"]
+    if (
+        not isinstance(requested, dict)
+        or set(requested) != set(schema.requested_field_ids)
+    ):
+        raise ResearchCsvError(
+            "Research JSON requested fields do not match the schema"
+        )
+    entity = _value_from_json(
+        value["entity"],
+        allowed_sources=allowed_sources,
+    )
+    public_url = _value_from_json(
+        value["public_url"],
+        allowed_sources=allowed_sources,
+    )
+    canonical_public_url = canonicalize_public_url(
+        public_url.value,
+        require_https=True,
+    )
+    if (
+        canonical_public_url != public_url.value
+        or canonical_public_url not in allowed_sources
+    ):
+        raise ResearchCsvError(
+            "Research JSON public URL was not observed"
+        )
+    rationale = _value_from_json(
+        value["rationale"],
+        allowed_sources=allowed_sources,
+    )
+    fields = tuple(
+        ResearchField(
+            field_id,
+            _value_from_json(
+                requested[field_id],
+                allowed_sources=allowed_sources,
+            ),
+        )
+        for field_id in schema.requested_field_ids
+    )
+    return ResearchRecord(
+        entity=entity,
+        public_url=public_url,
+        requested_fields=fields,
+        rationale=rationale,
+        retrieved_at=retrieved_at,
+    )
+
+
+def _value_from_json(
+    value: object,
+    *,
+    allowed_sources: frozenset[str],
+) -> ResearchValue:
+    if not isinstance(value, dict) or set(value) != _VALUE_FIELDS:
+        raise ResearchCsvError(
+            "Research JSON factual value is invalid"
+        )
+    sources = value["source_urls"]
+    if (
+        not isinstance(sources, list)
+        or any(not isinstance(source, str) for source in sources)
+    ):
+        raise ResearchCsvError(
+            "Research JSON factual sources are invalid"
+        )
+    typed = ResearchValue(
+        value["value"],
+        tuple(sources),
+    )
+    if not set(typed.source_urls).issubset(allowed_sources):
+        raise ResearchCsvError(
+            "Research JSON cites an unobserved source"
+        )
+    return typed
+
+
+def _reject_duplicate_json_fields(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ResearchCsvError(
+                "Research JSON contains duplicate fields"
+            )
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str):
+    raise ResearchCsvError(
+        f"Research JSON constant is invalid: {value}"
+    )
+
+
 def _validate_source_cell(value: str) -> None:
     try:
         sources = json.loads(value)
@@ -503,4 +756,5 @@ __all__ = [
     "ResearchCsvSchema",
     "inspect_research_csv",
     "render_research_csv",
+    "render_research_json_to_csv",
 ]
