@@ -37,6 +37,7 @@ from tasks.tool_broker import (
     DeclaredToolStep,
     ModelGenerateArguments,
     ResearchCsvRenderArguments,
+    ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
     TaskToolBroker,
     TaskToolBrokerLimitError,
@@ -1002,6 +1003,99 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(verified.result.is_successful_verification)
         self.assertIsNotNone(verified.artifact)
 
+    async def test_research_docx_is_adopted_only_after_safe_text_verification(
+        self,
+    ):
+        from research.docx_artifact import (
+            DOCX_MEDIA_TYPE,
+            research_markdown_to_docx_model,
+        )
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from tests.test_research_csv import batch, record
+        from tests.test_research_docx import _minimal_docx
+
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        report = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        model = research_markdown_to_docx_model(
+            report.content,
+            schema,
+            requested_sections=1,
+        )
+        content = _minimal_docx(model.paragraphs)
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, _ = self.create_broker(
+            (write_step, verify_step),
+            run_id="task-broker-docx-adoption",
+        )
+        write_arguments = ArtifactWriteArguments(
+            artifact_id="research-docx",
+            name="research.docx",
+            media_type=DOCX_MEDIA_TYPE,
+            content=content,
+        )
+        write_call = call_for(
+            write_step,
+            write_arguments,
+            run_id=run.run_id,
+        )
+        self.approve(run, write_call)
+        await broker.execute(write_call, write_arguments)
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-docx",
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_media_type=DOCX_MEDIA_TYPE,
+            maximum_bytes=1024 * 1024,
+            research_docx_report_title=schema.title,
+            research_docx_field_ids=schema.requested_field_ids,
+            research_docx_requested_sections=1,
+            research_docx_report_sha256=report.sha256,
+            research_docx_document_digest=model.document_digest,
+            research_docx_source_digest=model.source_digest,
+        )
+        verified = await broker.execute(
+            call_for(
+                verify_step,
+                verify_arguments,
+                run_id=run.run_id,
+            ),
+            verify_arguments,
+        )
+        self.assertTrue(verified.result.is_successful_verification)
+        self.assertIsNotNone(verified.artifact)
+
+        render_arguments = ResearchDocxRenderArguments(
+            report_content=report.content,
+            report_title=schema.title,
+            requested_sections=1,
+            field_ids=schema.requested_field_ids,
+            report_sha256=report.sha256,
+            source_digest=report.source_digest,
+            maximum_output_bytes=1024 * 1024,
+        )
+        self.assertEqual(
+            broker_arguments_digest(render_arguments),
+            broker_arguments_digest(render_arguments),
+        )
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
@@ -1216,6 +1310,19 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 maximum_bytes=1024,
                 research_markdown_report_title="Report",
             )
+        from research.docx_artifact import DOCX_MEDIA_TYPE
+        from tests.test_research_docx import _minimal_docx
+
+        with self.assertRaisesRegex(ValueError, "not inert"):
+            ArtifactWriteArguments(
+                artifact_id="active-docx",
+                name="active.docx",
+                media_type=DOCX_MEDIA_TYPE,
+                content=_minimal_docx(
+                    (),
+                    extra_entries={"word/vbaProject.bin": b"macro"},
+                ),
+            )
 
     def test_shared_vocabulary_excludes_powerful_initial_tools(self):
         self.assertEqual(
@@ -1226,6 +1333,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.WEB_FETCH,
                 DeclarativeTool.RESEARCH_CSV_RENDER,
                 DeclarativeTool.RESEARCH_MARKDOWN_RENDER,
+                DeclarativeTool.RESEARCH_DOCX_RENDER,
                 DeclarativeTool.NOTION_DRAFT_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,

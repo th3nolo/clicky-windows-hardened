@@ -65,6 +65,7 @@ from tasks.tool_broker import (
     NotionDraftRenderArguments,
     NotionSelectedPageArguments,
     ResearchCsvRenderArguments,
+    ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
     SheetsExportArguments,
     SlidesExportArguments,
@@ -118,6 +119,9 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
                 "requested_sections",
                 "source_context",
             }
+        ),
+        DeclarativeTool.RESEARCH_DOCX_RENDER: frozenset(
+            {"report_content"}
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {
@@ -174,6 +178,9 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
                 "requested_sections",
                 "source_context",
             }
+        ),
+        DeclarativeTool.RESEARCH_DOCX_RENDER: frozenset(
+            {"report_content"}
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {"blocks_json", "title"}
@@ -300,6 +307,17 @@ class _ResearchMarkdownMetadata:
     report_title: str
     field_ids: tuple[str, ...]
     requested_sections: int
+    source_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchDocxMetadata:
+    content_sha256: str
+    report_title: str
+    field_ids: tuple[str, ...]
+    requested_sections: int
+    report_sha256: str
+    document_digest: str
     source_digest: str
 
 
@@ -654,6 +672,7 @@ class DeclarativeSkillRunner:
         self._artifacts: list[Artifact] = []
         self._research_csv: _ResearchCsvMetadata | None = None
         self._research_markdown: _ResearchMarkdownMetadata | None = None
+        self._research_docx: _ResearchDocxMetadata | None = None
         self._next_step = 0
         self._prepared: _PreparedStep | None = None
 
@@ -1109,15 +1128,18 @@ class DeclarativeSkillRunner:
                 ),
             )
         if step.tool is DeclarativeTool.RESEARCH_MARKDOWN_RENDER:
+            from research.docx_artifact import DOCX_MEDIA_TYPE
+
             output = self._definition.output
             if (
                 output.output_type is not SkillOutputType.ARTIFACT
-                or output.media_type != "text/markdown"
+                or output.media_type
+                not in {"text/markdown", DOCX_MEDIA_TYPE}
                 or output.fields
             ):
                 raise DeclarativeRunnerPlanningError(
                     "Research Markdown rendering requires a declared "
-                    "Markdown artifact"
+                    "Markdown or report-export artifact"
                 )
             return ResearchMarkdownRenderArguments(
                 records_json=_text_value(
@@ -1137,6 +1159,43 @@ class DeclarativeSkillRunner:
                     "Research requested section count",
                 ),
                 field_ids=(),
+                maximum_output_bytes=(
+                    self._definition.limits.max_output_bytes
+                ),
+            )
+        if step.tool is DeclarativeTool.RESEARCH_DOCX_RENDER:
+            from research.docx_artifact import DOCX_MEDIA_TYPE
+
+            output = self._definition.output
+            if (
+                output.output_type is not SkillOutputType.ARTIFACT
+                or output.media_type != DOCX_MEDIA_TYPE
+                or output.fields
+                or self._research_markdown is None
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Research DOCX rendering requires one validated "
+                    "Markdown report and a declared DOCX artifact"
+                )
+            report_content = _content_value(values["report_content"])
+            report_sha256 = hashlib.sha256(report_content).hexdigest()
+            if (
+                report_sha256
+                != self._research_markdown.content_sha256
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research DOCX source does not match the validated "
+                    "Markdown report"
+                )
+            return ResearchDocxRenderArguments(
+                report_content=report_content,
+                report_title=self._research_markdown.report_title,
+                requested_sections=(
+                    self._research_markdown.requested_sections
+                ),
+                field_ids=self._research_markdown.field_ids,
+                report_sha256=report_sha256,
+                source_digest=self._research_markdown.source_digest,
                 maximum_output_bytes=(
                     self._definition.limits.max_output_bytes
                 ),
@@ -1173,15 +1232,18 @@ class DeclarativeSkillRunner:
                 values.get("expected_sha256"),
                 "Expected artifact digest",
             )
+            source_output = self._artifact_source_output(artifact_id)
+            artifact_value = self._outputs[source_output]
+            assert isinstance(artifact_value, _ArtifactValue)
+            actual_sha256 = hashlib.sha256(
+                artifact_value.content
+            ).hexdigest()
             research_csv_field_ids: tuple[str, ...] = ()
             research_csv_requested_rows = None
-            if self._research_csv is not None:
-                source_output = self._artifact_source_output(artifact_id)
-                artifact_value = self._outputs[source_output]
-                assert isinstance(artifact_value, _ArtifactValue)
-                actual_sha256 = hashlib.sha256(
-                    artifact_value.content
-                ).hexdigest()
+            if (
+                self._research_csv is not None
+                and artifact_value.media_type == "text/csv"
+            ):
                 if (
                     actual_sha256 != self._research_csv.content_sha256
                     or (
@@ -1201,13 +1263,10 @@ class DeclarativeSkillRunner:
             research_markdown_field_ids: tuple[str, ...] = ()
             research_markdown_requested_sections = None
             research_markdown_source_digest = None
-            if self._research_markdown is not None:
-                source_output = self._artifact_source_output(artifact_id)
-                artifact_value = self._outputs[source_output]
-                assert isinstance(artifact_value, _ArtifactValue)
-                actual_sha256 = hashlib.sha256(
-                    artifact_value.content
-                ).hexdigest()
+            if (
+                self._research_markdown is not None
+                and artifact_value.media_type == "text/markdown"
+            ):
                 if (
                     actual_sha256
                     != self._research_markdown.content_sha256
@@ -1233,6 +1292,47 @@ class DeclarativeSkillRunner:
                 research_markdown_source_digest = (
                     self._research_markdown.source_digest
                 )
+            research_docx_report_title = None
+            research_docx_field_ids: tuple[str, ...] = ()
+            research_docx_requested_sections = None
+            research_docx_report_sha256 = None
+            research_docx_document_digest = None
+            research_docx_source_digest = None
+            if self._research_docx is not None:
+                from research.docx_artifact import DOCX_MEDIA_TYPE
+
+                if artifact_value.media_type == DOCX_MEDIA_TYPE:
+                    if (
+                        actual_sha256
+                        != self._research_docx.content_sha256
+                        or (
+                            expected_sha256 is not None
+                            and expected_sha256 != actual_sha256
+                        )
+                    ):
+                        raise DeclarativeRunnerOutputError(
+                            "Research DOCX verifier digest does not "
+                            "match render"
+                        )
+                    expected_sha256 = actual_sha256
+                    research_docx_report_title = (
+                        self._research_docx.report_title
+                    )
+                    research_docx_field_ids = (
+                        self._research_docx.field_ids
+                    )
+                    research_docx_requested_sections = (
+                        self._research_docx.requested_sections
+                    )
+                    research_docx_report_sha256 = (
+                        self._research_docx.report_sha256
+                    )
+                    research_docx_document_digest = (
+                        self._research_docx.document_digest
+                    )
+                    research_docx_source_digest = (
+                        self._research_docx.source_digest
+                    )
             return VerifyOutputArguments(
                 verifier_id=self._run.spec.verifier_id,
                 artifact_id=artifact_id,
@@ -1271,6 +1371,20 @@ class DeclarativeSkillRunner:
                 ),
                 research_markdown_source_digest=(
                     research_markdown_source_digest
+                ),
+                research_docx_report_title=research_docx_report_title,
+                research_docx_field_ids=research_docx_field_ids,
+                research_docx_requested_sections=(
+                    research_docx_requested_sections
+                ),
+                research_docx_report_sha256=(
+                    research_docx_report_sha256
+                ),
+                research_docx_document_digest=(
+                    research_docx_document_digest
+                ),
+                research_docx_source_digest=(
+                    research_docx_source_digest
                 ),
             )
         raise DeclarativeRunnerPlanningError(
@@ -1381,6 +1495,70 @@ class DeclarativeSkillRunner:
                 ),
                 source_digest=inspection.source_digest,
             )
+        if isinstance(prepared.arguments, ResearchDocxRenderArguments):
+            if execution.content is None:
+                raise DeclarativeRunnerOutputError(
+                    "Research DOCX render returned no content"
+                )
+            from research.docx_artifact import (
+                inspect_research_docx,
+                research_markdown_to_docx_model,
+            )
+            from research.markdown_artifact import ResearchMarkdownSchema
+
+            content = execution.content
+            if (
+                execution.result.output_digest
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research DOCX render digest does not match its content"
+                )
+            schema = ResearchMarkdownSchema(
+                prepared.arguments.report_title,
+                prepared.arguments.field_ids,
+            )
+            model = research_markdown_to_docx_model(
+                prepared.arguments.report_content,
+                schema,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+            )
+            inspection = inspect_research_docx(
+                content,
+                schema,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                maximum_bytes=(
+                    prepared.arguments.maximum_output_bytes
+                ),
+            )
+            if (
+                not inspection.structurally_valid
+                or inspection.document_digest != model.document_digest
+                or inspection.source_digest != model.source_digest
+                or model.report_sha256
+                != prepared.arguments.report_sha256
+                or model.source_digest
+                != prepared.arguments.source_digest
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research DOCX render does not match the validated "
+                    "report model"
+                )
+            self._research_docx = _ResearchDocxMetadata(
+                content_sha256=execution.result.output_digest,
+                report_title=prepared.arguments.report_title,
+                field_ids=prepared.arguments.field_ids,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                report_sha256=model.report_sha256,
+                document_digest=model.document_digest,
+                source_digest=model.source_digest,
+            )
         if execution.pending_artifact is not None:
             arguments = prepared.arguments
             if not isinstance(arguments, ArtifactWriteArguments):
@@ -1470,6 +1648,21 @@ class DeclarativeSkillRunner:
             raise DeclarativeRunnerOutputError(
                 "Artifact media type does not match the skill output"
             )
+        from research.docx_artifact import DOCX_MEDIA_TYPE
+
+        if (
+            output.output_type is SkillOutputType.ARTIFACT
+            and media_type == DOCX_MEDIA_TYPE
+        ):
+            from research.docx_artifact import validate_safe_docx_package
+
+            try:
+                validate_safe_docx_package(content)
+            except (TypeError, ValueError) as exc:
+                raise DeclarativeRunnerOutputError(
+                    "Declarative DOCX output is not an inert package"
+                ) from exc
+            return
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as exc:
