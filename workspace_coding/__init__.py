@@ -1,5 +1,17 @@
 """Default-off contracts for isolated workspace-coding tasks."""
 
+from workspace_coding.adoption import (
+    WorkspaceAdopter,
+    WorkspaceAdoptionChoice,
+    WorkspaceAdoptionError,
+    WorkspaceAdoptionReceipt,
+    WorkspaceAdoptionRequest,
+    WorkspaceDiffEntry,
+    WorkspaceDiffReview,
+    WorkspaceReviewFormat,
+    build_workspace_diff_review,
+    workspace_adoption_action_digest,
+)
 from workspace_coding.broker import (
     WorkspaceBroker,
     WorkspaceBrokerError,
@@ -41,6 +53,11 @@ __all__ = [
     "SandboxConfiguration",
     "SandboxConfigurationError",
     "VerificationReceipt",
+    "WorkspaceAdopter",
+    "WorkspaceAdoptionChoice",
+    "WorkspaceAdoptionError",
+    "WorkspaceAdoptionReceipt",
+    "WorkspaceAdoptionRequest",
     "WorkspaceBroker",
     "WorkspaceBrokerError",
     "WorkspaceChange",
@@ -48,6 +65,8 @@ __all__ = [
     "WorkspaceCommandLauncher",
     "WorkspaceCommandRequest",
     "WorkspaceDeleteRequest",
+    "WorkspaceDiffEntry",
+    "WorkspaceDiffReview",
     "WorkspaceFileRecord",
     "WorkspaceManifest",
     "WorkspaceMkdirRequest",
@@ -55,9 +74,12 @@ __all__ = [
     "WorkspaceSnapshot",
     "WorkspaceSnapshotError",
     "WorkspaceWriteRequest",
+    "WorkspaceReviewFormat",
+    "build_workspace_diff_review",
     "create_isolated_snapshot",
     "generate_sandbox_configuration",
     "inspect_selected_git_workspace",
     "verify_isolated_result",
     "workspace_action_digest",
+    "workspace_adoption_action_digest",
 ]

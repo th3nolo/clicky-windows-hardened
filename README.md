@@ -96,10 +96,12 @@ message; response content is not sent to that fallback and barge-in cancels it.
   fresh, network-disabled Windows Sandbox; there is no normal-process,
   worktree-only, AppContainer, or path-check fallback. The original repository
   is not mapped, dependencies cannot be installed, commands are typed and
-  separately approved, and results cannot reach the original repository until
-  the later exact Diff/Apply implementation passes its own gates. The packaged
-  Sandbox launcher/worker integration and interactive Windows evidence also
-  remain required. See
+  separately approved. The source also contains host-derived exact diff review
+  and a distinct one-use `workspace.apply` authority with stale-original
+  detection, a private backup/replacement journal, rollback, post-Apply
+  verification, and safe Discard. Those contracts are not exposed in release
+  builds. The packaged Sandbox launcher/worker integration and interactive
+  Windows evidence remain required. See
   [WORKSPACE_CODING_SECURITY.md](WORKSPACE_CODING_SECURITY.md).
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state

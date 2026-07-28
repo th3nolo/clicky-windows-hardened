@@ -91,6 +91,7 @@ class CapabilityId(str, Enum):
     WORKSPACE_READ = "workspace.read"
     WORKSPACE_WRITE = "workspace.write"
     WORKSPACE_COMMAND = "workspace.command"
+    WORKSPACE_APPLY = "workspace.apply"
     DESKTOP_UIA_ACTION = "desktop.uia.action"
 
 
@@ -301,6 +302,13 @@ _DEFINITIONS = (
     _definition(
         CapabilityId.WORKSPACE_COMMAND,
         "Run an allowlisted command in one approved coding workspace",
+        FeatureCapability.WORKSPACE_CODING,
+        UserPermissionId.WORKSPACE_CODING,
+        approval=True,
+    ),
+    _definition(
+        CapabilityId.WORKSPACE_APPLY,
+        "Apply one exact reviewed workspace change set",
         FeatureCapability.WORKSPACE_CODING,
         UserPermissionId.WORKSPACE_CODING,
         approval=True,

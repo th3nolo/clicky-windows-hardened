@@ -3,9 +3,10 @@
 ## Decision record
 
 **Status:** approved boundary with default-off source contracts for selection,
-isolated staging, broker operations, Sandbox configuration, and result
-verification. Workspace coding stays build-unavailable until Diff/Apply,
-packaged worker/launcher integration, and the Windows acceptance matrix pass.
+isolated staging, broker operations, Sandbox configuration, result
+verification, exact diff review, and transactional Apply/Discard. Workspace
+coding stays build-unavailable until packaged worker/launcher integration and
+the Windows acceptance matrix pass.
 
 **V1 boundary:** a fresh, network-disabled Windows Sandbox containing a bounded
 copy of one user-selected Git working tree. The original repository is never
@@ -330,10 +331,83 @@ requested verification evidence pass. Failed, timed-out, cancelled, or partial
 verification never becomes `completed`.
 
 WIN-CODE-001 grants no adoption authority. WIN-CODE-002 may produce only an
-isolated verified result. WIN-CODE-003 must separately define exact diff review,
-stale-original detection, Apply/Discard, transactional adoption, rollback, and
-post-Apply repository verification. Until WIN-CODE-003 passes, no result can
-modify the selected repository.
+isolated verified result. WIN-CODE-003 adds a separate host-only adoption
+authority under the controls below. No isolated result modifies the selected
+repository by itself.
+
+## Exact diff review and transactional adoption
+
+The trusted host builds the review from the authenticated baseline, the exact
+final manifest, and direct reads of the original and isolated regular-file
+bytes. It does not accept model prose, a model-supplied patch, or a changed-path
+list as evidence. The Task Center presentation shows:
+
+- the selected final repository path, repository identity, `HEAD`, branch, and
+  whether the reviewed baseline was dirty;
+- every added, modified, and deleted canonical relative path in deterministic
+  order;
+- a bounded UTF-8 unified diff for reviewable text;
+- exact before/after byte counts and SHA-256 identities for every path, with an
+  explicit binary/non-reviewable marker where a line diff is unsafe;
+- every successful verification profile, exit status, duration, bounded output
+  identity, and the final staging-manifest identity; and
+- two explicit choices: **Apply exact changes** or **Discard isolated
+  changes**.
+
+If the complete review would exceed the 16 MiB diff limit, Apply is unavailable;
+the host does not truncate a review and then approve unseen changes.
+
+Apply uses the distinct approval-gated `workspace.apply` capability. It is not
+implied by `workspace.read`, `workspace.write`, `workspace.command`, Task Agent,
+or response-provider permission. One-use approval binds the run, call, Apply
+choice, repository identity, baseline/final manifests, isolated result, complete
+diff artifact, and review digest. Discard is a separately digested explicit
+choice and cannot be substituted for Apply or vice versa.
+
+Immediately before the first original-repository mutation, the host:
+
+1. re-runs the authenticated Git identity inspection and requires the exact
+   reviewed path, `HEAD`, branch, status, Git executable, and dirty state;
+2. rescans every ordinary working-tree byte and requires the exact baseline
+   manifest, including the dirty and untracked bytes reviewed initially;
+3. rescans the untrusted isolated output and requires the exact verified final
+   manifest and same-manifest verification evidence;
+4. rejects denied, linked, reparse, hard-linked, alternate-stream,
+   case-ambiguous, missing, newly appeared, or stale-digest paths; and
+5. stages exact verified replacement bytes and byte-identical backups in a new
+   private journal root that is outside and non-overlapping with both the
+   original repository and Sandbox task root.
+
+Only after all replacements, backups, and the bounded canonical journal verify
+does the host mutate the original. Adds use exclusive creation; modifications
+use same-directory temporary files and atomic replacement; deletes recheck the
+exact prior identity immediately before unlink. Each completed mutation is
+recorded for reverse-order rollback. Existing file protection is captured in
+the private journal and restored to every replacement or rollback file, so a
+custom Windows DACL or POSIX test mode is not silently broadened through parent
+inheritance. Cancellation is checked before the first mutation and before every
+later mutation; a cancelled or terminal task has no remaining approval
+authority.
+
+After Apply, the host rescans the original and requires the exact final
+manifest. It also revalidates that final path, Git executable, repository,
+`HEAD`, and branch did not change; only the expected working-tree status may
+differ. Any failure triggers reverse-order rollback. Rollback restores a path
+only if its current identity still equals the bytes written by this Apply, then
+requires the exact original baseline and Git identity. If rollback cannot prove
+that state, the private journal and backups remain for explicit recovery and the
+result is reported as rollback-failed; it is never reported as applied.
+
+This is process-level transactional rollback, not a claim of crash-atomic
+multi-file filesystem transactions. A power loss or process crash can leave the
+private journal for recovery. Successful Apply reports whether journal cleanup
+is still pending so retained source backups are never silently ignored.
+
+Discard performs no original-repository write. It removes only the task root
+with a traversal that never follows links or reparse points. It remains
+available if isolated bytes or the original repository changed after review,
+because safely deleting the disposable copy must not require it to remain
+adoptable.
 
 ## Availability and release gates
 
@@ -362,8 +436,8 @@ must prove:
 ## Review checklist
 
 The approved source contracts implement only the portions named above. They do
-not enable the feature, provide host Apply authority, or prove live Windows
-containment. Each later task must cite the exact sections it implements, retain
-the default-off gate, add adversarial source/Windows tests, and pass the
-dependency, locked-build, packaging, interactive Sandbox, and signed-release
-gates applicable to its authority.
+not enable the feature or prove live Windows containment. Each later task must
+cite the exact sections it implements, retain the default-off gate, add
+adversarial source/Windows tests, and pass the dependency, locked-build,
+packaging, interactive Sandbox, and signed-release gates applicable to its
+authority.

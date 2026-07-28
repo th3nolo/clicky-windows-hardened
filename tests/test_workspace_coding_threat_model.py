@@ -98,6 +98,7 @@ class WorkspaceCodingThreatModelTests(unittest.TestCase):
                 CapabilityId.WORKSPACE_READ,
                 CapabilityId.WORKSPACE_WRITE,
                 CapabilityId.WORKSPACE_COMMAND,
+                CapabilityId.WORKSPACE_APPLY,
             }
         }
         self.assertEqual(
@@ -117,6 +118,11 @@ class WorkspaceCodingThreatModelTests(unittest.TestCase):
         self.assertTrue(
             workspace[
                 CapabilityId.WORKSPACE_COMMAND
+            ].action_approval_required
+        )
+        self.assertTrue(
+            workspace[
+                CapabilityId.WORKSPACE_APPLY
             ].action_approval_required
         )
 
@@ -141,6 +147,7 @@ class WorkspaceCodingThreatModelTests(unittest.TestCase):
         self.assertNotIn("WORKSPACE_READ", provider_source)
         self.assertNotIn("WORKSPACE_WRITE", provider_source)
         self.assertNotIn("WORKSPACE_COMMAND", provider_source)
+        self.assertNotIn("WORKSPACE_APPLY", provider_source)
         self.assertDocumentContains(
             "The existing Codex and Qwen Code integrations remain response "
             "providers.",
@@ -155,8 +162,13 @@ class WorkspaceCodingThreatModelTests(unittest.TestCase):
             "Model prose is not diff evidence.",
             "Failed, timed-out, cancelled, or partial",
             "WIN-CODE-002 may produce only an\nisolated verified result.",
-            "WIN-CODE-003 must separately define exact diff review",
-            "no result can\nmodify the selected repository",
+            "WIN-CODE-003 adds a separate host-only adoption\nauthority",
+            "No isolated result modifies the selected\nrepository by itself.",
+            "Apply uses the distinct approval-gated `workspace.apply`",
+            "the host does not truncate a review and then approve unseen "
+            "changes",
+            "Any failure triggers reverse-order rollback.",
+            "Discard performs no original-repository write.",
         )
         for statement in required:
             with self.subTest(statement=statement):

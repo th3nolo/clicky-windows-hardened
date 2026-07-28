@@ -201,13 +201,14 @@ confirm startup refuses the invalid configuration rather than granting access.
 `WORKSPACE_CODING_SECURITY.md` selects a fresh, network-disabled Windows
 Sandbox as the only V1 execution boundary. The source implements the reviewed
 Git identity, isolated staging copy, typed broker, exact Sandbox configuration,
-and same-manifest result-verification contracts. It does not expose workspace
-coding, launch the Sandbox in a release build, or grant Apply authority.
+same-manifest result verification, exact diff review, and transactional
+Apply/Discard contracts. It does not expose workspace coding or launch the
+Sandbox in a release build.
 
 Confirm both source-level regression suites:
 
 ~~~powershell
-python -m unittest -v tests.test_workspace_coding_threat_model tests.test_workspace_coding_isolation
+python -m unittest -v tests.test_workspace_coding_threat_model tests.test_workspace_coding_isolation tests.test_workspace_coding_adoption
 ~~~
 
 It must prove that workspace read, write, and command remain separate
@@ -224,16 +225,28 @@ Sandbox XML, one-use digest-bound broker calls, immutable command profiles,
 minimal environments, no dependency install or shell, and verification
 receipts bound to the exact final manifest.
 
+The adoption suite must prove that the Task Center review is host-derived and
+shows deterministic changed paths, exact text/binary identities, and
+same-manifest verification evidence; `workspace.apply` is distinct and
+one-use; stale original or isolated bytes prevent Apply; backups and
+replacements verify before mutation; a mid-Apply failure or cancellation
+restores the complete baseline and prior file protection; transaction roots
+cannot overlap the original or task copy; post-Apply bytes equal the final
+manifest; and Discard removes only the isolated task even after tampering.
+
 The interactive gate must use a disposable synthetic Git repository on
 a fixed local NTFS drive. It must demonstrate Sandbox-unavailable fail-closed
 behavior, exact two-mapping configuration, no host profile/credential/original
 repository visibility, denied path/reparse/hardlink/alternate-stream handling,
 dirty and untracked baseline preservation, offline tokenized command approval,
 process-tree cancellation, bounded untrusted output, and stale-original
-rejection. Do not test with real secrets or a repository containing personal
-data. This live gate remains pending until the packaged Sandbox worker and
-host launcher are connected; source tests and CI are not runtime containment
-proof.
+rejection. Exercise successful multi-file Apply, forced mid-Apply rollback,
+journal-cleanup failure, rollback-failure recovery, and safe Discard. Confirm
+the exact reviewed source bytes remain untouched on every preflight failure and
+that no repository hooks run. Do not test with real secrets or a repository
+containing personal data. This live gate remains pending until the packaged
+Sandbox worker and host launcher are connected; source tests and CI are not
+runtime containment proof.
 
 ### Screen-Aware Compose contract
 
