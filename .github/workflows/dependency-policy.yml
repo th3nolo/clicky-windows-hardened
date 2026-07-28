@@ -52,6 +52,7 @@ jobs:
           tests.test_capture_exclusion
           tests.test_compose_insertion
           tests.test_compose_service
+          tests.test_desktop_automation_policy
           tests.test_dependency_policy
           tests.test_dictation_insertion
           tests.test_dictation_session
