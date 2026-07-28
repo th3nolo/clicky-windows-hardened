@@ -14,6 +14,7 @@ from tasks.verifiers import (
     ApiResponseSnapshot,
     FileExpectation,
     FileSnapshot,
+    ResearchCsvFileExpectation,
     RepositoryExpectation,
     RepositorySnapshot,
     UiStateExpectation,
@@ -21,6 +22,7 @@ from tasks.verifiers import (
     VerificationSubjectKind,
     verify_api_response,
     verify_file,
+    verify_research_csv_file,
     verify_repository,
     verify_ui_state,
 )
@@ -104,6 +106,73 @@ class TaskVerifierTests(unittest.TestCase):
             content=b"tampered",
         )
         self.assertFalse(tampered.postcondition_met)
+
+    def test_research_csv_verifier_distinguishes_completion_and_shortfall(self):
+        from research.csv_artifact import (
+            ResearchCsvSchema,
+            render_research_csv,
+        )
+        from tests.test_research_csv import batch, record
+
+        schema = ResearchCsvSchema(("audience",))
+        rendered = render_research_csv(
+            batch(record("one")),
+            schema,
+            requested_rows=1,
+        )
+        snapshot = FileSnapshot(
+            artifact_id="research-csv",
+            name="research.csv",
+            media_type="text/csv",
+            byte_count=len(rendered.content),
+            sha256=rendered.sha256,
+            provenance_digest=DIGEST_A,
+            complete=True,
+        )
+        expectation = ResearchCsvFileExpectation(
+            file=FileExpectation(
+                expected_sha256=rendered.sha256,
+                expected_media_type="text/csv",
+                maximum_bytes=64 * 1024,
+            ),
+            requested_field_ids=("audience",),
+            requested_rows=1,
+        )
+        complete = verify_research_csv_file(
+            snapshot,
+            expectation,
+            verifier_id="research-csv-v1",
+            content=rendered.content,
+        )
+        self.assertTrue(complete.evidence.postcondition_met)
+        self.assertFalse(complete.partial)
+        self.assertEqual(complete.row_count, 1)
+
+        shortfall = verify_research_csv_file(
+            snapshot,
+            ResearchCsvFileExpectation(
+                file=expectation.file,
+                requested_field_ids=("audience",),
+                requested_rows=2,
+            ),
+            verifier_id="research-csv-v1",
+            content=rendered.content,
+        )
+        self.assertFalse(shortfall.evidence.postcondition_met)
+        self.assertTrue(shortfall.partial)
+        self.assertEqual(shortfall.row_count, 1)
+
+        tampered = verify_research_csv_file(
+            snapshot,
+            expectation,
+            verifier_id="research-csv-v1",
+            content=rendered.content.replace(
+                b"https://creator.example/one",
+                b"http://127.0.0.1/private",
+            ),
+        )
+        self.assertFalse(tampered.evidence.postcondition_met)
+        self.assertFalse(tampered.partial)
 
     def test_api_response_verifier_binds_request_status_type_size_and_body(self):
         snapshot = ApiResponseSnapshot(
