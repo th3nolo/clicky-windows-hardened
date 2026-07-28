@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 from capability_registry import CapabilityId, ConnectorId
 from declarative_tools import DeclarativeTool
 from notion_contracts import MAX_NOTION_PROVIDER_REQUESTS
+from sheets_contracts import MAX_SHEETS_PROVIDER_REQUESTS
 from skills.schema import (
     BindingSource,
     DeclarativeSkillDefinition,
@@ -63,6 +64,7 @@ from tasks.tool_broker import (
     NotionDraftRenderArguments,
     NotionSelectedPageArguments,
     ResearchCsvRenderArguments,
+    SheetsExportArguments,
     TaskToolBroker,
     VerifyOutputArguments,
     WebFetchAdapter,
@@ -314,6 +316,20 @@ def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
         and step.capability is CapabilityId.NOTION_PAGE_READ
     ):
         return frozenset({"authorization_id", "selected_page_id"})
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_WRITE
+        and step.connector is ConnectorId.GOOGLE_SHEETS
+        and step.capability is CapabilityId.SHEETS_VALUES_WRITE
+    ):
+        return frozenset(
+            {
+                "authorization_id",
+                "idempotency_key",
+                "source_artifact_id",
+                "source_sha256",
+                "title",
+            }
+        )
     return frozenset()
 
 
@@ -368,6 +384,9 @@ def compile_declarative_plan(
         ConnectorId.NOTION: frozenset(
             {CapabilityId.NOTION_PAGE_READ}
         ),
+        ConnectorId.GOOGLE_SHEETS: frozenset(
+            {CapabilityId.SHEETS_VALUES_WRITE}
+        ),
     }
     for requirement in definition.connectors:
         allowed = available_connector_capabilities.get(
@@ -388,6 +407,11 @@ def compile_declarative_plan(
         if (
             step.tool is DeclarativeTool.CONNECTOR_WRITE
             and step.capability is CapabilityId.GMAIL_DRAFT_WRITE
+        )
+        else MAX_SHEETS_PROVIDER_REQUESTS
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_WRITE
+            and step.capability is CapabilityId.SHEETS_VALUES_WRITE
         )
         else int(
             step.tool
@@ -414,7 +438,7 @@ def compile_declarative_plan(
         )
 
     declared: list[DeclaredToolStep] = []
-    for step in definition.steps:
+    for step_index, step in enumerate(definition.steps):
         if step.tool not in _SUPPORTED_ARGUMENTS:
             raise DeclarativeRunnerPlanningError(
                 f"Tool is not available to the runner: {step.tool.value}"
@@ -470,12 +494,50 @@ def compile_declarative_plan(
                 "Connector read operation is unavailable"
             )
         if step.tool is DeclarativeTool.CONNECTOR_WRITE and (
-            step.connector is not ConnectorId.GMAIL
-            or step.capability is not CapabilityId.GMAIL_DRAFT_WRITE
+            (
+                step.connector,
+                step.capability,
+            )
+            not in {
+                (
+                    ConnectorId.GMAIL,
+                    CapabilityId.GMAIL_DRAFT_WRITE,
+                ),
+                (
+                    ConnectorId.GOOGLE_SHEETS,
+                    CapabilityId.SHEETS_VALUES_WRITE,
+                ),
+            }
         ):
             raise DeclarativeRunnerPlanningError(
                 "Connector write operation is unavailable"
             )
+        if step.capability is CapabilityId.SHEETS_VALUES_WRITE:
+            source_binding = next(
+                item
+                for item in step.arguments
+                if item.argument_id == "source_artifact_id"
+            )
+            source_step = next(
+                (
+                    candidate
+                    for candidate in definition.steps[:step_index]
+                    if candidate.output_id == source_binding.reference
+                ),
+                None,
+            )
+            if (
+                source_binding.source is not BindingSource.STEP_OUTPUT
+                or source_step is None
+                or source_step.tool is not DeclarativeTool.ARTIFACT_READ
+                or source_step.capability
+                is not CapabilityId.LOCAL_ARTIFACT_READ
+                or source_step.step_id not in step.depends_on
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Google Sheets export requires a declared local "
+                    "artifact read dependency"
+                )
         declared.append(
             DeclaredToolStep(
                 skill_id=definition.skill_id,
@@ -550,6 +612,7 @@ class DeclarativeSkillRunner:
         connector_read: ConnectorReadAdapter | None = None,
         connector_write: ConnectorWriteAdapter | None = None,
         artifact_root: Path | None = None,
+        source_artifacts: tuple[Artifact, ...] = (),
     ) -> DeclarativeSkillRunner:
         plan = compile_declarative_plan(definition, run)
         broker = TaskToolBroker(
@@ -562,6 +625,7 @@ class DeclarativeSkillRunner:
             connector_read=connector_read,
             connector_write=connector_write,
             artifact_root=artifact_root,
+            source_artifacts=source_artifacts,
         )
         return cls(definition, run, plan, broker)
 
@@ -741,7 +805,11 @@ class DeclarativeSkillRunner:
                 requirement is None
                 or not isinstance(
                     arguments,
-                    (ArtifactWriteArguments, GmailDraftArguments),
+                    (
+                        ArtifactWriteArguments,
+                        GmailDraftArguments,
+                        SheetsExportArguments,
+                    ),
                 )
             ):
                 raise DeclarativeRunnerPlanningError(
@@ -877,6 +945,32 @@ class DeclarativeSkillRunner:
                     body_text=_text_value(
                         values["body_text"],
                         "Gmail draft body",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
+            if step.capability is CapabilityId.SHEETS_VALUES_WRITE:
+                return SheetsExportArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Google Sheets account authorization ID",
+                    ),
+                    source_artifact_id=_artifact_id_value(
+                        values["source_artifact_id"]
+                    ),
+                    source_sha256=_text_value(
+                        values["source_sha256"],
+                        "Google Sheets source digest",
+                    ),
+                    title=_text_value(
+                        values["title"],
+                        "Google Sheets title",
+                    ),
+                    idempotency_key=_text_value(
+                        values["idempotency_key"],
+                        "Google Sheets idempotency key",
                     ),
                     maximum_response_bytes=min(
                         self._definition.limits.max_output_bytes,
@@ -1086,14 +1180,37 @@ class DeclarativeSkillRunner:
                 content=arguments.content,
             )
         elif execution.artifact is not None:
-            existing = self._outputs.get(
-                self._artifact_source_output(execution.artifact.artifact_id)
+            existing = next(
+                (
+                    candidate
+                    for candidate in self._outputs.values()
+                    if isinstance(candidate, _ArtifactValue)
+                    and candidate.artifact_id
+                    == execution.artifact.artifact_id
+                ),
+                None,
             )
-            if not isinstance(existing, _ArtifactValue):
+            if isinstance(existing, _ArtifactValue):
+                value = existing
+            elif (
+                isinstance(prepared.arguments, ArtifactReadArguments)
+                and isinstance(execution.content, bytes)
+                and execution.artifact.adopted
+                and execution.artifact.byte_count
+                == len(execution.content)
+                and execution.artifact.sha256
+                == hashlib.sha256(execution.content).hexdigest()
+            ):
+                value = _ArtifactValue(
+                    artifact_id=execution.artifact.artifact_id,
+                    name=execution.artifact.name,
+                    media_type=execution.artifact.media_type,
+                    content=execution.content,
+                )
+            else:
                 raise DeclarativeRunnerOutputError(
                     "Adopted artifact has no declared source output"
                 )
-            value = existing
         elif execution.content is not None:
             value = execution.content
         elif execution.text is not None:

@@ -103,6 +103,7 @@ class ArtifactAdoptionManager:
         workspace: TaskWorkspace,
         *,
         adoption_root: Path | None = None,
+        source_artifacts: tuple[Artifact, ...] = (),
     ) -> None:
         if not isinstance(run, TaskRun):
             raise TypeError("Artifact adoption requires a TaskRun")
@@ -116,7 +117,30 @@ class ArtifactAdoptionManager:
         self._workspace = workspace
         self._root = root
         self._pending: dict[str, tuple[PendingArtifact, Path]] = {}
-        self._adopted: dict[str, tuple[Artifact, Path]] = {}
+        if (
+            not isinstance(source_artifacts, tuple)
+            or any(
+                not isinstance(artifact, Artifact)
+                or not artifact.adopted
+                for artifact in source_artifacts
+            )
+        ):
+            raise TypeError(
+                "Artifact sources must be adopted artifact metadata"
+            )
+        if len({item.artifact_id for item in source_artifacts}) != len(
+            source_artifacts
+        ):
+            raise ValueError("Artifact source IDs must be unique")
+        self._adopted: dict[str, tuple[Artifact, Path]] = {
+            artifact.artifact_id: (
+                artifact,
+                root
+                / _run_directory_name(artifact.run_id)
+                / _artifact_filename(artifact.artifact_id),
+            )
+            for artifact in source_artifacts
+        }
         workspace.verify()
         if root.exists() and (
             _is_link_or_reparse(root) or not root.is_dir()

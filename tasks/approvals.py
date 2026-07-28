@@ -213,6 +213,39 @@ def gmail_draft_target(
     )
 
 
+def google_sheets_export_target(
+    *,
+    authorization_id: str,
+    title: str,
+    source_sha256: str,
+    idempotency_key_sha256: str,
+) -> ApprovalTarget:
+    """Bind approval to one account, title, source, and create-once key."""
+
+    _bounded_reference(authorization_id)
+    _bounded_text(title, MAX_TARGET_LABEL_CHARS, "Spreadsheet title")
+    _sha256(source_sha256, "Spreadsheet source digest")
+    _sha256(idempotency_key_sha256, "Spreadsheet idempotency digest")
+    target_digest = hashlib.sha256(
+        _canonical_json(
+            {
+                "authorization_id": authorization_id,
+                "idempotency_key_sha256": idempotency_key_sha256,
+                "kind": ApprovalTargetKind.API_MUTATION.value,
+                "operation": "google_sheets.export_validated_table",
+                "source_sha256": source_sha256,
+                "title": title,
+            }
+        )
+    ).hexdigest()
+    return ApprovalTarget(
+        kind=ApprovalTargetKind.API_MUTATION,
+        reference=authorization_id,
+        label=f"Create one Google spreadsheet: {title}",
+        target_digest=target_digest,
+    )
+
+
 def _bounded_reference(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -257,5 +290,6 @@ __all__ = [
     "ApprovalTargetKind",
     "build_approval_payload",
     "gmail_draft_target",
+    "google_sheets_export_target",
     "task_artifact_target",
 ]
