@@ -60,19 +60,50 @@ def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-async def search(query: str, max_results: int = MAX_PAGES) -> str:
-    """Return a plain-text, source-cited search context."""
+async def search(
+    query: str,
+    max_results: int = MAX_PAGES,
+    *,
+    allow_provider_fallback: bool = True,
+) -> str:
+    """Return source-cited context, optionally refusing provider fallback."""
     query = query.strip()
     if not query:
         return ""
+    if type(allow_provider_fallback) is not bool:
+        raise TypeError("search fallback policy must be explicit")
 
     if cfg.search_provider() == "tavily":
         try:
             return await _tavily(query, max_results)
         except Exception:
-            pass  # fall through to free path
+            if not allow_provider_fallback:
+                raise
+            pass  # legacy interactive path falls through to the free provider
 
     return await _free_deep_search(query, max_results)
+
+
+async def fetch(url: str, max_chars: int = PAGE_CHAR_BUDGET) -> str:
+    """Fetch one public HTTPS text resource through the hardened request path."""
+    if type(max_chars) is not int or not 1 <= max_chars <= OVERALL_CHAR_BUDGET:
+        raise ValueError("fetch character limit is invalid")
+    async with httpx.AsyncClient(
+        timeout=FETCH_TIMEOUT,
+        headers={"User-Agent": USER_AGENT},
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        raw, content_type = await _bounded_request(
+            client,
+            url,
+            allowed_types=_TEXT_TYPES,
+            max_bytes=MAX_PAGE_BYTES,
+        )
+    return _truncate(
+        _html_to_text(_decode_text(raw, content_type)),
+        max_chars,
+    )
 
 
 def build_search_context(results: str) -> str:
