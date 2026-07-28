@@ -1,14 +1,12 @@
-"""Cancelable frozen-screen selection and explicit preview-only handoff UI."""
+"""Cancelable frozen-screen selection and explicit one-use handoff UI."""
 
 from __future__ import annotations
 
 import secrets
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
 
 from PyQt6.QtCore import (
-    QEvent,
     QPoint,
     QRect,
     QTimer,
@@ -43,7 +41,6 @@ from handoff.image_capture import (
 from handoff.models import (
     HandoffDataClass,
     HandoffDestination,
-    HandoffReview,
     HandoffSelectionError,
     PhysicalRegion,
     SelectionShape,
@@ -61,6 +58,7 @@ from handoff.selection import (
     logical_points_to_physical,
     logical_region_to_physical,
 )
+from handoff.routing import ReviewedRegionHandoff
 from privacy_controls import screen_capture_allowed
 from screen.topology import (
     MonitorDescriptor,
@@ -73,23 +71,6 @@ from turn_coordinator import TurnCoordinator, TurnSession
 SELECTION_TIMEOUT_MS = 60_000
 MIN_RECTANGLE_LOGICAL_PIXELS = 4
 MAX_PURPOSE_CHARACTERS = 2_000
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewedRegionHandoff:
-    """Reviewed evidence plus transient bytes; no routing authority."""
-
-    payload: TransientSelectionPayload = field(repr=False)
-    review: HandoffReview
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.payload, TransientSelectionPayload):
-            raise TypeError("Reviewed region payload is invalid")
-        if not isinstance(self.review, HandoffReview):
-            raise TypeError("Reviewed region evidence is invalid")
-
-    def wipe(self) -> None:
-        self.payload.wipe()
 
 
 class RegionSelectionModeDialog(QDialog):
@@ -113,8 +94,9 @@ class RegionSelectionModeDialog(QDialog):
         )
         layout.addWidget(title)
         explanation = _plain_label(
-            "Clicky will capture a frozen preview only after you choose. "
-            "Escape cancels, and nothing is sent or inserted."
+            "Clicky will capture a frozen local preview only after you "
+            "choose. Escape cancels. Nothing is sent until you review the "
+            "exact crop, destination, and purpose."
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -344,12 +326,26 @@ class RegionHandoffPreview(QDialog):
     def __init__(
         self,
         payload: TransientSelectionPayload,
+        available_destinations: tuple[HandoffDestination, ...],
         parent=None,
     ) -> None:
         super().__init__(parent)
         if not isinstance(payload, TransientSelectionPayload):
             raise TypeError("Region handoff preview is invalid")
         self._payload = payload
+        if (
+            not isinstance(available_destinations, tuple)
+            or not available_destinations
+            or any(
+                not isinstance(item, HandoffDestination)
+                for item in available_destinations
+            )
+            or len(set(available_destinations))
+            != len(available_destinations)
+        ):
+            raise TypeError(
+                "Region handoff destinations are invalid"
+            )
         self.setWindowTitle("Review selected screen region")
         self.setWindowFlags(
             Qt.WindowType.Dialog
@@ -367,12 +363,15 @@ class RegionHandoffPreview(QDialog):
         )
         status = _plain_label(
             "Nothing has been sent, inserted, or used by a task. "
-            "Routing remains disabled in this preview-only revision."
+            "Approve only after checking the exact destination and pixels."
         )
         status.setWordWrap(True)
         layout.addWidget(status)
         pixmap = QPixmap()
-        if not pixmap.loadFromData(bytes(payload.image.content), "PNG"):
+        if not pixmap.loadFromData(
+            bytes(payload.image.content),
+            "JPEG",
+        ):
             raise HandoffSelectionError(
                 "Selected image preview could not be decoded"
             )
@@ -395,22 +394,22 @@ class RegionHandoffPreview(QDialog):
         layout.addWidget(image, stretch=1)
         self._destination = QComboBox()
         self._destination.addItem("Choose a destination…", None)
-        self._destination.addItem(
-            "Tutor context",
-            HandoffDestination.TUTOR_CONTEXT,
-        )
-        self._destination.addItem(
-            "Compose preview",
-            HandoffDestination.COMPOSE_PREVIEW,
-        )
-        self._destination.addItem(
-            "New Task Agent run",
-            HandoffDestination.TASK_AGENT_NEW_RUN,
-        )
+        labels = {
+            HandoffDestination.TUTOR_CONTEXT: "Tutor context",
+            HandoffDestination.COMPOSE_PREVIEW: "Compose preview",
+            HandoffDestination.TASK_AGENT_NEW_RUN: (
+                "New Task Agent run"
+            ),
+        }
+        for destination in available_destinations:
+            self._destination.addItem(
+                labels[destination],
+                destination,
+            )
         layout.addWidget(self._destination)
         data_class = _plain_label(
-            "Data class: selected screen pixels. A later routing change may "
-            "send only these reviewed pixels to the chosen destination."
+            "Data class: selected screen pixels. Approval sends only this "
+            "reviewed crop to the chosen destination for one use."
         )
         data_class.setWordWrap(True)
         layout.addWidget(data_class)
@@ -425,7 +424,7 @@ class RegionHandoffPreview(QDialog):
         cancel.setAutoDefault(False)
         cancel.setDefault(False)
         cancel.clicked.connect(self.reject)
-        self._approve = QPushButton("Approve preview only")
+        self._approve = QPushButton("Approve and route once")
         self._approve.setAutoDefault(False)
         self._approve.setDefault(False)
         self._approve.setEnabled(False)
@@ -475,6 +474,7 @@ class QtRegionHandoffController(QDialog):
         self,
         turns: TurnCoordinator,
         *,
+        available_destinations: tuple[HandoffDestination, ...],
         clock: Callable[[], float] = time.monotonic,
         mode_picker: ModePicker | None = None,
         capture_factory: CaptureBundleFactory = capture_desktop_bundle,
@@ -500,6 +500,20 @@ class QtRegionHandoffController(QDialog):
         self._mode_picker = mode_picker
         self._capture_factory = capture_factory
         self._topology_provider = topology_provider
+        if (
+            not isinstance(available_destinations, tuple)
+            or not available_destinations
+            or any(
+                not isinstance(item, HandoffDestination)
+                for item in available_destinations
+            )
+            or len(set(available_destinations))
+            != len(available_destinations)
+        ):
+            raise TypeError(
+                "Region handoff destinations are invalid"
+            )
+        self._available_destinations = available_destinations
         self._session: TurnSession | None = None
         self._generation: str | None = None
         self._flow: RegionSelectionCoordinator | None = None
@@ -669,7 +683,10 @@ class QtRegionHandoffController(QDialog):
         payload: TransientSelectionPayload,
     ) -> None:
         self._close_overlays()
-        preview = RegionHandoffPreview(payload)
+        preview = RegionHandoffPreview(
+            payload,
+            self._available_destinations,
+        )
         preview.review_requested.connect(self._approve)
         preview.rejected.connect(self.cancel)
         self._preview = preview
@@ -705,7 +722,11 @@ class QtRegionHandoffController(QDialog):
             )
             review = build_handoff_review(intent)
             completed = flow.complete()
-            result = ReviewedRegionHandoff(completed, review)
+            result = ReviewedRegionHandoff(
+                completed,
+                intent,
+                review,
+            )
             self._expiry.stop()
             self._close_preview()
             if not self._turns.complete(session):

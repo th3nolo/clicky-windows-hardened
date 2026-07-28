@@ -1,4 +1,4 @@
-"""Locked-environment tests for exact crop and freehand alpha masks."""
+"""Locked-environment tests for exact crop and freehand mask evidence."""
 
 from __future__ import annotations
 
@@ -40,19 +40,19 @@ class SelectedImageTests(unittest.TestCase):
             jpeg_bytes=bytearray(buffer.getvalue()),
         )
 
-    def test_rectangle_is_exact_png_crop(self) -> None:
+    def test_rectangle_is_exact_jpeg_crop(self) -> None:
         result = build_selected_image(
             self.frame,
             PhysicalRegion(-90, -40, 10, 8),
             None,
         )
-        self.assertEqual(result.media_type, "image/png")
+        self.assertEqual(result.media_type, "image/jpeg")
         self.assertIsNone(result.mask_sha256)
         with Image.open(io.BytesIO(result.content)) as image:
             self.assertEqual(image.size, (10, 8))
-            self.assertEqual(image.mode, "RGBA")
+            self.assertEqual(image.mode, "RGB")
 
-    def test_lasso_is_transparent_outside_exact_mask(self) -> None:
+    def test_lasso_masks_pixels_outside_the_reviewed_polygon(self) -> None:
         result = build_selected_image(
             self.frame,
             PhysicalRegion(-90, -40, 10, 10),
@@ -65,9 +65,28 @@ class SelectedImageTests(unittest.TestCase):
         )
         self.assertIsNotNone(result.mask_sha256)
         with Image.open(io.BytesIO(result.content)) as image:
-            alpha = image.getchannel("A")
-            self.assertEqual(alpha.getpixel((9, 9)), 0)
-            self.assertEqual(alpha.getpixel((1, 1)), 255)
+            outside = image.getpixel((9, 9))
+            inside = image.getpixel((1, 1))
+            self.assertLess(
+                sum(
+                    abs(value - expected)
+                    for value, expected in zip(
+                        outside,
+                        (16, 24, 39),
+                    )
+                ),
+                30,
+            )
+            self.assertGreater(
+                sum(
+                    abs(value - expected)
+                    for value, expected in zip(
+                        inside,
+                        (16, 24, 39),
+                    )
+                ),
+                20,
+            )
 
 
 if __name__ == "__main__":

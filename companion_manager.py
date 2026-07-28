@@ -47,6 +47,7 @@ from feature_gates import (
 from privacy_controls import (
     cloud_stt_allowed,
     cloud_tts_allowed,
+    coding_agent_allowed,
     microphone_allowed,
     screen_capture_allowed,
 )
@@ -407,6 +408,204 @@ class CompanionManager(QObject):
         """Share one cancellation authority with bounded UI workflows."""
 
         return self._turns
+
+    def route_region_to_tutor(self, context) -> str:
+        """Accept one reviewed JPEG as a new isolated Tutor turn."""
+
+        from ai.provider_catalog import AGENT_PROVIDERS
+        from compose.service import cached_model_supports_vision
+        from handoff.models import HandoffDestination
+        from handoff.routing import HandoffRouteContext
+
+        if (
+            not isinstance(context, HandoffRouteContext)
+            or context.destination
+            is not HandoffDestination.TUTOR_CONTEXT
+        ):
+            if isinstance(context, HandoffRouteContext):
+                context.wipe()
+            raise TypeError("Tutor region context is invalid")
+        if not screen_capture_allowed(cfg):
+            context.wipe()
+            raise RuntimeError(
+                "Screen capture permission was revoked before routing."
+            )
+        model = self._current_model
+        provider = cfg.llm_provider()
+        if not model:
+            context.wipe()
+            raise RuntimeError(
+                "Choose a validated vision model before routing a region."
+            )
+        if provider in AGENT_PROVIDERS and not coding_agent_allowed(cfg):
+            context.wipe()
+            raise RuntimeError(
+                "The selected read-only response provider is not permitted."
+            )
+        if not cached_model_supports_vision(provider, model):
+            context.wipe()
+            raise RuntimeError(
+                "The selected model has no validated image-input support."
+            )
+        session = self._turns.start_processing()
+        if session is None:
+            context.wipe()
+            raise RuntimeError(
+                "Finish or stop the current Clicky turn before routing."
+            )
+        self._turns.bind_cancel(
+            session,
+            "region-context",
+            context.wipe,
+        )
+        self._turns.bind_cancel(
+            session,
+            "playback",
+            self._cancel_outputs,
+        )
+        self._emit_state(AppState.THINKING, session)
+        worker = self._run_region_tutor(context, session)
+        try:
+            future = self._submit(
+                worker,
+                session,
+            )
+        except Exception:
+            close = getattr(worker, "close", None)
+            if callable(close):
+                close()
+            self._turns.cancel(session, self._set_idle_state)
+            raise
+        if future is None:
+            context.wipe()
+            raise RuntimeError("The Tutor worker loop is unavailable.")
+        return f"tutor-region-{session.sequence}"
+
+    async def _run_region_tutor(
+        self,
+        context,
+        session: TurnSession,
+    ) -> None:
+        """Use only the reviewed crop; never recapture or inherit history."""
+
+        import base64
+        import hashlib
+
+        try:
+            if (
+                not self._turns.is_current(session)
+                or not screen_capture_allowed(cfg)
+            ):
+                return
+            if time.monotonic() >= context.expires_at:
+                raise RuntimeError(
+                    "The reviewed region expired before provider routing."
+                )
+            if (
+                hashlib.sha256(context.image_content).hexdigest()
+                != context.image_sha256
+            ):
+                raise RuntimeError(
+                    "The reviewed region changed before provider routing."
+                )
+            provider = cfg.llm_provider()
+            model = self._current_model
+            if not model:
+                raise RuntimeError(
+                    "The selected model changed before region routing."
+                )
+            from compose.service import cached_model_supports_vision
+            from ai.provider_catalog import AGENT_PROVIDERS
+
+            if provider in AGENT_PROVIDERS and not coding_agent_allowed(cfg):
+                raise RuntimeError(
+                    "The selected response-provider permission was revoked."
+                )
+            if not cached_model_supports_vision(provider, model):
+                raise RuntimeError(
+                    "The selected model no longer has validated image input."
+                )
+            system = _build_system_prompt(
+                language_code=cfg.response_language or "en",
+                extra=(
+                    "\n\nREVIEWED REGION CONTEXT:\n"
+                    "The user explicitly selected the single attached crop. "
+                    "Use only those visible pixels and the stated purpose. "
+                    "Do not infer unseen screen content. Do not emit POINT, "
+                    "DRAW, click, insertion, tool, task, connector, coding, "
+                    "or desktop-action instructions. This turn has response "
+                    "authority only.\n"
+                ),
+            )
+            encoded = base64.b64encode(
+                context.image_content
+            ).decode("ascii")
+            full_response = ""
+            display_buffer = ""
+            async for chunk in self._get_llm().stream_response(
+                user_text=context.purpose,
+                screenshots_b64=[encoded],
+                history=[],
+                system_prompt=system,
+                model=model,
+            ):
+                if not self._turns.is_current(session):
+                    return
+                if not isinstance(chunk, str):
+                    raise RuntimeError(
+                        "The selected provider returned invalid data."
+                    )
+                full_response += chunk
+                if len(full_response) > 32_768:
+                    raise RuntimeError(
+                        "The selected provider exceeded the response limit."
+                    )
+                display_buffer += chunk
+                display_buffer = ANY_TAG_RE.sub("", display_buffer)
+                partial = ANY_PARTIAL_RE.search(display_buffer)
+                if partial:
+                    flush = display_buffer[: partial.start()]
+                    display_buffer = display_buffer[partial.start():]
+                else:
+                    flush = display_buffer
+                    display_buffer = ""
+                if flush:
+                    self._emit_turn_signal(
+                        session,
+                        self.sig_response_chunk,
+                        flush,
+                    )
+            if display_buffer:
+                self._emit_turn_signal(
+                    session,
+                    self.sig_response_chunk,
+                    ANY_TAG_RE.sub("", display_buffer),
+                )
+            clean = ANY_TAG_RE.sub("", full_response).strip()
+            if not clean:
+                raise RuntimeError(
+                    "The selected provider returned no usable response."
+                )
+            self._emit_turn_signal(
+                session,
+                self.sig_response_done,
+                clean,
+            )
+            self._last_response = clean
+            self._turns.set_phase(session, TurnPhase.SPEAKING)
+            self._emit_state(AppState.SPEAKING, session)
+            await self._speak_with_failure_fallback(clean, session)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                str(exc),
+            )
+        finally:
+            context.wipe()
+            self._finish_turn(session)
 
     def start(self):
         if microphone_allowed(cfg):
