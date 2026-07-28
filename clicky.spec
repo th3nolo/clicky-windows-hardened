@@ -57,6 +57,7 @@ hidden = [
     "ui.stt_readiness",
     "ui.style_profiles",
     "ui.skills_catalog",
+    "ui.task_center",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",

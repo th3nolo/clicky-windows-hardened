@@ -22,13 +22,29 @@ from tasks.store import (
     TaskStoreError,
     TaskStoreNotFoundError,
 )
+from tasks.task_center import (
+    ActiveTaskHandle,
+    TaskActivity,
+    TaskActivityKind,
+    TaskCenterActionRegistry,
+    TaskCenterSnapshot,
+    TaskDisplayContent,
+    build_task_center_snapshot,
+    task_activities,
+)
 
 __all__ = [
+    "ActiveTaskHandle",
     "ApprovalRecord",
     "ApprovalRequest",
     "Artifact",
     "CapabilityGrant",
     "TaskEvent",
+    "TaskActivity",
+    "TaskActivityKind",
+    "TaskCenterActionRegistry",
+    "TaskCenterSnapshot",
+    "TaskDisplayContent",
     "TaskLimits",
     "TaskRecord",
     "TaskRun",
@@ -42,4 +58,6 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "ToolResultStatus",
+    "build_task_center_snapshot",
+    "task_activities",
 ]

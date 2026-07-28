@@ -166,6 +166,7 @@ def main():
         tray.on_manage_style_profiles.connect(_show_style_profiles)
 
     skills_catalog_panel = None
+    task_center_panel = None
     if build_feature_available(ActionCapability.TASK_AGENT):
         import skills as skills_package
         from skills.registry import (
@@ -192,6 +193,35 @@ def main():
             skills_catalog_panel.activateWindow()
 
         tray.on_manage_skills.connect(_show_skills_catalog)
+
+        try:
+            from tasks.store import TaskStore
+            from tasks.task_center import TaskCenterActionRegistry
+            from ui.task_center import TaskCenterPanel
+
+            task_center_panel = TaskCenterPanel(
+                TaskStore(),
+                TaskCenterActionRegistry(),
+                task_agent_available=user_permission_allowed(
+                    cfg,
+                    ActionCapability.TASK_AGENT,
+                ),
+            )
+            _task_center_keepalive[0] = task_center_panel
+
+            def _show_task_center():
+                task_center_panel.refresh()
+                task_center_panel.show()
+                task_center_panel.raise_()
+                task_center_panel.activateWindow()
+
+            tray.on_open_task_center.connect(_show_task_center)
+        except Exception:
+            tray.show_notification(
+                "Task Center unavailable",
+                "Task metadata could not be opened. Task actions remain "
+                "disabled.",
+            )
 
     # ── Wire signals ──────────────────────────────────────────────────────────
 
@@ -630,6 +660,7 @@ def main():
 _setup_keepalive: list = [None]
 _style_profiles_keepalive: list = [None]
 _skills_catalog_keepalive: list = [None]
+_task_center_keepalive: list = [None]
 
 
 if __name__ == "__main__":
