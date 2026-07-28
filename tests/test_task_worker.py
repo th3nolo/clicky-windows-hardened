@@ -22,6 +22,7 @@ from tasks.coordinator import (
     TaskWorkspace,
     TaskWorkspaceError,
     _WindowsJob,
+    _worker_command,
 )
 from tasks.models import TaskLimits, TaskRun, TaskSpec
 import tasks.policy as task_policy
@@ -330,6 +331,15 @@ class TaskWorkerCoordinatorTests(unittest.TestCase):
             self.assertFalse(workspace.exists())
             self.assertIsNotNone(handle.process.returncode)
 
+    def test_source_worker_uses_the_pinned_base_interpreter(self):
+        with mock.patch.object(sys, "frozen", False, create=True):
+            command = _worker_command()
+        expected = Path(
+            getattr(sys, "_base_executable", sys.executable)
+        ).resolve(strict=True)
+        self.assertEqual(Path(command[0]), expected)
+        self.assertEqual(command[1:3], ("-I", "-B"))
+
     def test_cancellation_rejects_late_results_and_removes_workspace(self):
         with tempfile.TemporaryDirectory() as temporary:
             run = run_fixture("task-worker-cancel")
@@ -401,7 +411,7 @@ class WindowsTaskJobTests(unittest.TestCase):
             child_pid_file = root / "child.pid"
             parent = subprocess.Popen(
                 [
-                    sys.executable,
+                    getattr(sys, "_base_executable", sys.executable),
                     str(helper),
                     "parent",
                     str(marker),
