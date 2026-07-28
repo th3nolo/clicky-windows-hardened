@@ -26,6 +26,10 @@ from declarative_tools import (
     TOOL_CAPABILITIES,
     DeclarativeTool,
 )
+from notion_contracts import (
+    MAX_NOTION_PROVIDER_REQUESTS,
+    render_notion_local_draft,
+)
 from tasks.approvals import (
     ApprovalPayload,
     ApprovalPreview,
@@ -74,9 +78,16 @@ MAX_GMAIL_RECIPIENTS = 50
 MAX_GMAIL_ADDRESS_CHARS = 320
 MAX_GMAIL_SUBJECT_CHARS = 500
 MAX_GMAIL_DRAFT_BODY_CHARS = 16 * 1024
+MAX_NOTION_PAGE_ID_CHARS = 64
+MAX_NOTION_DRAFT_TITLE_CHARS = 2_000
+MAX_NOTION_DRAFT_JSON_CHARS = 128 * 1024
 MAX_CONNECTOR_OUTPUT_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+_NOTION_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _INERT_ARTIFACT_MEDIA = frozenset(
@@ -180,6 +191,7 @@ class DeclaredToolStep:
                 not in {
                     CapabilityId.CALENDAR_EVENT_READ,
                     CapabilityId.GMAIL_MESSAGE_READ,
+                    CapabilityId.NOTION_PAGE_READ,
                 }
             ):
                 raise ValueError(
@@ -459,6 +471,72 @@ class GmailDraftArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class NotionSelectedPageArguments:
+    """One exact connected account and explicitly selected Notion page."""
+
+    authorization_id: str
+    selected_page_id: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Notion account authorization ID",
+        )
+        _bounded_token(
+            self.selected_page_id,
+            _NOTION_ID,
+            MAX_NOTION_PAGE_ID_CHARS,
+            "Selected Notion page ID",
+        )
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Notion response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NotionDraftRenderArguments:
+    """Inert local Notion draft data; this performs no provider write."""
+
+    title: str = field(repr=False)
+    blocks_json: str = field(repr=False)
+    intended_parent_page_id: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        _bounded_text(
+            self.title,
+            MAX_NOTION_DRAFT_TITLE_CHARS,
+            "Notion draft title",
+        )
+        if not self.title:
+            raise ValueError("Notion draft title cannot be empty")
+        _bounded_text(
+            self.blocks_json,
+            MAX_NOTION_DRAFT_JSON_CHARS,
+            "Notion draft block JSON",
+        )
+        if self.intended_parent_page_id is not None:
+            _bounded_token(
+                self.intended_parent_page_id,
+                _NOTION_ID,
+                MAX_NOTION_PAGE_ID_CHARS,
+                "Intended Notion parent page ID",
+            )
+
+    def render_bytes(self) -> bytes:
+        return render_notion_local_draft(
+            title=self.title,
+            blocks_json=self.blocks_json,
+            intended_parent_page_id=self.intended_parent_page_id,
+        ).to_json_bytes()
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchCsvRenderArguments:
     records_json: str = field(repr=False)
     source_context: str = field(repr=False)
@@ -662,6 +740,8 @@ BrokerArguments = (
     | CalendarAvailabilityArguments
     | GmailSelectedThreadArguments
     | GmailDraftArguments
+    | NotionSelectedPageArguments
+    | NotionDraftRenderArguments
     | ResearchCsvRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
@@ -772,7 +852,9 @@ WebFetchAdapter = Callable[[str, int], Awaitable[str]]
 ConnectorReadAdapter = Callable[
     [
         ToolCall,
-        CalendarAvailabilityArguments | GmailSelectedThreadArguments,
+        CalendarAvailabilityArguments
+        | GmailSelectedThreadArguments
+        | NotionSelectedPageArguments,
     ],
     Awaitable[ConnectorReadOutput],
 ]
@@ -979,7 +1061,7 @@ class TaskToolBroker:
             ) from exc
         self._tool_calls += 1
         self._call_ids.add(call.call_id)
-        self._network_requests += _network_request_cost(step.tool)
+        self._network_requests += _network_request_cost(step.tool, arguments)
         try:
             execution = await self._execute_validated(
                 call,
@@ -1077,7 +1159,7 @@ class TaskToolBroker:
                 )
         if self._tool_calls >= self._run.spec.limits.max_tool_calls:
             raise TaskToolBrokerLimitError("Task tool-call limit reached")
-        network_cost = _network_request_cost(step.tool)
+        network_cost = _network_request_cost(step.tool, arguments)
         if (
             network_cost
             and self._network_requests + network_cost
@@ -1105,7 +1187,11 @@ class TaskToolBroker:
             self._require_output_capacity(arguments.maximum_response_bytes)
         elif isinstance(
             arguments,
-            (GmailSelectedThreadArguments, GmailDraftArguments),
+            (
+                GmailSelectedThreadArguments,
+                GmailDraftArguments,
+                NotionSelectedPageArguments,
+            ),
         ):
             self._require_output_capacity(arguments.maximum_response_bytes)
 
@@ -1136,6 +1222,10 @@ class TaskToolBroker:
             return await self._read_connector(call, arguments)
         if type(arguments) is GmailDraftArguments:
             return await self._write_connector(call, arguments)
+        if type(arguments) is NotionSelectedPageArguments:
+            return await self._read_connector(call, arguments)
+        if type(arguments) is NotionDraftRenderArguments:
+            return self._render_notion_draft(call, arguments)
         if type(arguments) is ResearchCsvRenderArguments:
             return self._render_research_csv(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
@@ -1151,7 +1241,11 @@ class TaskToolBroker:
     async def _read_connector(
         self,
         call: ToolCall,
-        arguments: CalendarAvailabilityArguments | GmailSelectedThreadArguments,
+        arguments: (
+            CalendarAvailabilityArguments
+            | GmailSelectedThreadArguments
+            | NotionSelectedPageArguments
+        ),
     ) -> BrokerExecution:
         if self._connector_read is None:
             raise TaskToolBrokerOperationError("connector_read_unavailable")
@@ -1343,6 +1437,24 @@ class TaskToolBroker:
         return BrokerExecution(
             result=_succeeded_result(call, artifact.content),
             text=artifact.content.decode("utf-8"),
+        )
+
+    def _render_notion_draft(
+        self,
+        call: ToolCall,
+        arguments: NotionDraftRenderArguments,
+    ) -> BrokerExecution:
+        try:
+            content = arguments.render_bytes()
+        except (TypeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "notion_draft_render_failed"
+            ) from exc
+        self._require_output_capacity(len(content))
+        self._reserve_output(len(content))
+        return BrokerExecution(
+            result=_succeeded_result(call, content),
+            text=content.decode("utf-8"),
         )
 
     def _read_artifact(
@@ -1572,6 +1684,21 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "preview_bytes": len(preview),
             "preview_sha256": hashlib.sha256(preview).hexdigest(),
         }
+    if type(arguments) is NotionSelectedPageArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "selected_page_id": arguments.selected_page_id,
+        }
+    if type(arguments) is NotionDraftRenderArguments:
+        rendered = arguments.render_bytes()
+        return {
+            "intended_parent_page_id": (
+                arguments.intended_parent_page_id
+            ),
+            "rendered_bytes": len(rendered),
+            "rendered_sha256": hashlib.sha256(rendered).hexdigest(),
+        }
     if type(arguments) is ResearchCsvRenderArguments:
         return {
             "field_ids": list(arguments.field_ids),
@@ -1628,6 +1755,7 @@ _ARGUMENT_TYPES = {
     DeclarativeTool.WEB_SEARCH: WebSearchArguments,
     DeclarativeTool.WEB_FETCH: WebFetchArguments,
     DeclarativeTool.RESEARCH_CSV_RENDER: ResearchCsvRenderArguments,
+    DeclarativeTool.NOTION_DRAFT_RENDER: NotionDraftRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
     DeclarativeTool.VERIFY_OUTPUT: VerifyOutputArguments,
@@ -1637,6 +1765,7 @@ _CONNECTOR_ARGUMENT_TYPES = {
     CapabilityId.CALENDAR_EVENT_READ: CalendarAvailabilityArguments,
     CapabilityId.GMAIL_MESSAGE_READ: GmailSelectedThreadArguments,
     CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
+    CapabilityId.NOTION_PAGE_READ: NotionSelectedPageArguments,
 }
 
 
@@ -1654,7 +1783,15 @@ def _argument_type(step: DeclaredToolStep):
     return _ARGUMENT_TYPES[step.tool]
 
 
-def _network_request_cost(tool: DeclarativeTool) -> int:
+def _network_request_cost(
+    tool: DeclarativeTool,
+    arguments: BrokerArguments,
+) -> int:
+    if (
+        tool is DeclarativeTool.CONNECTOR_READ
+        and isinstance(arguments, NotionSelectedPageArguments)
+    ):
+        return MAX_NOTION_PROVIDER_REQUESTS
     if tool in {
         DeclarativeTool.WEB_SEARCH,
         DeclarativeTool.WEB_FETCH,
@@ -1880,6 +2017,8 @@ __all__ = [
     "GmailDraftArguments",
     "GmailSelectedThreadArguments",
     "ModelGenerateArguments",
+    "NotionDraftRenderArguments",
+    "NotionSelectedPageArguments",
     "ResearchCsvRenderArguments",
     "TaskToolBroker",
     "TaskToolBrokerError",

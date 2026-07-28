@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from capability_registry import CapabilityId, ConnectorId
 from declarative_tools import DeclarativeTool
+from notion_contracts import MAX_NOTION_PROVIDER_REQUESTS
 from skills.schema import (
     BindingSource,
     DeclarativeSkillDefinition,
@@ -59,6 +60,8 @@ from tasks.tool_broker import (
     GmailSelectedThreadArguments,
     ModelGenerateArguments,
     ModelStreamAdapter,
+    NotionDraftRenderArguments,
+    NotionSelectedPageArguments,
     ResearchCsvRenderArguments,
     TaskToolBroker,
     VerifyOutputArguments,
@@ -84,6 +87,7 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
             {
                 "authorization_id",
                 "selected_calendar_ids_json",
+                "selected_page_id",
                 "selected_thread_id",
                 "time_max",
                 "time_min",
@@ -101,6 +105,13 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
+        ),
+        DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
+            {
+                "blocks_json",
+                "intended_parent_page_id",
+                "title",
+            }
         ),
         DeclarativeTool.ARTIFACT_READ: frozenset({"artifact_id"}),
         DeclarativeTool.ARTIFACT_WRITE: frozenset(
@@ -142,6 +153,9 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
+        ),
+        DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
+            {"blocks_json", "title"}
         ),
         DeclarativeTool.ARTIFACT_READ: frozenset({"artifact_id"}),
         DeclarativeTool.ARTIFACT_WRITE: frozenset(
@@ -294,6 +308,12 @@ def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
                 "to_addresses_json",
             }
         )
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_READ
+        and step.connector is ConnectorId.NOTION
+        and step.capability is CapabilityId.NOTION_PAGE_READ
+    ):
+        return frozenset({"authorization_id", "selected_page_id"})
     return frozenset()
 
 
@@ -345,6 +365,9 @@ def compile_declarative_plan(
                 CapabilityId.GMAIL_DRAFT_WRITE,
             }
         ),
+        ConnectorId.NOTION: frozenset(
+            {CapabilityId.NOTION_PAGE_READ}
+        ),
     }
     for requirement in definition.connectors:
         allowed = available_connector_capabilities.get(
@@ -356,7 +379,12 @@ def compile_declarative_plan(
                 "Connector requirement is not available to the task broker"
             )
     required_network_requests = sum(
-        2
+        MAX_NOTION_PROVIDER_REQUESTS
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_READ
+            and step.capability is CapabilityId.NOTION_PAGE_READ
+        )
+        else 2
         if (
             step.tool is DeclarativeTool.CONNECTOR_WRITE
             and step.capability is CapabilityId.GMAIL_DRAFT_WRITE
@@ -374,7 +402,7 @@ def compile_declarative_plan(
     )
     if definition.limits.max_network_requests < required_network_requests:
         raise DeclarativeRunnerPlanningError(
-            "Task network limit cannot cover provider write verification"
+            "Task network limit cannot cover bounded provider operations"
         )
     if definition.steps[-1].step_id != run.spec.verifier_step_id:
         raise DeclarativeRunnerPlanningError(
@@ -435,6 +463,7 @@ def compile_declarative_plan(
             not in {
                 CapabilityId.CALENDAR_EVENT_READ,
                 CapabilityId.GMAIL_MESSAGE_READ,
+                CapabilityId.NOTION_PAGE_READ,
             }
         ):
             raise DeclarativeRunnerPlanningError(
@@ -807,6 +836,21 @@ class DeclarativeSkillRunner:
                         1024 * 1024,
                     ),
                 )
+            if step.capability is CapabilityId.NOTION_PAGE_READ:
+                return NotionSelectedPageArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Notion account authorization ID",
+                    ),
+                    selected_page_id=_text_value(
+                        values["selected_page_id"],
+                        "Selected Notion page ID",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
         if step.tool is DeclarativeTool.CONNECTOR_WRITE:
             if step.capability is CapabilityId.GMAIL_DRAFT_WRITE:
                 return GmailDraftArguments(
@@ -839,6 +883,21 @@ class DeclarativeSkillRunner:
                         1024 * 1024,
                     ),
                 )
+        if step.tool is DeclarativeTool.NOTION_DRAFT_RENDER:
+            return NotionDraftRenderArguments(
+                title=_text_value(
+                    values["title"],
+                    "Notion draft title",
+                ),
+                blocks_json=_text_value(
+                    values["blocks_json"],
+                    "Notion draft block JSON",
+                ),
+                intended_parent_page_id=_optional_text_value(
+                    values.get("intended_parent_page_id"),
+                    "Intended Notion parent page ID",
+                ),
+            )
         if step.tool is DeclarativeTool.RESEARCH_CSV_RENDER:
             from research.csv_artifact import ResearchCsvSchema
 

@@ -34,6 +34,11 @@ from connectors.gmail import (
     GmailSelectedThreadResult,
     GoogleGmailAdapter,
 )
+from connectors.notion import (
+    NotionSelectedPageAdapter,
+    NotionSelectedPageRequest,
+    NotionSelectedPageResult,
+)
 from connectors.token_store import ConnectorTokenNotFoundError
 from tasks.models import TaskRun, TaskState, ToolCall
 from tasks.tool_broker import (
@@ -42,6 +47,7 @@ from tasks.tool_broker import (
     ConnectorWriteOutput,
     GmailDraftArguments,
     GmailSelectedThreadArguments,
+    NotionSelectedPageArguments,
     TaskToolBrokerOperationError,
     broker_arguments_digest,
 )
@@ -52,6 +58,7 @@ CalendarAdapterFactory = Callable[
     GoogleCalendarAvailabilityAdapter,
 ]
 GmailAdapterFactory = Callable[[ConnectedAccount], GoogleGmailAdapter]
+NotionAdapterFactory = Callable[[ConnectedAccount], NotionSelectedPageAdapter]
 
 
 class CalendarConnectorReadBroker:
@@ -310,6 +317,96 @@ class GmailConnectorReadBroker:
         return execution
 
 
+class NotionConnectorReadBroker:
+    """Turn one exact task grant into one selected-page Notion read."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: NotionAdapterFactory = NotionSelectedPageAdapter,
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: NotionSelectedPageArguments,
+    ) -> ConnectorReadOutput:
+        if (
+            not isinstance(arguments, NotionSelectedPageArguments)
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                arguments,
+                tool_name="connector.read",
+                capability=CapabilityId.NOTION_PAGE_READ,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_read_not_supported"
+            )
+        try:
+            request = NotionSelectedPageRequest(
+                selected_page_id=arguments.selected_page_id
+            )
+            account = self._accounts.get_account(
+                arguments.authorization_id
+            )
+            if account.connector is not ConnectorId.NOTION:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Notion account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=arguments.authorization_id,
+                connector=ConnectorId.NOTION,
+                capability=CapabilityId.NOTION_PAGE_READ,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=arguments.maximum_response_bytes,
+            )
+            lease = self._accounts.lease_access_token(
+                arguments.authorization_id,
+                CapabilityId.NOTION_PAGE_READ,
+            )
+            try:
+                execution = await self._adapter_factory(account).execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(
+                execution.output,
+                NotionSelectedPageResult,
+            )
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorReadOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
+
+
 class GmailConnectorWriteBroker:
     """Create one approved unsent draft and require provider read-back."""
 
@@ -501,4 +598,5 @@ __all__ = [
     "CalendarConnectorReadBroker",
     "GmailConnectorReadBroker",
     "GmailConnectorWriteBroker",
+    "NotionConnectorReadBroker",
 ]

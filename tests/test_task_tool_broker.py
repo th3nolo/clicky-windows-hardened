@@ -1097,6 +1097,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.WEB_SEARCH,
                 DeclarativeTool.WEB_FETCH,
                 DeclarativeTool.RESEARCH_CSV_RENDER,
+                DeclarativeTool.NOTION_DRAFT_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,
                 DeclarativeTool.CONNECTOR_READ,
