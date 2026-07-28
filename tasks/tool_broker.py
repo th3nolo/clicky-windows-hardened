@@ -516,6 +516,14 @@ class TaskToolBroker:
         finally:
             self._run.cancel(result_code)
 
+    def fail(self, result_code: str) -> None:
+        """Fail the run and remove pending bytes, preserving adopted output."""
+
+        try:
+            self._artifact_manager.discard_incomplete()
+        finally:
+            self._run.fail(result_code)
+
     async def execute(
         self,
         call: ToolCall,

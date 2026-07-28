@@ -1,0 +1,605 @@
+"""Declarative runner authority, approval, schema, and evidence tests."""
+
+from __future__ import annotations
+
+import ast
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from capability_registry import (
+    CapabilityGrant,
+    CapabilityId,
+    ConnectorId,
+)
+from declarative_tools import DeclarativeTool
+from skills.declarative_runner import (
+    DeclarativeRunnerInputError,
+    DeclarativeRunnerPlanningError,
+    DeclarativeSkillRunner,
+    RunnerDisposition,
+    compile_declarative_plan,
+    declarative_inputs_digest,
+)
+from skills.schema import (
+    OAuthScopeId,
+    declarative_skill_source_digest,
+    parse_declarative_skill,
+)
+from tasks.coordinator import TaskWorkspace
+from tasks.models import (
+    TaskLimits,
+    TaskRun,
+    TaskSpec,
+    TaskState,
+    ToolResultStatus,
+)
+from tasks.policy import WorkerPolicy
+
+
+ROOT = Path(__file__).resolve().parents[1]
+VERIFIER_ID = "artifact-postcondition-v1"
+
+
+def definition_payload() -> dict:
+    return {
+        "schema_version": 1,
+        "skill_id": "clicky.research_to_csv",
+        "version": "1.0.0",
+        "name": "Research to CSV",
+        "description": "Create a bounded source-backed CSV.",
+        "invocation": {"mode": "explicit", "phrases": []},
+        "inputs": [
+            {
+                "input_id": "query",
+                "input_type": "text",
+                "description": "The bounded public research query.",
+                "required": True,
+                "sensitive": False,
+                "max_chars": 200,
+                "max_bytes": None,
+                "minimum": None,
+                "maximum": None,
+            }
+        ],
+        "output": {
+            "output_type": "table",
+            "media_type": "text/csv",
+            "fields": [
+                {
+                    "field_id": "name",
+                    "value_type": "text",
+                    "description": "Public entity name.",
+                    "required": True,
+                },
+                {
+                    "field_id": "source",
+                    "value_type": "url",
+                    "description": "Public source URL.",
+                    "required": True,
+                },
+            ],
+        },
+        "prompt_template": "Research {{input.query}} using public sources.",
+        "steps": [
+            {
+                "step_id": "search",
+                "tool": DeclarativeTool.WEB_SEARCH.value,
+                "capability": CapabilityId.WEB_SEARCH_BOUNDED.value,
+                "depends_on": [],
+                "arguments": [
+                    {
+                        "argument_id": "query",
+                        "source": "input",
+                        "reference": "query",
+                        "value": None,
+                    },
+                    {
+                        "argument_id": "max_results",
+                        "source": "literal",
+                        "reference": None,
+                        "value": 2,
+                    },
+                ],
+                "output_id": "search_results",
+                "connector": None,
+                "approval_id": None,
+            },
+            {
+                "step_id": "write_csv",
+                "tool": DeclarativeTool.ARTIFACT_WRITE.value,
+                "capability": CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+                "depends_on": ["search"],
+                "arguments": [
+                    {
+                        "argument_id": "artifact_id",
+                        "source": "literal",
+                        "reference": None,
+                        "value": "research-csv",
+                    },
+                    {
+                        "argument_id": "name",
+                        "source": "literal",
+                        "reference": None,
+                        "value": "research.csv",
+                    },
+                    {
+                        "argument_id": "media_type",
+                        "source": "literal",
+                        "reference": None,
+                        "value": "text/csv",
+                    },
+                    {
+                        "argument_id": "content",
+                        "source": "step_output",
+                        "reference": "search_results",
+                        "value": None,
+                    },
+                    {
+                        "argument_id": "complete",
+                        "source": "literal",
+                        "reference": None,
+                        "value": True,
+                    },
+                ],
+                "output_id": "csv_artifact",
+                "connector": None,
+                "approval_id": "approve_csv",
+            },
+            {
+                "step_id": "verify",
+                "tool": DeclarativeTool.VERIFY_OUTPUT.value,
+                "capability": CapabilityId.TASK_AGENT_RUN.value,
+                "depends_on": ["write_csv"],
+                "arguments": [
+                    {
+                        "argument_id": "artifact_id",
+                        "source": "step_output",
+                        "reference": "csv_artifact",
+                        "value": None,
+                    }
+                ],
+                "output_id": "verified_csv",
+                "connector": None,
+                "approval_id": None,
+            },
+        ],
+        "capabilities": [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.WEB_SEARCH_BOUNDED.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ],
+        "connectors": [],
+        "approvals": [
+            {
+                "approval_id": "approve_csv",
+                "capability": CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+                "reason": "Review this exact CSV before adopting it.",
+                "preview_references": [
+                    "input.query",
+                    "step.search_results",
+                ],
+            }
+        ],
+        "limits": {
+            "runtime_seconds": 60,
+            "max_tool_calls": 8,
+            "max_network_requests": 2,
+            "max_output_bytes": 64 * 1024,
+        },
+        "publisher": {
+            "publisher_id": "clicky.official",
+            "display_name": "Clicky",
+        },
+        "source_digest": "0" * 64,
+        "minimum_clicky_version": "1.2.0",
+    }
+
+
+def parsed_definition(payload: dict | None = None):
+    raw = copy.deepcopy(payload or definition_payload())
+    provisional = parse_declarative_skill(
+        json.dumps(raw).encode("utf-8")
+    )
+    raw["source_digest"] = declarative_skill_source_digest(provisional)
+    return parse_declarative_skill(json.dumps(raw).encode("utf-8"))
+
+
+def make_run(definition, inputs, *, capabilities=None) -> TaskRun:
+    limits = TaskLimits(
+        runtime_seconds=definition.limits.runtime_seconds,
+        max_tool_calls=definition.limits.max_tool_calls,
+        max_network_requests=definition.limits.max_network_requests,
+        max_output_bytes=definition.limits.max_output_bytes,
+    )
+    return TaskRun(
+        TaskSpec(
+            run_id="runner-task-1",
+            skill_id=definition.skill_id,
+            skill_version=definition.version,
+            goal="Create one verified research artifact.",
+            input_digest=declarative_inputs_digest(definition, inputs),
+            requested_result="A verified source-backed CSV.",
+            verifier_step_id="verify",
+            verifier_id=VERIFIER_ID,
+            limits=limits,
+        ),
+        CapabilityGrant(
+            run_id="runner-task-1",
+            capabilities=(
+                capabilities
+                if capabilities is not None
+                else definition.capabilities
+            ),
+        ),
+    )
+
+
+class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+
+    def create_runner(
+        self,
+        definition,
+        inputs,
+        *,
+        search_text=(
+            "name,source\r\n"
+            "Example,https://example.com/profile\r\n"
+        ),
+    ):
+        run = make_run(definition, inputs)
+        workspace = TaskWorkspace.create(
+            run.run_id,
+            WorkerPolicy.from_task_limits(run.spec.limits),
+            root=Path(self.temporary.name).absolute() / "workspaces",
+        )
+        self.addCleanup(workspace.cleanup)
+        calls = {"search": 0, "model": 0}
+
+        async def search(query, max_results):
+            calls["search"] += 1
+            self.assertEqual(max_results, 2)
+            return search_text
+
+        async def model(arguments):
+            calls["model"] += 1
+            yield "I completed the task and wrote the file."
+
+        async def fetch(url, max_chars):
+            return "bounded page"
+
+        runner = DeclarativeSkillRunner.create(
+            definition,
+            run,
+            workspace,
+            model_stream=model,
+            web_search=search,
+            web_fetch=fetch,
+            artifact_root=(
+                Path(self.temporary.name).absolute() / "adopted"
+            ),
+        )
+        return runner, run, workspace, calls
+
+    async def test_declared_workflow_pauses_then_completes_from_verifier_evidence(self):
+        definition = parsed_definition()
+        inputs = {"query": "public creators"}
+        runner, run, workspace, calls = self.create_runner(
+            definition,
+            inputs,
+        )
+
+        started = runner.start(inputs)
+        self.assertEqual(started.disposition, RunnerDisposition.RUNNING)
+
+        searched = await runner.advance(now=10.0)
+        self.assertEqual(searched.task_state, TaskState.RUNNING)
+        self.assertEqual(calls["search"], 1)
+        self.assertEqual(len(searched.results), 1)
+
+        waiting = await runner.advance(now=11.0)
+        self.assertEqual(
+            waiting.disposition,
+            RunnerDisposition.WAITING_FOR_APPROVAL,
+        )
+        payload = waiting.pending_approval
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload.target.reference, "research-csv")
+        self.assertEqual(payload.preview.media_type, "text/csv")
+        self.assertEqual(workspace.verify(), (0, 0))
+
+        request = payload.request
+        run.approve(
+            request.approval_id,
+            request.action_digest,
+            now=12.0,
+        )
+        written = await runner.advance(now=12.0)
+        self.assertEqual(written.task_state, TaskState.RUNNING)
+        self.assertEqual(len(written.results), 2)
+
+        completed = await runner.advance(now=13.0)
+        self.assertEqual(completed.disposition, RunnerDisposition.COMPLETED)
+        self.assertEqual(run.state, TaskState.COMPLETED)
+        self.assertEqual(len(completed.results), 3)
+        self.assertTrue(
+            completed.results[-1].is_successful_verification
+        )
+        self.assertEqual(len(completed.artifacts), 1)
+        artifact = completed.artifacts[0]
+        self.assertTrue(artifact.adopted)
+        self.assertEqual(artifact.media_type, "text/csv")
+        self.assertEqual(
+            artifact.verification_result_id,
+            completed.results[-1].result_id,
+        )
+
+    async def test_model_completion_prose_is_only_inert_step_output(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.MODEL_GENERATE.value,
+            "capability": CapabilityId.TASK_AGENT_RUN.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "system_prompt",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Return only CSV data.",
+                }
+            ],
+            "output_id": "search_results",
+            "connector": None,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["limits"]["max_network_requests"] = 0
+        definition = parsed_definition(payload)
+        inputs = {"query": "public creators"}
+        runner, run, _, calls = self.create_runner(definition, inputs)
+        runner.start(inputs)
+
+        snapshot = await runner.advance(now=10.0)
+
+        self.assertEqual(calls["model"], 1)
+        self.assertEqual(snapshot.task_state, TaskState.RUNNING)
+        self.assertEqual(snapshot.artifacts, ())
+        self.assertIsNone(run.verifier_result)
+
+    def test_plan_rejects_dynamic_capability_growth_and_unknown_arguments(self):
+        definition = parsed_definition()
+        inputs = {"query": "public creators"}
+        run = make_run(
+            definition,
+            inputs,
+            capabilities=frozenset(
+                {
+                    *definition.capabilities,
+                    CapabilityId.WEB_FETCH_BOUNDED,
+                }
+            ),
+        )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "exactly match",
+        ):
+            compile_declarative_plan(definition, run)
+
+        payload = definition_payload()
+        payload["steps"][0]["arguments"].append(
+            {
+                "argument_id": "undeclared_host_option",
+                "source": "literal",
+                "reference": None,
+                "value": "shell",
+            }
+        )
+        definition_with_unknown_argument = parsed_definition(payload)
+        run = make_run(definition_with_unknown_argument, inputs)
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "arguments do not match",
+        ):
+            compile_declarative_plan(
+                definition_with_unknown_argument,
+                run,
+            )
+
+    def test_declared_connector_still_fails_closed_until_broker_support_exists(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.GMAIL_MESSAGE_READ.value,
+            "depends_on": [],
+            "arguments": [],
+            "output_id": "search_results",
+            "connector": ConnectorId.GMAIL.value,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.GMAIL_MESSAGE_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GMAIL.value,
+                "capabilities": [CapabilityId.GMAIL_MESSAGE_READ.value],
+                "oauth_scopes": [OAuthScopeId.GMAIL_MESSAGES_READ.value],
+            }
+        ]
+        payload["limits"]["max_network_requests"] = 1
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "public creators"})
+
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "Connector execution is unavailable",
+        ):
+            compile_declarative_plan(definition, run)
+
+    async def test_invalid_output_schema_fails_before_approval_or_write(self):
+        definition = parsed_definition()
+        inputs = {"query": "public creators"}
+        runner, run, workspace, _ = self.create_runner(
+            definition,
+            inputs,
+            search_text=(
+                "name,unsupported\r\n"
+                "Example,missing-source\r\n"
+            ),
+        )
+        runner.start(inputs)
+        await runner.advance(now=10.0)
+
+        failed = await runner.advance(now=11.0)
+
+        self.assertEqual(failed.disposition, RunnerDisposition.FAILED)
+        self.assertEqual(run.result_code, "runner_validation_failed")
+        self.assertIsNone(failed.pending_approval)
+        self.assertEqual(failed.artifacts, ())
+        self.assertEqual(workspace.verify(), (0, 0))
+
+    async def test_partial_output_is_evidence_but_never_completion(self):
+        payload = definition_payload()
+        write_arguments = payload["steps"][1]["arguments"]
+        next(
+            item for item in write_arguments if item["argument_id"] == "complete"
+        )["value"] = False
+        write_arguments.append(
+            {
+                "argument_id": "partial_reason",
+                "source": "literal",
+                "reference": None,
+                "value": "Only one verified record was available.",
+            }
+        )
+        definition = parsed_definition(payload)
+        inputs = {"query": "public creators"}
+        runner, run, workspace, _ = self.create_runner(definition, inputs)
+        runner.start(inputs)
+        await runner.advance(now=10.0)
+        waiting = await runner.advance(now=11.0)
+        request = waiting.pending_approval.request
+        run.approve(
+            request.approval_id,
+            request.action_digest,
+            now=12.0,
+        )
+
+        failed = await runner.advance(now=12.0)
+
+        self.assertEqual(failed.disposition, RunnerDisposition.FAILED)
+        self.assertEqual(
+            failed.results[-1].status,
+            ToolResultStatus.PARTIAL,
+        )
+        self.assertEqual(run.result_code, "partial_output")
+        self.assertEqual(failed.artifacts, ())
+        self.assertEqual(workspace.verify(), (0, 0))
+
+    async def test_cancellation_invalidates_pending_approval_without_write(self):
+        definition = parsed_definition()
+        inputs = {"query": "public creators"}
+        runner, run, workspace, _ = self.create_runner(definition, inputs)
+        runner.start(inputs)
+        await runner.advance(now=10.0)
+        waiting = await runner.advance(now=11.0)
+        request = waiting.pending_approval.request
+
+        cancelled = runner.cancel()
+
+        self.assertEqual(cancelled.disposition, RunnerDisposition.CANCELLED)
+        self.assertEqual(workspace.verify(), (0, 0))
+        with self.assertRaisesRegex(ValueError, "Invalid task transition"):
+            run.approve(
+                request.approval_id,
+                request.action_digest,
+                now=12.0,
+            )
+
+    def test_invocation_values_are_bounded_and_integrity_bound(self):
+        definition = parsed_definition()
+        with self.assertRaisesRegex(
+            DeclarativeRunnerInputError,
+            "too long",
+        ):
+            declarative_inputs_digest(
+                definition,
+                {"query": "x" * 201},
+            )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerInputError,
+            "undeclared",
+        ):
+            declarative_inputs_digest(
+                definition,
+                {"query": "ok", "shell": "powershell"},
+            )
+
+        inputs = {"query": "public creators"}
+        run = make_run(definition, inputs)
+        workspace = TaskWorkspace.create(
+            run.run_id,
+            WorkerPolicy.from_task_limits(run.spec.limits),
+            root=Path(self.temporary.name).absolute() / "input-workspaces",
+        )
+        self.addCleanup(workspace.cleanup)
+        runner = DeclarativeSkillRunner.create(
+            definition,
+            run,
+            workspace,
+            artifact_root=(
+                Path(self.temporary.name).absolute() / "input-artifacts"
+            ),
+        )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerInputError,
+            "digest does not match",
+        ):
+            runner.start({"query": "different request"})
+
+    def test_runner_is_package_infrastructure_and_has_no_execution_authority(self):
+        init_source = (ROOT / "skills" / "__init__.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"declarative_runner.py"', init_source)
+        spec_source = (ROOT / "clicky.spec").read_text(encoding="utf-8")
+        self.assertIn('"skills.declarative_runner"', spec_source)
+        source = (ROOT / "skills" / "declarative_runner.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        imported_roots = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            (node.module or "").split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        }
+        self.assertTrue(
+            {
+                "subprocess",
+                "socket",
+                "ctypes",
+                "importlib",
+                "requests",
+            }.isdisjoint(imported_roots)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
