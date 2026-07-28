@@ -364,6 +364,32 @@ def render_research_json_to_csv(
 ) -> ResearchCsvArtifact:
     """Parse strict inert model JSON, bind sources, then render canonical CSV."""
 
+    batch = parse_research_json_records(
+        records_json,
+        schema,
+        requested_rows=requested_rows,
+        maximum_output_bytes=maximum_output_bytes,
+        allowed_source_urls=allowed_source_urls,
+        retrieved_at=retrieved_at,
+    )
+    return render_research_csv(
+        batch,
+        schema,
+        requested_rows=requested_rows,
+    )
+
+
+def parse_research_json_records(
+    records_json: str,
+    schema: ResearchCsvSchema,
+    *,
+    requested_rows: int,
+    maximum_output_bytes: int,
+    allowed_source_urls: tuple[str, ...],
+    retrieved_at: datetime | None = None,
+) -> ResearchBatch:
+    """Bind strict inert model JSON to observed, typed research records."""
+
     if (
         not isinstance(records_json, str)
         or not records_json
@@ -449,11 +475,7 @@ def render_research_json_to_csv(
         max_total_sources=min(2_048, max(1, len(allowed))),
         max_output_bytes=maximum_output_bytes,
     )
-    return render_research_csv(
-        ResearchBatch(records, limits),
-        schema,
-        requested_rows=requested_rows,
-    )
+    return ResearchBatch(records, limits)
 
 
 def inspect_research_csv(
@@ -755,6 +777,7 @@ __all__ = [
     "ResearchCsvInspection",
     "ResearchCsvSchema",
     "inspect_research_csv",
+    "parse_research_json_records",
     "render_research_csv",
     "render_research_json_to_csv",
 ]

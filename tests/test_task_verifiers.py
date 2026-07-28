@@ -15,6 +15,7 @@ from tasks.verifiers import (
     FileExpectation,
     FileSnapshot,
     ResearchCsvFileExpectation,
+    ResearchMarkdownFileExpectation,
     RepositoryExpectation,
     RepositorySnapshot,
     UiStateExpectation,
@@ -23,6 +24,7 @@ from tasks.verifiers import (
     verify_api_response,
     verify_file,
     verify_research_csv_file,
+    verify_research_markdown_file,
     verify_repository,
     verify_ui_state,
 )
@@ -173,6 +175,83 @@ class TaskVerifierTests(unittest.TestCase):
         )
         self.assertFalse(tampered.evidence.postcondition_met)
         self.assertFalse(tampered.partial)
+
+    def test_research_markdown_verifier_binds_citations_and_exact_sources(self):
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from tests.test_research_csv import batch, record
+
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        rendered = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        snapshot = FileSnapshot(
+            artifact_id="research-report",
+            name="research.md",
+            media_type="text/markdown",
+            byte_count=len(rendered.content),
+            sha256=rendered.sha256,
+            provenance_digest=DIGEST_A,
+            complete=True,
+        )
+        expectation = ResearchMarkdownFileExpectation(
+            file=FileExpectation(
+                expected_sha256=rendered.sha256,
+                expected_media_type="text/markdown",
+                maximum_bytes=64 * 1024,
+            ),
+            report_title=schema.title,
+            requested_field_ids=schema.requested_field_ids,
+            requested_sections=1,
+            source_digest=rendered.source_digest,
+        )
+        complete = verify_research_markdown_file(
+            snapshot,
+            expectation,
+            verifier_id="research-markdown-v1",
+            content=rendered.content,
+        )
+        self.assertTrue(complete.evidence.postcondition_met)
+        self.assertFalse(complete.partial)
+        self.assertEqual(complete.section_count, 1)
+        self.assertGreater(complete.citation_count, 0)
+
+        shortfall = verify_research_markdown_file(
+            snapshot,
+            ResearchMarkdownFileExpectation(
+                file=expectation.file,
+                report_title=schema.title,
+                requested_field_ids=schema.requested_field_ids,
+                requested_sections=2,
+                source_digest=rendered.source_digest,
+            ),
+            verifier_id="research-markdown-v1",
+            content=rendered.content,
+        )
+        self.assertFalse(shortfall.evidence.postcondition_met)
+        self.assertTrue(shortfall.partial)
+
+        wrong_sources = verify_research_markdown_file(
+            snapshot,
+            ResearchMarkdownFileExpectation(
+                file=expectation.file,
+                report_title=schema.title,
+                requested_field_ids=schema.requested_field_ids,
+                requested_sections=1,
+                source_digest=DIGEST_B,
+            ),
+            verifier_id="research-markdown-v1",
+            content=rendered.content,
+        )
+        self.assertFalse(wrong_sources.evidence.postcondition_met)
+        self.assertFalse(wrong_sources.partial)
 
     def test_api_response_verifier_binds_request_status_type_size_and_body(self):
         snapshot = ApiResponseSnapshot(
