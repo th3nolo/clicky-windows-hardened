@@ -75,6 +75,11 @@ hidden = [
     "ui.skills_catalog",
     "ui.task_center",
     "ui.connected_accounts",
+    "workspace_coding.broker",
+    "workspace_coding.models",
+    "workspace_coding.paths",
+    "workspace_coding.sandbox",
+    "workspace_coding.snapshot",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",
