@@ -28,6 +28,7 @@ MAX_REASON_CHARS = 2_000
 MAX_ARTIFACT_NAME_CHARS = 255
 MAX_MEDIA_TYPE_CHARS = 127
 MAX_RESULT_CODE_CHARS = 96
+MAX_PROVIDER_REQUEST_ID_CHARS = 256
 MAX_PREVIEW_DIGESTS = 32
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_RUNTIME_SECONDS = 30 * 60
@@ -201,6 +202,9 @@ class ToolResult:
     verifier_id: str | None = None
     postcondition_met: bool | None = None
     evidence_digest: str | None = None
+    provider_response_digest: str | None = None
+    provider_response_bytes: int | None = None
+    provider_request_id: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_id(self.result_id, label="Tool result ID")
@@ -226,19 +230,50 @@ class ToolResult:
                 label="Tool result error code",
             )
 
+        if self.provider_response_digest is None:
+            if (
+                self.provider_response_bytes is not None
+                or self.provider_request_id is not None
+            ):
+                raise ValueError("Provider evidence must be complete")
+        else:
+            if self.status is not ToolResultStatus.SUCCEEDED:
+                raise ValueError(
+                    "Only successful tool results may have provider evidence"
+                )
+            _sha256(
+                self.provider_response_digest,
+                label="Provider response digest",
+            )
+            if (
+                type(self.provider_response_bytes) is not int
+                or not 0
+                <= self.provider_response_bytes
+                <= MAX_ARTIFACT_BYTES
+            ):
+                raise ValueError("Provider response size is invalid")
+            if self.provider_request_id is not None:
+                _bounded_text(
+                    self.provider_request_id,
+                    maximum=MAX_PROVIDER_REQUEST_ID_CHARS,
+                    label="Provider request ID",
+                    allow_newlines=False,
+                )
+
         verifier_fields = (
             self.verifier_id,
             self.postcondition_met,
             self.evidence_digest,
         )
-        if all(value is None for value in verifier_fields):
-            return
-        if any(value is None for value in verifier_fields):
+        if any(value is not None for value in verifier_fields) and any(
+            value is None for value in verifier_fields
+        ):
             raise ValueError("Verifier evidence must be complete")
-        _bounded_id(self.verifier_id, label="Result verifier ID")
-        if type(self.postcondition_met) is not bool:
-            raise TypeError("Verifier postcondition must be explicit")
-        _sha256(self.evidence_digest, label="Verifier evidence digest")
+        if all(value is not None for value in verifier_fields):
+            _bounded_id(self.verifier_id, label="Result verifier ID")
+            if type(self.postcondition_met) is not bool:
+                raise TypeError("Verifier postcondition must be explicit")
+            _sha256(self.evidence_digest, label="Verifier evidence digest")
 
     @property
     def is_successful_verification(self) -> bool:

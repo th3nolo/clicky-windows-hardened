@@ -38,7 +38,9 @@ TOOL_CAPABILITIES: Mapping[
 )
 
 
-INITIAL_TASK_BROKER_TOOLS = frozenset(TOOL_CAPABILITIES)
+INITIAL_TASK_BROKER_TOOLS = frozenset(
+    {*TOOL_CAPABILITIES, DeclarativeTool.CONNECTOR_READ}
+)
 
 
 __all__ = [

@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from capability_registry import (
     AccountAuthorization,
@@ -32,6 +32,7 @@ _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _OPERATION_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+ConnectorOutput = TypeVar("ConnectorOutput")
 
 
 class ConnectorProviderId(str, Enum):
@@ -389,6 +390,20 @@ class ConnectorCallResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectorExecution(Generic[ConnectorOutput]):
+    """Provider evidence plus one provider-specific, already-validated output."""
+
+    result: ConnectorCallResult
+    output: ConnectorOutput
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, ConnectorCallResult):
+            raise TypeError("Connector execution requires call evidence")
+        if self.output is None:
+            raise TypeError("Connector execution requires typed output")
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectorRevocationRequest:
     authorization_id: str
     provider: ConnectorProviderId
@@ -445,7 +460,7 @@ class ConnectorAdapter(Protocol):
         call: ConnectorCall,
         request: ConnectorOperationRequest,
         access_token: SecretValue,
-    ) -> ConnectorCallResult: ...
+    ) -> ConnectorExecution[object]: ...
 
     async def revoke(
         self,
@@ -593,6 +608,7 @@ __all__ = [
     "ConnectorCallResult",
     "ConnectorDisconnectedError",
     "ConnectorError",
+    "ConnectorExecution",
     "ConnectorInvalidGrantError",
     "ConnectorOperationRequest",
     "ConnectorProviderId",

@@ -54,6 +54,7 @@ from connectors.oauth import (
 )
 from connectors.token_store import (
     AccessTokenCache,
+    AccessTokenLease,
     AccessTokenMetadata,
     ConnectorTokenNotFoundError,
     ConnectorTokenStorageError,
@@ -210,6 +211,12 @@ class AccountOAuthBroker(Protocol):
     def authorize(
         self,
         request: AccountConnectRequest,
+    ) -> OAuthTokenSet: ...
+
+    def refresh(
+        self,
+        account: ConnectedAccount,
+        refresh_token: SecretValue,
     ) -> OAuthTokenSet: ...
 
     def revoke(
@@ -371,6 +378,24 @@ class DesktopOAuthBroker:
             refresh_token,
         )
 
+    def refresh(
+        self,
+        account: ConnectedAccount,
+        refresh_token: SecretValue,
+    ) -> OAuthTokenSet:
+        if not isinstance(account, ConnectedAccount):
+            raise TypeError("Connected-account refresh account is invalid")
+        registration = self._require_registration(account.provider)
+        if not callable(getattr(self._token_client, "refresh", None)):
+            raise ConnectorAuthorizationError(
+                "OAuth token refresh is unavailable"
+            )
+        return self._token_client.refresh(
+            registration,
+            account.oauth_scopes,
+            refresh_token,
+        )
+
     def _require_registration(
         self,
         provider: ConnectorProviderId,
@@ -419,7 +444,12 @@ class ConnectedAccountService:
         )
         if not all(
             callable(getattr(self._oauth, name, None))
-            for name in ("availability", "describe", "authorize", "revoke")
+            for name in (
+                "availability",
+                "describe",
+                "authorize",
+                "revoke",
+            )
         ):
             raise TypeError("Connected-account OAuth broker is invalid")
         if not callable(_clock) or not callable(_id_factory):
@@ -433,6 +463,75 @@ class ConnectedAccountService:
             metadata.account
             for metadata in self._token_store.list_metadata()
         )
+
+    def get_account(self, authorization_id: str) -> ConnectedAccount:
+        """Return non-secret account authority for one opaque selection."""
+
+        metadata = self._token_store.get_metadata(authorization_id)
+        if metadata is None:
+            raise ConnectorTokenNotFoundError(
+                "Connected account was not found"
+            )
+        return metadata.account
+
+    def lease_access_token(
+        self,
+        authorization_id: str,
+        capability: CapabilityId,
+    ) -> AccessTokenLease:
+        """Lease a scoped token, refreshing behind the broker when required."""
+
+        if not isinstance(capability, CapabilityId):
+            raise TypeError("Connector access capability is invalid")
+        with self._lock:
+            account = self.get_account(authorization_id)
+            if not account.allows(capability):
+                raise ConnectorAuthorizationError(
+                    "Connected account lacks the requested capability"
+                )
+            required_scopes = frozenset({require_oauth_scope(capability)})
+            try:
+                return self._access_tokens.lease(
+                    authorization_id,
+                    required_scopes=required_scopes,
+                )
+            except (
+                ConnectorTokenExpiredError,
+                ConnectorTokenNotFoundError,
+            ):
+                pass
+
+            with self._token_store.lease(authorization_id) as refresh_lease:
+                if not callable(getattr(self._oauth, "refresh", None)):
+                    raise ConnectorAuthorizationError(
+                        "OAuth token refresh is unavailable"
+                    )
+                tokens = self._oauth.refresh(account, refresh_lease.token)
+            if not isinstance(tokens, OAuthTokenSet):
+                raise TypeError("OAuth broker returned an invalid token set")
+            try:
+                if tokens.oauth_scopes != account.oauth_scopes:
+                    raise ConnectorAuthorizationError(
+                        "Refreshed OAuth token scopes do not match the account"
+                    )
+                access_metadata = AccessTokenMetadata(
+                    authorization_id=authorization_id,
+                    oauth_scopes=tokens.oauth_scopes,
+                    issued_at=tokens.issued_at,
+                    expires_at=tokens.access_expires_at,
+                )
+                if tokens.refresh_token is not None:
+                    self._token_store.put(account, tokens.refresh_token)
+                self._access_tokens.put(
+                    access_metadata,
+                    tokens.access_token,
+                )
+            finally:
+                tokens.close()
+            return self._access_tokens.lease(
+                authorization_id,
+                required_scopes=required_scopes,
+            )
 
     def availability(
         self,

@@ -438,6 +438,48 @@ class TaskModelTests(unittest.TestCase):
         self.assertEqual(partial.status, ToolResultStatus.PARTIAL)
         self.assertFalse(partial.is_successful_verification)
 
+    def test_tool_result_provider_evidence_is_bounded_and_all_or_nothing(self):
+        with self.assertRaisesRegex(ValueError, "must be complete"):
+            ToolResult(
+                result_id="result-provider",
+                call_id="call-provider",
+                run_id="task-run-1",
+                step_id="calendar",
+                status=ToolResultStatus.SUCCEEDED,
+                output_digest=DIGEST_A,
+                output_bytes=80,
+                provider_request_id="provider-request-1",
+            )
+        with self.assertRaisesRegex(ValueError, "successful"):
+            ToolResult(
+                result_id="result-provider",
+                call_id="call-provider",
+                run_id="task-run-1",
+                step_id="calendar",
+                status=ToolResultStatus.FAILED,
+                output_digest=DIGEST_A,
+                output_bytes=0,
+                error_code="provider_failed",
+                provider_response_digest=DIGEST_B,
+                provider_response_bytes=80,
+            )
+
+        result = ToolResult(
+            result_id="result-provider",
+            call_id="call-provider",
+            run_id="task-run-1",
+            step_id="calendar",
+            status=ToolResultStatus.SUCCEEDED,
+            output_digest=DIGEST_A,
+            output_bytes=80,
+            provider_response_digest=DIGEST_B,
+            provider_response_bytes=120,
+            provider_request_id="provider-request-1",
+        )
+        self.assertEqual(result.provider_response_digest, DIGEST_B)
+        self.assertEqual(result.provider_response_bytes, 120)
+        self.assertEqual(result.provider_request_id, "provider-request-1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from capability_registry import CapabilityId, require_capability
+from capability_registry import (
+    CapabilityId,
+    ConnectorId,
+    FeatureCapability,
+    require_capability,
+)
 from declarative_tools import (
     INITIAL_TASK_BROKER_TOOLS,
     TOOL_CAPABILITIES,
@@ -61,6 +66,9 @@ MAX_FETCH_CHARS = 5_500
 MAX_VERIFIER_SUBSTRINGS = 16
 MAX_VERIFIER_SUBSTRING_CHARS = 1_024
 MAX_DECLARED_STEPS = 32
+MAX_SELECTED_CALENDARS = 50
+MAX_CALENDAR_ID_CHARS = 1_024
+MAX_CONNECTOR_OUTPUT_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
@@ -113,6 +121,7 @@ class DeclaredToolStep:
     capability: CapabilityId
     output_id: str
     depends_on: tuple[str, ...] = ()
+    connector: ConnectorId | None = None
     approval_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -146,8 +155,28 @@ class DeclaredToolStep:
             raise ValueError("Declared step tool is not in the initial broker")
         if not isinstance(self.capability, CapabilityId):
             raise TypeError("Declared step capability is invalid")
-        if TOOL_CAPABILITIES[self.tool] is not self.capability:
-            raise ValueError("Declared step capability does not match its tool")
+        definition = require_capability(self.capability)
+        expected_capability = TOOL_CAPABILITIES.get(self.tool)
+        if expected_capability is not None:
+            if (
+                expected_capability is not self.capability
+                or self.connector is not None
+            ):
+                raise ValueError(
+                    "Declared step capability does not match its tool"
+                )
+        elif self.tool is DeclarativeTool.CONNECTOR_READ:
+            if (
+                not isinstance(self.connector, ConnectorId)
+                or definition.connector is not self.connector
+                or definition.feature is not FeatureCapability.CONNECTOR_READ
+                or self.capability is not CapabilityId.CALENDAR_EVENT_READ
+            ):
+                raise ValueError(
+                    "Declared connector read operation is unavailable"
+                )
+        else:
+            raise ValueError("Declared connector tool is unavailable")
         if not isinstance(self.depends_on, tuple):
             raise TypeError("Declared step dependencies must be a tuple")
         for dependency in self.depends_on:
@@ -159,7 +188,6 @@ class DeclaredToolStep:
             )
         if len(self.depends_on) != len(set(self.depends_on)):
             raise ValueError("Declared step dependencies must be unique")
-        definition = require_capability(self.capability)
         if self.approval_id is not None:
             _bounded_token(
                 self.approval_id,
@@ -238,6 +266,64 @@ class WebFetchArguments:
             1,
             MAX_FETCH_CHARS,
             "Web fetch character count",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarAvailabilityArguments:
+    """One selected-account, selected-calendar free/busy request."""
+
+    authorization_id: str
+    selected_calendar_ids: tuple[str, ...] = field(repr=False)
+    time_min: str
+    time_max: str
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Calendar account authorization ID",
+        )
+        if (
+            not isinstance(self.selected_calendar_ids, tuple)
+            or not self.selected_calendar_ids
+            or len(self.selected_calendar_ids) > MAX_SELECTED_CALENDARS
+        ):
+            raise TypeError(
+                "Calendar availability requires selected calendar IDs"
+            )
+        for calendar_id in self.selected_calendar_ids:
+            _bounded_text(
+                calendar_id,
+                MAX_CALENDAR_ID_CHARS,
+                "Selected calendar ID",
+                allow_newlines=False,
+            )
+            if calendar_id.strip() != calendar_id:
+                raise ValueError("Selected calendar ID is invalid")
+        if len(set(self.selected_calendar_ids)) != len(
+            self.selected_calendar_ids
+        ):
+            raise ValueError("Selected calendar IDs must be unique")
+        _bounded_text(
+            self.time_min,
+            64,
+            "Calendar availability start",
+            allow_newlines=False,
+        )
+        _bounded_text(
+            self.time_max,
+            64,
+            "Calendar availability end",
+            allow_newlines=False,
+        )
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Calendar response limit",
         )
 
 
@@ -442,11 +528,47 @@ BrokerArguments = (
     ModelGenerateArguments
     | WebSearchArguments
     | WebFetchArguments
+    | CalendarAvailabilityArguments
     | ResearchCsvRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
     | VerifyOutputArguments
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorReadOutput:
+    """Bounded connector output plus content-free provider evidence."""
+
+    content: bytes = field(repr=False)
+    provider_response_digest: str
+    provider_response_bytes: int
+    provider_request_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.content, bytes)
+            or not 1 <= len(self.content) <= MAX_CONNECTOR_OUTPUT_BYTES
+        ):
+            raise ValueError("Connector read output is invalid")
+        if (
+            not isinstance(self.provider_response_digest, str)
+            or _SHA256.fullmatch(self.provider_response_digest) is None
+        ):
+            raise ValueError("Connector provider digest is invalid")
+        _bounded_integer(
+            self.provider_response_bytes,
+            0,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Connector provider response size",
+        )
+        if self.provider_request_id is not None:
+            _bounded_text(
+                self.provider_request_id,
+                256,
+                "Connector provider request ID",
+                allow_newlines=False,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +580,9 @@ class BrokerExecution:
     pending_artifact: PendingArtifact | None = None
     artifact: Artifact | None = None
     content: bytes | None = field(default=None, repr=False)
+    provider_response_digest: str | None = None
+    provider_response_bytes: int | None = None
+    provider_request_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.result, ToolResult):
@@ -476,6 +601,30 @@ class BrokerExecution:
             raise TypeError("Broker artifact output is invalid")
         if self.content is not None and not isinstance(self.content, bytes):
             raise TypeError("Broker content output is invalid")
+        provider_fields = (
+            self.provider_response_digest,
+            self.provider_response_bytes,
+            self.provider_request_id,
+        )
+        if self.provider_response_digest is None:
+            if any(value is not None for value in provider_fields[1:]):
+                raise ValueError("Broker provider evidence is incomplete")
+        else:
+            if _SHA256.fullmatch(self.provider_response_digest) is None:
+                raise ValueError("Broker provider digest is invalid")
+            _bounded_integer(
+                self.provider_response_bytes,
+                0,
+                MAX_CONNECTOR_OUTPUT_BYTES,
+                "Broker provider response size",
+            )
+            if self.provider_request_id is not None:
+                _bounded_text(
+                    self.provider_request_id,
+                    256,
+                    "Broker provider request ID",
+                    allow_newlines=False,
+                )
 
 
 ModelStreamAdapter = Callable[
@@ -484,6 +633,10 @@ ModelStreamAdapter = Callable[
 ]
 WebSearchAdapter = Callable[[str, int], Awaitable[str]]
 WebFetchAdapter = Callable[[str, int], Awaitable[str]]
+ConnectorReadAdapter = Callable[
+    [ToolCall, CalendarAvailabilityArguments],
+    Awaitable[ConnectorReadOutput],
+]
 
 
 class TaskToolBroker:
@@ -498,6 +651,7 @@ class TaskToolBroker:
         model_stream: ModelStreamAdapter | None = None,
         web_search: WebSearchAdapter | None = None,
         web_fetch: WebFetchAdapter | None = None,
+        connector_read: ConnectorReadAdapter | None = None,
         artifact_root: Path | None = None,
     ) -> None:
         if not isinstance(run, TaskRun):
@@ -577,6 +731,9 @@ class TaskToolBroker:
             self._web_fetch = self._research_tools.fetch
         else:
             self._web_fetch = web_fetch
+        if connector_read is not None and not callable(connector_read):
+            raise TypeError("Task connector read adapter is invalid")
+        self._connector_read = connector_read
         self._artifact_manager = ArtifactAdoptionManager(
             run,
             workspace,
@@ -659,6 +816,7 @@ class TaskToolBroker:
         if step.tool in {
             DeclarativeTool.WEB_SEARCH,
             DeclarativeTool.WEB_FETCH,
+            DeclarativeTool.CONNECTOR_READ,
         }:
             self._network_requests += 1
         try:
@@ -668,16 +826,24 @@ class TaskToolBroker:
                 arguments,
             )
         except TaskToolBrokerOperationError as exc:
-            return BrokerExecution(
+            execution = BrokerExecution(
                 result=_failed_result(call, exc.error_code),
             )
         except TaskToolBrokerLimitError:
-            return BrokerExecution(
+            execution = BrokerExecution(
                 result=_failed_result(call, "broker_limit_exceeded"),
             )
         except Exception:
-            return BrokerExecution(
+            execution = BrokerExecution(
                 result=_failed_result(call, "broker_operation_failed"),
+            )
+        if self._run.state is not TaskState.RUNNING:
+            return BrokerExecution(
+                result=_terminal_result(
+                    call,
+                    self._run.state,
+                    self._run.result_code or "task_cancelled",
+                ),
             )
         if execution.result.status is ToolResultStatus.SUCCEEDED:
             self._completed_steps.add(step.step_id)
@@ -752,7 +918,11 @@ class TaskToolBroker:
             raise TaskToolBrokerLimitError("Task tool-call limit reached")
         if (
             step.tool
-            in {DeclarativeTool.WEB_SEARCH, DeclarativeTool.WEB_FETCH}
+            in {
+                DeclarativeTool.WEB_SEARCH,
+                DeclarativeTool.WEB_FETCH,
+                DeclarativeTool.CONNECTOR_READ,
+            }
             and self._network_requests
             >= self._run.spec.limits.max_network_requests
         ):
@@ -774,6 +944,8 @@ class TaskToolBroker:
             self._require_output_capacity(len(arguments.content))
         elif isinstance(arguments, WebFetchArguments):
             self._require_output_capacity(arguments.max_chars * 4)
+        elif isinstance(arguments, CalendarAvailabilityArguments):
+            self._require_output_capacity(arguments.maximum_response_bytes)
 
     async def _execute_validated(
         self,
@@ -796,6 +968,8 @@ class TaskToolBroker:
                 arguments.max_chars,
             )
             return self._text_execution(call, _require_text_output(text))
+        if type(arguments) is CalendarAvailabilityArguments:
+            return await self._read_connector(call, arguments)
         if type(arguments) is ResearchCsvRenderArguments:
             return self._render_research_csv(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
@@ -806,6 +980,49 @@ class TaskToolBroker:
             return self._verify_output(call, arguments)
         raise TaskToolBrokerValidationError(
             f"Unsupported declared broker tool: {step.tool.value}"
+        )
+
+    async def _read_connector(
+        self,
+        call: ToolCall,
+        arguments: CalendarAvailabilityArguments,
+    ) -> BrokerExecution:
+        if self._connector_read is None:
+            raise TaskToolBrokerOperationError("connector_read_unavailable")
+        output = await self._connector_read(call, arguments)
+        if not isinstance(output, ConnectorReadOutput):
+            raise TaskToolBrokerOperationError("connector_output_invalid")
+        if (
+            len(output.content) > arguments.maximum_response_bytes
+            or output.provider_response_bytes
+            > arguments.maximum_response_bytes
+        ):
+            raise TaskToolBrokerLimitError(
+                "Connector response exceeds its declared limit"
+            )
+        try:
+            text = output.content.decode("utf-8")
+            parsed = json.loads(text)
+            _validate_json_value(parsed)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_output_invalid"
+            ) from exc
+        self._reserve_output(len(output.content))
+        return BrokerExecution(
+            result=_succeeded_result(
+                call,
+                output.content,
+                provider_response_digest=(
+                    output.provider_response_digest
+                ),
+                provider_response_bytes=output.provider_response_bytes,
+                provider_request_id=output.provider_request_id,
+            ),
+            text=text,
+            provider_response_digest=output.provider_response_digest,
+            provider_response_bytes=output.provider_response_bytes,
+            provider_request_id=output.provider_request_id,
         )
 
     async def _collect_model_text(
@@ -1124,6 +1341,16 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "max_chars": arguments.max_chars,
             "url": arguments.url,
         }
+    if type(arguments) is CalendarAvailabilityArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "selected_calendar_ids": list(
+                arguments.selected_calendar_ids
+            ),
+            "time_max": arguments.time_max,
+            "time_min": arguments.time_min,
+        }
     if type(arguments) is ResearchCsvRenderArguments:
         return {
             "field_ids": list(arguments.field_ids),
@@ -1179,6 +1406,7 @@ _ARGUMENT_TYPES = {
     DeclarativeTool.MODEL_GENERATE: ModelGenerateArguments,
     DeclarativeTool.WEB_SEARCH: WebSearchArguments,
     DeclarativeTool.WEB_FETCH: WebFetchArguments,
+    DeclarativeTool.CONNECTOR_READ: CalendarAvailabilityArguments,
     DeclarativeTool.RESEARCH_CSV_RENDER: ResearchCsvRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
@@ -1259,7 +1487,14 @@ def _require_text_output(value: object) -> str:
     return value
 
 
-def _succeeded_result(call: ToolCall, output: bytes) -> ToolResult:
+def _succeeded_result(
+    call: ToolCall,
+    output: bytes,
+    *,
+    provider_response_digest: str | None = None,
+    provider_response_bytes: int | None = None,
+    provider_request_id: str | None = None,
+) -> ToolResult:
     return ToolResult(
         result_id=_result_id(call),
         call_id=call.call_id,
@@ -1268,6 +1503,9 @@ def _succeeded_result(call: ToolCall, output: bytes) -> ToolResult:
         status=ToolResultStatus.SUCCEEDED,
         output_digest=hashlib.sha256(output).hexdigest(),
         output_bytes=len(output),
+        provider_response_digest=provider_response_digest,
+        provider_response_bytes=provider_response_bytes,
+        provider_request_id=provider_request_id,
     )
 
 
@@ -1278,6 +1516,28 @@ def _failed_result(call: ToolCall, error_code: str) -> ToolResult:
         run_id=call.run_id,
         step_id=call.step_id,
         status=ToolResultStatus.FAILED,
+        output_digest=_EMPTY_DIGEST,
+        output_bytes=0,
+        error_code=error_code,
+    )
+
+
+def _terminal_result(
+    call: ToolCall,
+    state: TaskState,
+    error_code: str,
+) -> ToolResult:
+    status = (
+        ToolResultStatus.CANCELLED
+        if state is TaskState.CANCELLED
+        else ToolResultStatus.FAILED
+    )
+    return ToolResult(
+        result_id=_result_id(call),
+        call_id=call.call_id,
+        run_id=call.run_id,
+        step_id=call.step_id,
+        status=status,
         output_digest=_EMPTY_DIGEST,
         output_bytes=0,
         error_code=error_code,
@@ -1358,6 +1618,9 @@ __all__ = [
     "ArtifactReadArguments",
     "ArtifactWriteArguments",
     "BrokerExecution",
+    "CalendarAvailabilityArguments",
+    "ConnectorReadAdapter",
+    "ConnectorReadOutput",
     "DeclaredToolStep",
     "ModelGenerateArguments",
     "ResearchCsvRenderArguments",

@@ -371,6 +371,38 @@ class TaskCenterTests(unittest.TestCase):
         self.assertNotIn("secret_or_content", dict(activity.metadata))
         self.assertNotIn("do not display", repr(activity))
 
+    def test_connector_result_keeps_only_content_free_provider_evidence(self):
+        event = TaskEvent(
+            sequence=1,
+            run_id="task-center-1",
+            created_at=10.0,
+            event_type="tool_result",
+            state=TaskState.RUNNING,
+            metadata=(
+                ("call_id", "call-calendar"),
+                ("output_digest", DIGEST),
+                ("provider_request_id", "provider-request-1"),
+                ("provider_response_bytes", 321),
+                ("provider_response_digest", OUTPUT_DIGEST),
+                ("calendar_body", "private data"),
+            ),
+        )
+
+        activity = task_activities((event,))[0]
+        metadata = dict(activity.metadata)
+
+        self.assertEqual(
+            metadata["provider_request_id"],
+            "provider-request-1",
+        )
+        self.assertEqual(metadata["provider_response_bytes"], 321)
+        self.assertEqual(
+            metadata["provider_response_digest"],
+            OUTPUT_DIGEST,
+        )
+        self.assertNotIn("calendar_body", metadata)
+        self.assertNotIn("private data", repr(activity))
+
 
 if __name__ == "__main__":
     unittest.main()

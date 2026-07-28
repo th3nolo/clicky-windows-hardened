@@ -1099,12 +1099,9 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.RESEARCH_CSV_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,
+                DeclarativeTool.CONNECTOR_READ,
                 DeclarativeTool.VERIFY_OUTPUT,
             },
-        )
-        self.assertNotIn(
-            DeclarativeTool.CONNECTOR_READ,
-            INITIAL_TASK_BROKER_TOOLS,
         )
         self.assertNotIn(
             DeclarativeTool.CONNECTOR_WRITE,
