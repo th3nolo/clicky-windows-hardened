@@ -75,6 +75,76 @@ web_search, skills, github, journal = load_security_modules()
 
 
 class WebSearchSecurityTests(unittest.TestCase):
+    def test_strict_search_never_resends_to_fallback_provider(self):
+        async def fail_tavily(_query, _max_results):
+            raise RuntimeError("selected provider unavailable")
+
+        async def record_free(_query, _max_results):
+            self.fail("strict search resent the query to another provider")
+
+        with mock.patch.object(
+            web_search.cfg,
+            "search_provider",
+            return_value="tavily",
+        ), mock.patch.object(
+            web_search,
+            "_tavily",
+            side_effect=fail_tavily,
+        ), mock.patch.object(
+            web_search,
+            "_free_deep_search",
+            side_effect=record_free,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "selected provider",
+            ):
+                asyncio.run(
+                    web_search.search(
+                        "private task query",
+                        allow_provider_fallback=False,
+                    )
+                )
+
+    def test_public_fetch_reuses_bounded_peer_validated_text_path(self):
+        client = FakeClient(
+            [
+                FakeResponse(
+                    200,
+                    {"content-type": "text/html; charset=utf-8"},
+                    [b"<main>bounded public evidence</main>"],
+                )
+            ]
+        )
+
+        class ClientContext:
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *_args):
+                return False
+
+        async def allow(_url):
+            return None
+
+        with mock.patch.object(
+            web_search.httpx,
+            "AsyncClient",
+            return_value=ClientContext(),
+        ), mock.patch.object(
+            web_search,
+            "_validate_public_https_url",
+            side_effect=allow,
+        ):
+            fetched = asyncio.run(
+                web_search.fetch(
+                    "https://example.test/evidence",
+                    max_chars=16,
+                )
+            )
+        self.assertEqual(fetched, "bounded public …")
+        self.assertEqual(client.calls, 1)
+
     def test_url_syntax_rejects_non_https_credentials_and_local_ips(self):
         rejected = [
             "http://example.com/",

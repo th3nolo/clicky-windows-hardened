@@ -32,6 +32,7 @@ from capability_registry import (
     FeatureCapability,
     require_capability,
 )
+from declarative_tools import DeclarativeTool, TOOL_CAPABILITIES
 
 
 DECLARATIVE_SKILL_SCHEMA_VERSION = 1
@@ -116,19 +117,6 @@ class OutputValueType(str, Enum):
     DATE = "date"
 
 
-class DeclarativeTool(str, Enum):
-    """Closed broker vocabulary; deliberately has no Python or shell tool."""
-
-    MODEL_GENERATE = "model.generate"
-    WEB_SEARCH = "web.search"
-    WEB_FETCH = "web.fetch"
-    ARTIFACT_READ = "artifact.read"
-    ARTIFACT_WRITE = "artifact.write"
-    CONNECTOR_READ = "connector.read"
-    CONNECTOR_WRITE = "connector.write"
-    VERIFY_OUTPUT = "verify.output"
-
-
 class BindingSource(str, Enum):
     INPUT = "input"
     STEP_OUTPUT = "step_output"
@@ -150,16 +138,7 @@ class OAuthScopeId(str, Enum):
     SLIDES_PRESENTATIONS_WRITE = "google_slides.presentations.write"
 
 
-_TOOL_CAPABILITIES = MappingProxyType(
-    {
-        DeclarativeTool.MODEL_GENERATE: CapabilityId.TASK_AGENT_RUN,
-        DeclarativeTool.WEB_SEARCH: CapabilityId.WEB_SEARCH_BOUNDED,
-        DeclarativeTool.WEB_FETCH: CapabilityId.WEB_FETCH_BOUNDED,
-        DeclarativeTool.ARTIFACT_READ: CapabilityId.LOCAL_ARTIFACT_READ,
-        DeclarativeTool.ARTIFACT_WRITE: CapabilityId.LOCAL_ARTIFACT_WRITE,
-        DeclarativeTool.VERIFY_OUTPUT: CapabilityId.TASK_AGENT_RUN,
-    }
-)
+_TOOL_CAPABILITIES = TOOL_CAPABILITIES
 _CONNECTOR_TOOL_FEATURES = MappingProxyType(
     {
         DeclarativeTool.CONNECTOR_READ: FeatureCapability.CONNECTOR_READ,
