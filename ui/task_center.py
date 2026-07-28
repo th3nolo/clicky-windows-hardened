@@ -29,6 +29,7 @@ from tasks.store import (
     TaskStoreError,
 )
 from tasks.task_center import (
+    DesktopActionPresentation,
     TaskActivity,
     TaskActivityKind,
     TaskCenterActionRegistry,
@@ -135,6 +136,12 @@ class TaskCenterPanel(QWidget):
             self._limits,
         ):
             detail_layout.addWidget(label)
+
+        detail_layout.addWidget(QLabel("Reviewed desktop action"))
+        self._desktop_action = QPlainTextEdit()
+        self._desktop_action.setReadOnly(True)
+        self._desktop_action.setMaximumHeight(190)
+        detail_layout.addWidget(self._desktop_action)
 
         detail_layout.addWidget(QLabel("Activity and evidence"))
         self._activity = QListWidget()
@@ -361,6 +368,9 @@ class TaskCenterPanel(QWidget):
             f"{limits.max_network_requests} network requests · "
             f"{limits.max_output_bytes} output bytes"
         )
+        self._desktop_action.setPlainText(
+            _desktop_action_text(snapshot.desktop_action)
+        )
 
         self._activity.clear()
         for activity in snapshot.activities:
@@ -459,6 +469,7 @@ class TaskCenterPanel(QWidget):
         ):
             widget.clear()
         self._activity_details.clear()
+        self._desktop_action.clear()
         self._approval_preview.clear()
         self._cancel_button.setEnabled(False)
         self._approve_button.setEnabled(False)
@@ -488,6 +499,38 @@ def _activity_text(activity: TaskActivity) -> str:
         f"{labels[activity.kind]} · {_date_time(activity.created_at)}\n"
         f"{activity.title}"
     )
+
+
+def _desktop_action_text(
+    action: DesktopActionPresentation | None,
+) -> str:
+    if action is None:
+        return "No reviewed desktop action is attached to this task."
+    lines = [
+        f"Target: {action.target_label} ({action.target_reference})",
+        f"Action: {action.action_label}",
+        f"Capability: {action.capability.value}",
+        f"Approval: {action.approval_id}",
+        f"Status: {action.status.value}",
+        f"Target digest: {action.target_digest}",
+        f"Action digest: {action.action_digest}",
+    ]
+    if action.result_code is not None:
+        lines.append(f"Result: {action.result_code}")
+    if action.observed_property is not None:
+        lines.extend(
+            (
+                f"Observed property: {action.observed_property}",
+                f"Before: {action.observed_before}",
+                f"After: {action.observed_after}",
+            )
+        )
+    if action.verifier_evidence_digest is not None:
+        lines.append(
+            "Verifier evidence: "
+            + action.verifier_evidence_digest
+        )
+    return "\n".join(lines)
 
 
 def _terminal_result(task: TaskRecord) -> str:

@@ -6,16 +6,20 @@ import ast
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QLabel
 
+from capability_registry import CapabilityId
 from tasks.models import ToolCall
 from tasks.store import TaskStore
 from tasks.task_center import (
     ActiveTaskHandle,
+    DesktopActionPresentation,
+    TaskActionStatus,
     TaskCenterActionRegistry,
     TaskDisplayContent,
 )
@@ -250,6 +254,61 @@ class TaskCenterUiTests(unittest.TestCase):
         self.assertIn("disabled", panel._availability.text())
         self.assertFalse(panel._cancel_button.isEnabled())
         self.assertFalse(panel._approve_button.isEnabled())
+
+    def test_reviewed_desktop_action_shows_target_result_and_verifier(self):
+        run = make_run()
+        self.store.create_task(run)
+        run.start()
+        self.store.sync_run(run)
+        self.registry.register(
+            ActiveTaskHandle(
+                content=TaskDisplayContent(
+                    run_id=run.run_id,
+                    goal=run.spec.goal,
+                    requested_result=run.spec.requested_result,
+                ),
+                cancel_callback=lambda: True,
+            )
+        )
+        pending = DesktopActionPresentation(
+            run_id=run.run_id,
+            call_id="call-desktop",
+            capability=CapabilityId.DESKTOP_UIA_ACTION,
+            action_label="invoke",
+            target_label="Synthetic editor — Save",
+            target_reference="a" * 64,
+            target_digest="b" * 64,
+            action_digest="c" * 64,
+            approval_id="approval-desktop",
+            status=TaskActionStatus.AWAITING_APPROVAL,
+        )
+        self.registry.update_desktop_action(pending)
+        self.registry.update_desktop_action(
+            replace(pending, status=TaskActionStatus.APPROVED)
+        )
+        self.registry.update_desktop_action(
+            replace(
+                pending,
+                status=TaskActionStatus.VERIFIED_SUCCEEDED,
+                result_code="uia_postcondition_verified",
+                observed_property="invoke.target_disabled",
+                observed_before="true",
+                observed_after="false",
+                verifier_evidence_digest="d" * 64,
+            ),
+            finish=True,
+        )
+
+        panel = self.create_panel()
+        visible = panel._desktop_action.toPlainText()
+
+        self.assertIn("Synthetic editor — Save", visible)
+        self.assertIn("Action: invoke", visible)
+        self.assertIn("desktop.uia.action", visible)
+        self.assertIn("approval-desktop", visible)
+        self.assertIn("uia_postcondition_verified", visible)
+        self.assertIn("invoke.target_disabled", visible)
+        self.assertIn("d" * 64, visible)
 
     def test_task_center_is_gated_and_has_no_provider_or_process_authority(self):
         tray_source = (ROOT / "ui" / "tray.py").read_text(

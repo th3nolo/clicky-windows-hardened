@@ -44,6 +44,10 @@ from automation.stop import (
     AutomationStopController,
     GlobalAutomationStopHotkey,
 )
+from automation.task_center import (
+    DesktopAutomationTaskController,
+    PreparedDesktopAction,
+)
 from automation.targeting import (
     DesktopObservation,
     DesktopTargetGuard,
@@ -60,6 +64,7 @@ __all__ = [
     "DesktopActionReceipt",
     "DesktopActionRequest",
     "DesktopActionStatus",
+    "DesktopAutomationTaskController",
     "DesktopBounds",
     "DesktopHighlightRequest",
     "DesktopObservation",
@@ -77,6 +82,7 @@ __all__ = [
     "AutomationStopController",
     "GlobalAutomationStopHotkey",
     "InvokePostcondition",
+    "PreparedDesktopAction",
     "SafeDesktopTargetPolicy",
     "ScrollAmount",
     "ToggleGoal",

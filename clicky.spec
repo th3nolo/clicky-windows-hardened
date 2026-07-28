@@ -37,6 +37,7 @@ hidden = [
     "automation.policy",
     "automation.review",
     "automation.stop",
+    "automation.task_center",
     "automation.targeting",
     "automation.uia_actions",
     "automation.uia_worker",
