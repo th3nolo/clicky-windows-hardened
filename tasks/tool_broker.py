@@ -38,12 +38,19 @@ from sheets_contracts import (
     validate_sheets_idempotency_key,
     validate_sheets_title,
 )
+from slides_contracts import (
+    MAX_SLIDES_PROVIDER_REQUESTS,
+    ValidatedSlideSpecification,
+    parse_validated_slide_specification,
+    validate_slides_idempotency_key,
+)
 from tasks.approvals import (
     ApprovalPayload,
     ApprovalPreview,
     build_approval_payload,
     gmail_draft_target,
     google_sheets_export_target,
+    google_slides_export_target,
     task_artifact_target,
 )
 from tasks.artifacts import (
@@ -217,6 +224,7 @@ class DeclaredToolStep:
                 not in {
                     CapabilityId.GMAIL_DRAFT_WRITE,
                     CapabilityId.SHEETS_VALUES_WRITE,
+                    CapabilityId.SLIDES_PRESENTATION_WRITE,
                 }
             ):
                 raise ValueError(
@@ -610,6 +618,68 @@ class ResolvedSheetsExportArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class SlidesExportArguments:
+    """One approved adopted JSON specification and create-once target."""
+
+    authorization_id: str
+    source_artifact_id: str
+    source_sha256: str
+    idempotency_key: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Google Slides account authorization ID",
+        )
+        _bounded_token(
+            self.source_artifact_id,
+            _IDENTIFIER,
+            128,
+            "Google Slides source artifact ID",
+        )
+        if (
+            not isinstance(self.source_sha256, str)
+            or _SHA256.fullmatch(self.source_sha256) is None
+        ):
+            raise ValueError(
+                "Google Slides source artifact digest is invalid"
+            )
+        validate_slides_idempotency_key(self.idempotency_key)
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Google Slides response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSlidesExportArguments:
+    """Broker-resolved slide content, never accepted as caller arguments."""
+
+    request: SlidesExportArguments
+    specification: ValidatedSlideSpecification = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, SlidesExportArguments):
+            raise TypeError("Resolved Google Slides request is invalid")
+        if (
+            not isinstance(
+                self.specification,
+                ValidatedSlideSpecification,
+            )
+            or self.specification.source_sha256
+            != self.request.source_sha256
+        ):
+            raise ValueError(
+                "Resolved Google Slides specification is invalid"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchCsvRenderArguments:
     records_json: str = field(repr=False)
     source_context: str = field(repr=False)
@@ -814,6 +884,7 @@ BrokerArguments = (
     | GmailSelectedThreadArguments
     | GmailDraftArguments
     | SheetsExportArguments
+    | SlidesExportArguments
     | NotionSelectedPageArguments
     | NotionDraftRenderArguments
     | ResearchCsvRenderArguments
@@ -935,7 +1006,9 @@ ConnectorReadAdapter = Callable[
 ConnectorWriteAdapter = Callable[
     [
         ToolCall,
-        GmailDraftArguments | ResolvedSheetsExportArguments,
+        GmailDraftArguments
+        | ResolvedSheetsExportArguments
+        | ResolvedSlidesExportArguments,
     ],
     Awaitable[ConnectorWriteOutput],
 ]
@@ -1060,6 +1133,7 @@ class TaskToolBroker:
             ArtifactWriteArguments
             | GmailDraftArguments
             | SheetsExportArguments
+            | SlidesExportArguments
         ),
         *,
         approval_id: str,
@@ -1110,6 +1184,24 @@ class TaskToolBroker:
                 )
                 media_type = "text/csv"
                 byte_count = resolved.table.source_bytes
+            elif isinstance(arguments, SlidesExportArguments):
+                resolved_slides = self._resolve_slides_export(arguments)
+                excerpt = resolved_slides.specification.preview_text(
+                    authorization_id=arguments.authorization_id,
+                    idempotency_key=arguments.idempotency_key,
+                )
+                preview_bytes = excerpt.encode("utf-8")
+                content_digest = arguments.source_sha256
+                target = google_slides_export_target(
+                    authorization_id=arguments.authorization_id,
+                    title=resolved_slides.specification.title,
+                    source_sha256=arguments.source_sha256,
+                    idempotency_key_sha256=hashlib.sha256(
+                        arguments.idempotency_key.encode("utf-8")
+                    ).hexdigest(),
+                )
+                media_type = "application/json"
+                byte_count = resolved_slides.specification.source_bytes
             else:
                 raise TaskToolBrokerValidationError(
                     "Connector write approval arguments are invalid"
@@ -1242,13 +1334,16 @@ class TaskToolBroker:
                 "Task broker arguments do not match the declared tool"
             )
         if (
-            isinstance(arguments, SheetsExportArguments)
+            isinstance(
+                arguments,
+                (SheetsExportArguments, SlidesExportArguments),
+            )
             and not self._run.grant.allows(
                 CapabilityId.LOCAL_ARTIFACT_READ
             )
         ):
             raise TaskToolBrokerValidationError(
-                "Google Sheets export lacks local artifact read authority"
+                "Connector export lacks local artifact read authority"
             )
         expected_arguments_digest = broker_arguments_digest(arguments)
         if call.arguments_digest != expected_arguments_digest:
@@ -1304,6 +1399,7 @@ class TaskToolBroker:
                 GmailDraftArguments,
                 NotionSelectedPageArguments,
                 SheetsExportArguments,
+                SlidesExportArguments,
             ),
         ):
             self._require_output_capacity(arguments.maximum_response_bytes)
@@ -1336,6 +1432,8 @@ class TaskToolBroker:
         if type(arguments) is GmailDraftArguments:
             return await self._write_connector(call, arguments)
         if type(arguments) is SheetsExportArguments:
+            return await self._write_connector(call, arguments)
+        if type(arguments) is SlidesExportArguments:
             return await self._write_connector(call, arguments)
         if type(arguments) is NotionSelectedPageArguments:
             return await self._read_connector(call, arguments)
@@ -1403,16 +1501,29 @@ class TaskToolBroker:
     async def _write_connector(
         self,
         call: ToolCall,
-        arguments: GmailDraftArguments | SheetsExportArguments,
+        arguments: (
+            GmailDraftArguments
+            | SheetsExportArguments
+            | SlidesExportArguments
+        ),
     ) -> BrokerExecution:
         if self._connector_write is None:
             raise TaskToolBrokerOperationError("connector_write_unavailable")
         resolved_arguments: (
-            GmailDraftArguments | ResolvedSheetsExportArguments
+            GmailDraftArguments
+            | ResolvedSheetsExportArguments
+            | ResolvedSlidesExportArguments
         )
         if isinstance(arguments, SheetsExportArguments):
             try:
                 resolved_arguments = self._resolve_sheets_export(arguments)
+            except TaskToolBrokerValidationError as exc:
+                raise TaskToolBrokerOperationError(
+                    "connector_write_source_changed"
+                ) from exc
+        elif isinstance(arguments, SlidesExportArguments):
+            try:
+                resolved_arguments = self._resolve_slides_export(arguments)
             except TaskToolBrokerValidationError as exc:
                 raise TaskToolBrokerOperationError(
                     "connector_write_source_changed"
@@ -1425,6 +1536,14 @@ class TaskToolBroker:
         evidence_limit = (
             MAX_SHEETS_PROVIDER_EVIDENCE_BYTES
             if isinstance(arguments, SheetsExportArguments)
+            else
+            (
+                MAX_SLIDES_PROVIDER_REQUESTS
+                * arguments.maximum_response_bytes
+                + MAX_SLIDES_PROVIDER_REQUESTS
+                - 1
+            )
+            if isinstance(arguments, SlidesExportArguments)
             else arguments.maximum_response_bytes * 2 + 1
         )
         if (
@@ -1492,6 +1611,43 @@ class TaskToolBroker:
         return ResolvedSheetsExportArguments(
             request=arguments,
             table=table,
+        )
+
+    def _resolve_slides_export(
+        self,
+        arguments: SlidesExportArguments,
+    ) -> ResolvedSlidesExportArguments:
+        try:
+            artifact, content = self._artifact_manager.read_adopted(
+                arguments.source_artifact_id
+            )
+        except ArtifactAdoptionError as exc:
+            raise TaskToolBrokerValidationError(
+                "Google Slides source artifact is unavailable"
+            ) from exc
+        if (
+            not artifact.adopted
+            or artifact.media_type != "application/json"
+            or artifact.sha256 != arguments.source_sha256
+            or artifact.byte_count != len(content)
+            or artifact.verification_result_id is None
+            or artifact.verification_evidence_digest is None
+        ):
+            raise TaskToolBrokerValidationError(
+                "Google Slides source is not the approved verified spec"
+            )
+        try:
+            specification = parse_validated_slide_specification(
+                content,
+                expected_sha256=arguments.source_sha256,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskToolBrokerValidationError(
+                "Google Slides source specification failed revalidation"
+            ) from exc
+        return ResolvedSlidesExportArguments(
+            request=arguments,
+            specification=specification,
         )
 
     async def _collect_model_text(
@@ -1863,6 +2019,16 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "source_sha256": arguments.source_sha256,
             "title": arguments.title,
         }
+    if type(arguments) is SlidesExportArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "idempotency_key_sha256": hashlib.sha256(
+                arguments.idempotency_key.encode("utf-8")
+            ).hexdigest(),
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "source_artifact_id": arguments.source_artifact_id,
+            "source_sha256": arguments.source_sha256,
+        }
     if type(arguments) is NotionSelectedPageArguments:
         return {
             "authorization_id": arguments.authorization_id,
@@ -1946,6 +2112,7 @@ _CONNECTOR_ARGUMENT_TYPES = {
     CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
     CapabilityId.NOTION_PAGE_READ: NotionSelectedPageArguments,
     CapabilityId.SHEETS_VALUES_WRITE: SheetsExportArguments,
+    CapabilityId.SLIDES_PRESENTATION_WRITE: SlidesExportArguments,
 }
 
 
@@ -1982,6 +2149,9 @@ def _network_request_cost(
         if isinstance(arguments, SheetsExportArguments):
             # Lookup, optional create, write, and exact metadata/value reads.
             return MAX_SHEETS_PROVIDER_REQUESTS
+        if isinstance(arguments, SlidesExportArguments):
+            # Lookup, optional create, batch, and exact Drive/Slides reads.
+            return MAX_SLIDES_PROVIDER_REQUESTS
         # Gmail draft creation performs one write plus one read-back verify.
         return 2
     return 0
@@ -2203,8 +2373,10 @@ __all__ = [
     "NotionDraftRenderArguments",
     "NotionSelectedPageArguments",
     "ResearchCsvRenderArguments",
+    "ResolvedSlidesExportArguments",
     "ResolvedSheetsExportArguments",
     "SheetsExportArguments",
+    "SlidesExportArguments",
     "TaskToolBroker",
     "TaskToolBrokerError",
     "TaskToolBrokerLimitError",

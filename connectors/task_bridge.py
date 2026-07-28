@@ -47,6 +47,14 @@ from connectors.google_sheets import (
     GoogleSheetsExportVerificationError,
     GoogleSheetsIdempotencyConflictError,
 )
+from connectors.google_slides import (
+    GoogleSlidesExportAdapter,
+    GoogleSlidesExportOutcomeUnknownError,
+    GoogleSlidesExportRequest,
+    GoogleSlidesExportResult,
+    GoogleSlidesExportVerificationError,
+    GoogleSlidesIdempotencyConflictError,
+)
 from connectors.token_store import ConnectorTokenNotFoundError
 from sheets_contracts import MAX_SHEETS_PROVIDER_RESPONSE_BYTES
 from tasks.models import TaskRun, TaskState, ToolCall
@@ -57,6 +65,7 @@ from tasks.tool_broker import (
     GmailDraftArguments,
     GmailSelectedThreadArguments,
     NotionSelectedPageArguments,
+    ResolvedSlidesExportArguments,
     ResolvedSheetsExportArguments,
     TaskToolBrokerOperationError,
     broker_arguments_digest,
@@ -72,6 +81,10 @@ NotionAdapterFactory = Callable[[ConnectedAccount], NotionSelectedPageAdapter]
 SheetsAdapterFactory = Callable[
     [ConnectedAccount],
     GoogleSheetsExportAdapter,
+]
+SlidesAdapterFactory = Callable[
+    [ConnectedAccount],
+    GoogleSlidesExportAdapter,
 ]
 
 
@@ -632,6 +645,119 @@ class GoogleSheetsConnectorWriteBroker:
         )
 
 
+class GoogleSlidesConnectorWriteBroker:
+    """Export one broker-revalidated JSON spec and require exact read-back."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: SlidesAdapterFactory = GoogleSlidesExportAdapter,
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: ResolvedSlidesExportArguments,
+    ) -> ConnectorWriteOutput:
+        if not isinstance(arguments, ResolvedSlidesExportArguments):
+            raise TaskToolBrokerOperationError(
+                "connector_write_not_supported"
+            )
+        broker_request = arguments.request
+        if (
+            not self._run.grant.allows(
+                CapabilityId.LOCAL_ARTIFACT_READ
+            )
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                broker_request,
+                tool_name="connector.write",
+                capability=CapabilityId.SLIDES_PRESENTATION_WRITE,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_write_not_supported"
+            )
+        try:
+            request = GoogleSlidesExportRequest(
+                specification=arguments.specification,
+                idempotency_key=broker_request.idempotency_key,
+            )
+            account = self._accounts.get_account(
+                broker_request.authorization_id
+            )
+            if account.connector is not ConnectorId.GOOGLE_SLIDES:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Google Slides account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=broker_request.authorization_id,
+                connector=ConnectorId.GOOGLE_SLIDES,
+                capability=CapabilityId.SLIDES_PRESENTATION_WRITE,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=(
+                    broker_request.maximum_response_bytes
+                ),
+                idempotency_key=request.idempotency_key,
+            )
+            lease = self._accounts.lease_access_token(
+                broker_request.authorization_id,
+                CapabilityId.SLIDES_PRESENTATION_WRITE,
+            )
+            try:
+                execution = await self._adapter_factory(account).execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except GoogleSlidesExportOutcomeUnknownError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_outcome_unknown"
+            ) from exc
+        except GoogleSlidesIdempotencyConflictError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_idempotency_conflict"
+            ) from exc
+        except GoogleSlidesExportVerificationError as exc:
+            raise TaskToolBrokerOperationError(
+                "connector_write_unverified"
+            ) from exc
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(
+                execution.output,
+                GoogleSlidesExportResult,
+            )
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorWriteOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
+
+
 def _validate_service(
     run: TaskRun,
     account_service,
@@ -725,5 +851,6 @@ __all__ = [
     "GmailConnectorReadBroker",
     "GmailConnectorWriteBroker",
     "GoogleSheetsConnectorWriteBroker",
+    "GoogleSlidesConnectorWriteBroker",
     "NotionConnectorReadBroker",
 ]

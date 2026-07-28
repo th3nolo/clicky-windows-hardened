@@ -41,6 +41,8 @@ jobs:
           tests.test_connector_gmail_task_bridge
           tests.test_connector_google_sheets
           tests.test_connector_google_sheets_task_bridge
+          tests.test_connector_google_slides
+          tests.test_connector_google_slides_task_bridge
           tests.test_connector_notion
           tests.test_connector_notion_task_bridge
           tests.test_connector_google_calendar

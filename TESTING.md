@@ -609,6 +609,53 @@ Drive/Sheets behavior, the interactive Task Center flow, or a real Windows
 package. Keep Sheets export build-unavailable in the baseline until those
 interactive checks pass.
 
+### Google Slides verified-presentation export
+
+Use a disposable Google account and a previously adopted synthetic JSON
+presentation specification. In a test build with Task Agent and connector
+writes explicitly enabled:
+
+1. Connect only `google_slides.presentation.write`. Confirm consent requests
+   the per-file `drive.file` scope, not full Drive access.
+2. Select the adopted JSON by opaque artifact ID. Confirm the broker reopens
+   the protected artifact, matches its recorded size and SHA-256, requires
+   adoption/verifier evidence, and independently reparses the strict schema:
+   version 1, one presentation title, and 1–10 title/body text slides.
+3. Confirm approval shows the selected account authorization, exact
+   presentation title, every slide title and complete body text, slide count,
+   source size, and source SHA-256. The raw idempotency key must not appear.
+4. Approve once. Confirm Drive lookup is limited to the app-private
+   `clickySlidesExportId` property, Google presentation MIME type, non-trashed
+   files, and the `drive.file` visibility boundary. Creation must set
+   `ignoreDefaultVisibility=true` and must not create a sharing permission.
+5. Confirm the single Slides batch uses only deterministic blank slides,
+   text-box shapes, title/body text insertion, and at most deletion of the one
+   initial blank slide. Images, videos, charts, links, notes, comments,
+   publishing, sharing, and arbitrary presentation IDs must remain unavailable.
+6. Confirm success requires bounded Drive metadata and Slides presentation
+   reads with the exact file ID, title, HTTPS Google presentation URL,
+   app-property binding, slide IDs, text-box IDs, slide order, and complete
+   approved title/body text.
+7. Repeat the same operation key. An exact existing presentation must return
+   without another batch update. A completely empty file left by an ambiguous
+   create may be populated once. A different request/source digest, title,
+   duplicate match, pre-existing slide content, altered metadata, or invalid URL
+   must fail as a conflict or unverified result without overwriting content.
+8. Reject or expire approval, alter the source artifact, change the account,
+   run, capability, source digest, or operation key, or provide fewer than six
+   remaining network calls. Confirm every case fails before mutation.
+9. Exercise 401, 403, 429, timeout, redirect, oversized/non-JSON response,
+   ambiguous create/batch update, malformed Drive metadata, invalid URL,
+   malformed batch replies, and mismatched final text. Confirm no automatic
+   mutation retry and no completion claim without exact read-back.
+
+The checked-in tests use synthetic accounts, adopted files, and transports.
+They prove source, approval, quota, idempotency, fixed-endpoint, text-only,
+packaging, and read-back contracts. They do not prove live Google OAuth,
+Drive/Slides behavior, the interactive Task Center flow, or a packaged Windows
+application. Keep Slides export build-unavailable in the baseline until those
+interactive checks pass.
+
 ### GitHub Copilot token storage
 
 Use a disposable GitHub test account if an end-to-end check is required. Confirm:
