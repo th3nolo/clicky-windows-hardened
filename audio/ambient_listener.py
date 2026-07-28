@@ -35,8 +35,10 @@ MIN_SPEECH_BLOCKS  = 3               # ~90ms of speech to start a segment
 SILENCE_BLOCKS_END = 20              # ~600ms of silence ends a segment
 MAX_SEGMENT_BLOCKS = 120             # ~3.6s max wake-word segment
 PRE_ROLL_BLOCKS    = 18              # ~540ms of pre-roll for the wake word
+MAX_LEVEL_TEST_SECONDS = 15.0        # local selected-device meter only
 _NO_CAPTURE = object()
 _LEGACY_CAPTURE = object()
+_NO_LEVEL_TEST = object()
 
 # Wake phrases — whisper tiny often mis-transcribes "clicky" so we cover variants
 WAKE_WORDS = (
@@ -85,6 +87,9 @@ class AmbientListener:
         self._recording_lock = threading.RLock()
         self._recording_id: object = _NO_CAPTURE
         self._frame_callback: Optional[Callable[[bytes], None]] = None
+        self._level_test_id: object = _NO_LEVEL_TEST
+        self._level_test_callback: Optional[Callable[[float], None]] = None
+        self._level_test_expires_at = 0.0
 
         # Lazy tiny whisper for wake word
         self._wake_model = None
@@ -128,6 +133,9 @@ class AmbientListener:
 
     def stop(self):
         self._running = False
+        with self._recording_lock:
+            self._clear_level_test()
+            self._reset_segment()
         if self._stream:
             try:
                 self._stream.stop()
@@ -150,6 +158,8 @@ class AmbientListener:
 
         token = _LEGACY_CAPTURE if capture_id is None else capture_id
         with self._recording_lock:
+            if self._level_test_id is not _NO_LEVEL_TEST:
+                raise RuntimeError("the local microphone test is active")
             if self._recording_id is not _NO_CAPTURE:
                 if self._recording_id == token:
                     return False
@@ -195,6 +205,64 @@ class AmbientListener:
             self._reset_segment()
             return True
 
+    def start_level_test(
+        self,
+        test_id: object,
+        on_level: Callable[[float], None],
+        duration_seconds: float,
+    ) -> bool:
+        """Lease the selected stream for one bounded, local RMS-only test.
+
+        While the lease is active the callback cannot buffer PCM, run
+        wake-word inference, or start a conversational recording.
+        """
+
+        if test_id is None:
+            raise ValueError("microphone test id is required")
+        if not callable(on_level):
+            raise TypeError("microphone test level callback is required")
+        duration = float(duration_seconds)
+        if not 0.0 < duration <= MAX_LEVEL_TEST_SECONDS:
+            raise ValueError(
+                "microphone test duration must be between 0 and "
+                f"{MAX_LEVEL_TEST_SECONDS:g} seconds"
+            )
+        with self._recording_lock:
+            if not self._running:
+                raise RuntimeError("the selected microphone is not running")
+            if self._recording_id is not _NO_CAPTURE:
+                raise RuntimeError("another microphone capture is already active")
+            if self._wake_inflight:
+                raise RuntimeError("a local wake-word check is still active")
+            if self._level_test_id is not _NO_LEVEL_TEST:
+                if self._level_test_id == test_id:
+                    return False
+                raise RuntimeError("another microphone test is already active")
+            self._reset_segment()
+            self._level_test_id = test_id
+            self._level_test_callback = on_level
+            self._level_test_expires_at = time.monotonic() + duration
+            return True
+
+    def stop_level_test(self, test_id: object | None = None) -> bool:
+        """Stop only the requested RMS test and discard its callback."""
+
+        with self._recording_lock:
+            if self._level_test_id is _NO_LEVEL_TEST:
+                return False
+            if test_id is not None and self._level_test_id != test_id:
+                return False
+            self._clear_level_test()
+            self._reset_segment()
+            return True
+
+    @property
+    def level_test_id(self) -> object | None:
+        with self._recording_lock:
+            if self._level_test_id is _NO_LEVEL_TEST:
+                return None
+            return self._level_test_id
+
     @property
     def recording_id(self) -> object | None:
         with self._recording_lock:
@@ -223,6 +291,27 @@ class AmbientListener:
             )
         pcm_float = pcm_int16.astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(pcm_float ** 2)))
+
+        level_test_callback = None
+        level_test_owned_frame = False
+        with self._recording_lock:
+            if self._level_test_id is not _NO_LEVEL_TEST:
+                level_test_owned_frame = True
+                if time.monotonic() >= self._level_test_expires_at:
+                    self._clear_level_test()
+                    self._reset_segment()
+                else:
+                    level_test_callback = self._level_test_callback
+        if level_test_callback is not None:
+            try:
+                level_test_callback(rms)
+            except Exception:
+                # A UI meter must never be able to kill PortAudio's callback
+                # thread.
+                pass
+        if level_test_owned_frame:
+            return
+
         self._on_level(rms)
 
         frame_callback = None
@@ -284,6 +373,11 @@ class AmbientListener:
             self._reset_segment()
             self._dispatch_wake_check(seg)
 
+    def _clear_level_test(self) -> None:
+        self._level_test_id = _NO_LEVEL_TEST
+        self._level_test_callback = None
+        self._level_test_expires_at = 0.0
+
     def _reset_segment(self):
         self._seg_buffer = []
         self._seg_speech_blocks = 0
@@ -293,9 +387,13 @@ class AmbientListener:
     # ── Wake-word transcription (off the audio thread) ────────────────────────
 
     def _dispatch_wake_check(self, pcm: bytes):
-        if self._wake_inflight:
-            return
-        self._wake_inflight = True
+        with self._recording_lock:
+            if (
+                self._level_test_id is not _NO_LEVEL_TEST
+                or self._wake_inflight
+            ):
+                return
+            self._wake_inflight = True
         t = threading.Thread(target=self._check_wake, args=(pcm,), daemon=True)
         t.start()
 
@@ -320,7 +418,8 @@ class AmbientListener:
 
                 warnings.warn(message, RuntimeWarning, stacklevel=2)
         finally:
-            self._wake_inflight = False
+            with self._recording_lock:
+                self._wake_inflight = False
 
     def _transcribe_tiny(self, pcm: bytes) -> str:
         """Pad PCM with silence (whisper accuracy degrades on ultra-short clips)."""
