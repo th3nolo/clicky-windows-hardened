@@ -18,16 +18,22 @@ from capability_registry import CapabilityGrant, CapabilityId
 from tasks.models import (
     ApprovalRequest,
     Artifact,
+    FollowupArtifactReference,
     TaskLimits,
+    TaskFollowupLink,
     TaskRun,
     TaskState,
+    TASK_FOLLOWUP_SKILL_ID,
+    TASK_FOLLOWUP_SKILL_VERSION,
+    TASK_FOLLOWUP_VERIFIER_ID,
+    TASK_FOLLOWUP_VERIFIER_STEP_ID,
     ToolCall,
     ToolResult,
 )
 
 
-TASK_DATABASE_VERSION = 2
-TASK_EXPORT_VERSION = 2
+TASK_DATABASE_VERSION = 3
+TASK_EXPORT_VERSION = 3
 TASK_EXPORT_FORMAT = "clicky-task-metadata"
 MAX_TASKS = 2_000
 MAX_EVENTS_PER_TASK = 1_024
@@ -35,10 +41,19 @@ MAX_EVENT_METADATA_BYTES = 2_048
 MAX_APPROVALS_PER_TASK = 128
 MAX_ARTIFACTS_PER_TASK = 256
 MAX_EXPORT_BYTES = 4 * 1024 * 1024
+MAX_FOLLOWUP_SOURCE_BYTES = 256 * 1024
 MIN_RETENTION_SECONDS = 60 * 60
 MAX_RETENTION_SECONDS = 366 * 24 * 60 * 60
 DEFAULT_RETENTION_SECONDS = 30 * 24 * 60 * 60
 INTERRUPTED_RESULT_CODE = "interrupted_on_restart"
+_FOLLOWUP_TEXT_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "text/csv",
+        "text/markdown",
+        "text/plain",
+    }
+)
 
 _TERMINAL_STATES = frozenset(
     {
@@ -181,62 +196,10 @@ class TaskStore:
         if run.state is not TaskState.QUEUED:
             raise ValueError("Only queued task runs can be persisted")
         now = self._now()
-        capabilities_json = _encode_json(
-            sorted(capability.value for capability in run.grant.capabilities),
-            maximum=4_096,
-            label="Task capability grant",
-        )
         with self._lock, self._connection(create=True) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                count = connection.execute(
-                    "SELECT COUNT(*) FROM task_runs"
-                ).fetchone()[0]
-                if count >= MAX_TASKS:
-                    raise TaskStoreError("Task metadata limit reached")
-                connection.execute(
-                    "INSERT INTO task_runs ("
-                    "run_id, created_at, updated_at, state, skill_id, "
-                    "skill_version, input_digest, goal_digest, "
-                    "requested_result_digest, verifier_step_id, verifier_id, "
-                    "grant_schema_version, capabilities_json, "
-                    "runtime_seconds, max_tool_calls, max_network_requests, "
-                    "max_output_bytes, result_code, verifier_result_id, "
-                    "verifier_evidence_digest, interrupted"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                    "?, ?, NULL, NULL, NULL, 0)",
-                    (
-                        run.run_id,
-                        now,
-                        now,
-                        TaskState.QUEUED.value,
-                        run.spec.skill_id,
-                        run.spec.skill_version,
-                        run.spec.input_digest,
-                        _text_digest(run.spec.goal),
-                        _text_digest(run.spec.requested_result),
-                        run.spec.verifier_step_id,
-                        run.spec.verifier_id,
-                        run.grant.capability_schema_version,
-                        capabilities_json,
-                        run.spec.limits.runtime_seconds,
-                        run.spec.limits.max_tool_calls,
-                        run.spec.limits.max_network_requests,
-                        run.spec.limits.max_output_bytes,
-                    ),
-                )
-                self._append_event(
-                    connection,
-                    run_id=run.run_id,
-                    created_at=now,
-                    event_type="queued",
-                    state=TaskState.QUEUED,
-                    metadata={
-                        "input_digest": run.spec.input_digest,
-                        "skill_id": run.spec.skill_id,
-                        "skill_version": run.spec.skill_version,
-                    },
-                )
+                self._insert_task(connection, run, now=now)
                 connection.commit()
             except sqlite3.IntegrityError as exc:
                 connection.rollback()
@@ -250,6 +213,231 @@ class TaskStore:
         if record is None:
             raise TaskStoreCorruptError("Created task metadata is unavailable")
         return record
+
+    def create_followup(
+        self,
+        run: TaskRun,
+        link: TaskFollowupLink,
+    ) -> TaskRecord:
+        """Atomically persist one fresh queued child and immutable linkage."""
+
+        if not isinstance(run, TaskRun):
+            raise TypeError("Task store requires a TaskRun")
+        if not isinstance(link, TaskFollowupLink):
+            raise TypeError("Task store requires a follow-up link")
+        if run.state is not TaskState.QUEUED:
+            raise ValueError("Only queued follow-up runs can be persisted")
+        if link.child_run_id != run.run_id:
+            raise ValueError("Follow-up link does not match the child run")
+        expected_capabilities = {CapabilityId.TASK_AGENT_RUN}
+        if link.selected_artifacts:
+            expected_capabilities.add(CapabilityId.LOCAL_ARTIFACT_READ)
+        if (
+            run.spec.input_digest != link.request_digest
+            or run.grant.capabilities
+            != frozenset(expected_capabilities)
+            or run.spec.skill_id != TASK_FOLLOWUP_SKILL_ID
+            or run.spec.skill_version != TASK_FOLLOWUP_SKILL_VERSION
+            or run.spec.verifier_step_id
+            != TASK_FOLLOWUP_VERIFIER_STEP_ID
+            or run.spec.verifier_id != TASK_FOLLOWUP_VERIFIER_ID
+            or run.spec.limits.runtime_seconds != 120
+            or run.spec.limits.max_tool_calls
+            != len(link.selected_artifacts) + 1
+            or run.spec.limits.max_network_requests != 1
+            or run.spec.limits.max_output_bytes != 64 * 1024
+        ):
+            raise ValueError(
+                "Follow-up run identity or fresh grant does not match"
+            )
+        now = self._now()
+        with self._lock, self._connection(create=True) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                parent = connection.execute(
+                    "SELECT * FROM task_runs WHERE run_id = ?",
+                    (link.parent_run_id,),
+                ).fetchone()
+                if parent is None:
+                    raise TaskStoreNotFoundError(
+                        "Follow-up parent metadata was not found"
+                    )
+                parent_state = _state(parent["state"])
+                if (
+                    parent_state not in _TERMINAL_STATES
+                    or bool(parent["interrupted"])
+                    or _timestamp(parent["updated_at"])
+                    != float(link.parent_updated_at)
+                ):
+                    raise TaskStoreConflictError(
+                        "Follow-up parent selection is stale or ineligible"
+                    )
+                self._verify_followup_artifacts(
+                    connection,
+                    link,
+                )
+                self._insert_task(
+                    connection,
+                    run,
+                    now=now,
+                    queued_metadata={
+                        "followup_parent_run_id": link.parent_run_id,
+                        "followup_request_digest": link.request_digest,
+                        "followup_review_digest": link.review_digest,
+                    },
+                )
+                connection.execute(
+                    "INSERT INTO task_followups ("
+                    "child_run_id, parent_run_id, parent_updated_at, "
+                    "request_digest, review_digest, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        link.child_run_id,
+                        link.parent_run_id,
+                        float(link.parent_updated_at),
+                        link.request_digest,
+                        link.review_digest,
+                        now,
+                    ),
+                )
+                for reference in link.selected_artifacts:
+                    connection.execute(
+                        "INSERT INTO task_followup_artifacts ("
+                        "child_run_id, artifact_id, source_run_id, sha256, "
+                        "byte_count, verification_result_id, "
+                        "verification_evidence_digest"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            link.child_run_id,
+                            reference.artifact_id,
+                            reference.source_run_id,
+                            reference.sha256,
+                            reference.byte_count,
+                            reference.verification_result_id,
+                            reference.verification_evidence_digest,
+                        ),
+                    )
+                connection.commit()
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                raise TaskStoreConflictError(
+                    "Follow-up linkage conflicts with persisted metadata"
+                ) from exc
+            except Exception:
+                connection.rollback()
+                raise
+        record = self.get_task(run.run_id)
+        if record is None:
+            raise TaskStoreCorruptError(
+                "Created follow-up metadata is unavailable"
+            )
+        return record
+
+    def _insert_task(
+        self,
+        connection: sqlite3.Connection,
+        run: TaskRun,
+        *,
+        now: float,
+        queued_metadata: dict[str, object] | None = None,
+    ) -> None:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM task_runs"
+        ).fetchone()[0]
+        if count >= MAX_TASKS:
+            raise TaskStoreError("Task metadata limit reached")
+        capabilities_json = _encode_json(
+            sorted(
+                capability.value
+                for capability in run.grant.capabilities
+            ),
+            maximum=4_096,
+            label="Task capability grant",
+        )
+        connection.execute(
+            "INSERT INTO task_runs ("
+            "run_id, created_at, updated_at, state, skill_id, "
+            "skill_version, input_digest, goal_digest, "
+            "requested_result_digest, verifier_step_id, verifier_id, "
+            "grant_schema_version, capabilities_json, "
+            "runtime_seconds, max_tool_calls, max_network_requests, "
+            "max_output_bytes, result_code, verifier_result_id, "
+            "verifier_evidence_digest, interrupted"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, NULL, NULL, NULL, 0)",
+            (
+                run.run_id,
+                now,
+                now,
+                TaskState.QUEUED.value,
+                run.spec.skill_id,
+                run.spec.skill_version,
+                run.spec.input_digest,
+                _text_digest(run.spec.goal),
+                _text_digest(run.spec.requested_result),
+                run.spec.verifier_step_id,
+                run.spec.verifier_id,
+                run.grant.capability_schema_version,
+                capabilities_json,
+                run.spec.limits.runtime_seconds,
+                run.spec.limits.max_tool_calls,
+                run.spec.limits.max_network_requests,
+                run.spec.limits.max_output_bytes,
+            ),
+        )
+        metadata: dict[str, object] = {
+            "input_digest": run.spec.input_digest,
+            "skill_id": run.spec.skill_id,
+            "skill_version": run.spec.skill_version,
+        }
+        if queued_metadata:
+            metadata.update(queued_metadata)
+        self._append_event(
+            connection,
+            run_id=run.run_id,
+            created_at=now,
+            event_type="queued",
+            state=TaskState.QUEUED,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _verify_followup_artifacts(
+        connection: sqlite3.Connection,
+        link: TaskFollowupLink,
+    ) -> None:
+        if (
+            sum(
+                reference.byte_count
+                for reference in link.selected_artifacts
+            )
+            > MAX_FOLLOWUP_SOURCE_BYTES
+        ):
+            raise TaskStoreConflictError(
+                "Follow-up artifact selection exceeds the source limit"
+            )
+        for reference in link.selected_artifacts:
+            row = connection.execute(
+                "SELECT * FROM task_artifacts WHERE artifact_id = ?",
+                (reference.artifact_id,),
+            ).fetchone()
+            if (
+                row is None
+                or row["run_id"] != link.parent_run_id
+                or row["run_id"] != reference.source_run_id
+                or row["sha256"] != reference.sha256
+                or row["byte_count"] != reference.byte_count
+                or row["verification_result_id"]
+                != reference.verification_result_id
+                or row["verification_evidence_digest"]
+                != reference.verification_evidence_digest
+                or row["verification_result_id"] is None
+                or row["verification_evidence_digest"] is None
+                or row["media_type"] not in _FOLLOWUP_TEXT_MEDIA_TYPES
+            ):
+                raise TaskStoreConflictError(
+                    "Follow-up artifact selection is stale or unverified"
+                )
 
     def sync_run(self, run: TaskRun) -> TaskRecord:
         """Append one legal lifecycle transition from the in-memory model."""
@@ -455,7 +643,11 @@ class TaskStore:
             )
         if (
             call.tool_name
-            not in {"model.generate", "model.generate.region"}
+            not in {
+                "model.generate",
+                "model.generate.followup",
+                "model.generate.region",
+            }
             or call.run_id != result.run_id
             or call.call_id != result.call_id
             or call.step_id != result.step_id
@@ -637,6 +829,139 @@ class TaskStore:
                 ).fetchall()
                 return tuple(self._approval_record(row) for row in rows)
 
+    def get_followup(
+        self,
+        child_run_id: str,
+    ) -> TaskFollowupLink | None:
+        _validate_run_id(child_run_id)
+        with self._lock:
+            if not self._database_exists():
+                return None
+            with self._connection(create=False) as connection:
+                row = connection.execute(
+                    "SELECT * FROM task_followups WHERE child_run_id = ?",
+                    (child_run_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                parent = connection.execute(
+                    "SELECT * FROM task_runs WHERE run_id = ?",
+                    (row["parent_run_id"],),
+                ).fetchone()
+                child = connection.execute(
+                    "SELECT * FROM task_runs WHERE run_id = ?",
+                    (row["child_run_id"],),
+                ).fetchone()
+                artifact_rows = connection.execute(
+                    "SELECT * FROM task_followup_artifacts "
+                    "WHERE child_run_id = ? ORDER BY artifact_id",
+                    (child_run_id,),
+                ).fetchall()
+                try:
+                    link = TaskFollowupLink(
+                        child_run_id=row["child_run_id"],
+                        parent_run_id=row["parent_run_id"],
+                        parent_updated_at=_timestamp(
+                            row["parent_updated_at"]
+                        ),
+                        request_digest=row["request_digest"],
+                        review_digest=row["review_digest"],
+                        selected_artifacts=tuple(
+                            FollowupArtifactReference(
+                                artifact_id=item["artifact_id"],
+                                source_run_id=item["source_run_id"],
+                                sha256=item["sha256"],
+                                byte_count=item["byte_count"],
+                                verification_result_id=item[
+                                    "verification_result_id"
+                                ],
+                                verification_evidence_digest=item[
+                                    "verification_evidence_digest"
+                                ],
+                            )
+                            for item in artifact_rows
+                        ),
+                    )
+                    if parent is None or child is None:
+                        raise ValueError(
+                            "follow-up run metadata is unavailable"
+                        )
+                    expected_capabilities = {CapabilityId.TASK_AGENT_RUN}
+                    if link.selected_artifacts:
+                        expected_capabilities.add(
+                            CapabilityId.LOCAL_ARTIFACT_READ
+                        )
+                    child_capabilities = frozenset(
+                        CapabilityId(value)
+                        for value in _decode_string_array(
+                            child["capabilities_json"],
+                            label="Task capability grant",
+                        )
+                    )
+                    if (
+                        _state(parent["state"]) not in _TERMINAL_STATES
+                        or bool(parent["interrupted"])
+                        or _timestamp(parent["updated_at"])
+                        != link.parent_updated_at
+                        or child["input_digest"] != link.request_digest
+                        or child["skill_id"] != TASK_FOLLOWUP_SKILL_ID
+                        or child["skill_version"]
+                        != TASK_FOLLOWUP_SKILL_VERSION
+                        or child["verifier_step_id"]
+                        != TASK_FOLLOWUP_VERIFIER_STEP_ID
+                        or child["verifier_id"]
+                        != TASK_FOLLOWUP_VERIFIER_ID
+                        or child["runtime_seconds"] != 120
+                        or child["max_tool_calls"]
+                        != len(link.selected_artifacts) + 1
+                        or child["max_network_requests"] != 1
+                        or child["max_output_bytes"] != 64 * 1024
+                        or child_capabilities
+                        != frozenset(expected_capabilities)
+                    ):
+                        raise ValueError("follow-up identity changed")
+                    self._verify_followup_artifacts(connection, link)
+                    return link
+                except (
+                    TaskStoreConflictError,
+                    TypeError,
+                    ValueError,
+                    KeyError,
+                ) as exc:
+                    raise TaskStoreCorruptError(
+                        "Follow-up linkage metadata is corrupt"
+                    ) from exc
+
+    def list_children(
+        self,
+        parent_run_id: str,
+    ) -> tuple[TaskRecord, ...]:
+        _validate_run_id(parent_run_id)
+        with self._lock:
+            if not self._database_exists():
+                return ()
+            with self._connection(create=False) as connection:
+                rows = connection.execute(
+                    "SELECT child_run_id FROM task_followups "
+                    "WHERE parent_run_id = ? "
+                    "ORDER BY created_at, child_run_id",
+                    (parent_run_id,),
+                ).fetchall()
+            children: list[TaskRecord] = []
+            for row in rows:
+                child_run_id = row["child_run_id"]
+                if self.get_followup(child_run_id) is None:
+                    raise TaskStoreCorruptError(
+                        "Follow-up child linkage is unavailable"
+                    )
+                child = self.get_task(child_run_id)
+                if child is None:
+                    raise TaskStoreCorruptError(
+                        "Follow-up child metadata is unavailable"
+                    )
+                children.append(child)
+            return tuple(children)
+
     def export_task(self, run_id: str) -> bytes:
         with self._lock:
             task = self.get_task(run_id)
@@ -647,6 +972,7 @@ class TaskStore:
             approvals = self.list_approvals(run_id)
             artifacts = self.list_artifacts(run_id)
             events = self.list_events(run_id)
+            followup = self.get_followup(run_id)
         payload = {
             "approvals": [
                 {
@@ -687,6 +1013,31 @@ class TaskStore:
                 for item in events
             ],
             "format": TASK_EXPORT_FORMAT,
+            "followup": (
+                {
+                    "parent_run_id": followup.parent_run_id,
+                    "parent_updated_at": followup.parent_updated_at,
+                    "request_digest": followup.request_digest,
+                    "review_digest": followup.review_digest,
+                    "selected_artifacts": [
+                        {
+                            "artifact_id": item.artifact_id,
+                            "byte_count": item.byte_count,
+                            "sha256": item.sha256,
+                            "source_run_id": item.source_run_id,
+                            "verification_evidence_digest": (
+                                item.verification_evidence_digest
+                            ),
+                            "verification_result_id": (
+                                item.verification_result_id
+                            ),
+                        }
+                        for item in followup.selected_artifacts
+                    ],
+                }
+                if followup is not None
+                else None
+            ),
             "task": _task_export_record(task),
             "version": TASK_EXPORT_VERSION,
         }
@@ -710,6 +1061,11 @@ class TaskStore:
                     )
                     connection.commit()
                     return cursor.rowcount == 1
+                except sqlite3.IntegrityError as exc:
+                    connection.rollback()
+                    raise TaskStoreConflictError(
+                        "Linked task evidence prevents deletion"
+                    ) from exc
                 except Exception:
                     connection.rollback()
                     raise
@@ -740,7 +1096,11 @@ class TaskStore:
                     rows = connection.execute(
                         "SELECT run_id FROM task_runs "
                         f"WHERE state IN ({placeholders}) "
-                        "AND updated_at < ? ORDER BY run_id",
+                        "AND updated_at < ? "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM task_followups "
+                        "WHERE parent_run_id = task_runs.run_id"
+                        ") ORDER BY run_id",
                         (*terminal_values, cutoff),
                     ).fetchall()
                     run_ids = tuple(row["run_id"] for row in rows)
@@ -1128,6 +1488,7 @@ class TaskStore:
                 connection.execute("BEGIN IMMEDIATE")
                 _migration_0_to_1(connection)
                 _migration_1_to_2(connection)
+                _migration_2_to_3(connection)
                 connection.execute(
                     f"PRAGMA user_version = {TASK_DATABASE_VERSION}"
                 )
@@ -1140,6 +1501,19 @@ class TaskStore:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 _migration_1_to_2(connection)
+                _migration_2_to_3(connection)
+                connection.execute(
+                    f"PRAGMA user_version = {TASK_DATABASE_VERSION}"
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            return
+        if version == 2:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _migration_2_to_3(connection)
                 connection.execute(
                     f"PRAGMA user_version = {TASK_DATABASE_VERSION}"
                 )
@@ -1308,6 +1682,56 @@ def _migration_1_to_2(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX ix_task_approvals_run_status "
         "ON task_approvals(run_id, status)"
+    )
+
+
+def _migration_2_to_3(connection: sqlite3.Connection) -> None:
+    """Add immutable evidence links for fresh selected-task follow-up runs."""
+
+    connection.execute(
+        "CREATE TABLE task_followups ("
+        "child_run_id TEXT PRIMARY KEY NOT NULL "
+        "CHECK(length(child_run_id) BETWEEN 1 AND 128),"
+        "parent_run_id TEXT NOT NULL "
+        "CHECK(length(parent_run_id) BETWEEN 1 AND 128),"
+        "parent_updated_at REAL NOT NULL,"
+        "request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),"
+        "review_digest TEXT NOT NULL CHECK(length(review_digest) = 64),"
+        "created_at REAL NOT NULL,"
+        "CHECK(child_run_id <> parent_run_id),"
+        "FOREIGN KEY(child_run_id) REFERENCES task_runs(run_id) "
+        "ON DELETE CASCADE,"
+        "FOREIGN KEY(parent_run_id) REFERENCES task_runs(run_id) "
+        "ON DELETE RESTRICT"
+        ") WITHOUT ROWID"
+    )
+    connection.execute(
+        "CREATE INDEX ix_task_followups_parent_created "
+        "ON task_followups(parent_run_id, created_at, child_run_id)"
+    )
+    connection.execute(
+        "CREATE TABLE task_followup_artifacts ("
+        "child_run_id TEXT NOT NULL "
+        "CHECK(length(child_run_id) BETWEEN 1 AND 128),"
+        "artifact_id TEXT NOT NULL "
+        "CHECK(length(artifact_id) BETWEEN 1 AND 128),"
+        "source_run_id TEXT NOT NULL "
+        "CHECK(length(source_run_id) BETWEEN 1 AND 128),"
+        "sha256 TEXT NOT NULL CHECK(length(sha256) = 64),"
+        f"byte_count INTEGER NOT NULL "
+        f"CHECK(byte_count BETWEEN 0 AND {64 * 1024 * 1024}),"
+        "verification_result_id TEXT NOT NULL "
+        "CHECK(length(verification_result_id) BETWEEN 1 AND 128),"
+        "verification_evidence_digest TEXT NOT NULL "
+        "CHECK(length(verification_evidence_digest) = 64),"
+        "PRIMARY KEY(child_run_id, artifact_id),"
+        "FOREIGN KEY(child_run_id) REFERENCES task_followups(child_run_id) "
+        "ON DELETE CASCADE,"
+        "FOREIGN KEY(artifact_id) REFERENCES task_artifacts(artifact_id) "
+        "ON DELETE RESTRICT,"
+        "FOREIGN KEY(source_run_id) REFERENCES task_runs(run_id) "
+        "ON DELETE RESTRICT"
+        ") WITHOUT ROWID"
     )
 
 

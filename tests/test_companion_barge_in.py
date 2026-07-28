@@ -332,6 +332,73 @@ class CompanionBargeInTests(unittest.TestCase):
         self.assertNotIn((first_turn.sequence, "stale"), partials)
         self.assertIn((second_turn.sequence, "fresh"), partials)
 
+    def test_spoken_task_followup_stops_after_stt_before_tutor_context(self):
+        transcripts = []
+        responses = []
+        self.manager.sig_task_followup_transcript.connect(
+            transcripts.append,
+            type=Qt.ConnectionType.DirectConnection,
+        )
+        self.manager.sig_response_chunk.connect(
+            responses.append,
+            type=Qt.ConnectionType.DirectConnection,
+        )
+
+        async def transcribe(_pcm, _session):
+            return "Summarize the selected verified artifact.", "local"
+
+        with (
+            mock.patch.object(
+                manager_module,
+                "user_permission_allowed",
+                return_value=True,
+            ),
+            mock.patch.object(
+                manager_module,
+                "build_feature_available",
+                return_value=True,
+            ),
+            mock.patch.object(
+                self.manager,
+                "_transcribe_with_configured_fallback",
+                side_effect=transcribe,
+            ),
+            mock.patch.object(
+                manager_module,
+                "active_window_title",
+                side_effect=AssertionError("screen context must not run"),
+            ),
+            mock.patch.object(
+                manager_module,
+                "capture_all_screens",
+                side_effect=AssertionError("screen capture must not run"),
+            ),
+            mock.patch.object(
+                self.manager,
+                "_get_llm",
+                side_effect=AssertionError("Tutor provider must not run"),
+            ),
+        ):
+            self.assertTrue(
+                self.manager.set_task_followup_voice_capture(True)
+            )
+            self.manager.on_hotkey_press()
+            self.manager.on_hotkey_release()
+            deadline = time.monotonic() + 2
+            while (
+                self.manager._turns.active is not None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+
+        self.assertEqual(
+            transcripts,
+            ["Summarize the selected verified artifact."],
+        )
+        self.assertEqual(responses, [])
+        self.assertEqual(self.manager._history, [])
+        self.assertFalse(self.manager._task_followup_voice_armed)
+
 
 class AmbientListenerCaptureIdentityTests(unittest.TestCase):
     def make_listener(self):
