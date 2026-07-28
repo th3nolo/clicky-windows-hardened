@@ -67,6 +67,7 @@ from tasks.tool_broker import (
     ResearchCsvRenderArguments,
     ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
+    ResearchPdfRenderArguments,
     SheetsExportArguments,
     SlidesExportArguments,
     TaskToolBroker,
@@ -121,6 +122,9 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
             }
         ),
         DeclarativeTool.RESEARCH_DOCX_RENDER: frozenset(
+            {"report_content"}
+        ),
+        DeclarativeTool.RESEARCH_PDF_RENDER: frozenset(
             {"report_content"}
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
@@ -180,6 +184,9 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
             }
         ),
         DeclarativeTool.RESEARCH_DOCX_RENDER: frozenset(
+            {"report_content"}
+        ),
+        DeclarativeTool.RESEARCH_PDF_RENDER: frozenset(
             {"report_content"}
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
@@ -319,6 +326,18 @@ class _ResearchDocxMetadata:
     report_sha256: str
     document_digest: str
     source_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchPdfMetadata:
+    content_sha256: str
+    report_title: str
+    field_ids: tuple[str, ...]
+    requested_sections: int
+    report_sha256: str
+    document_digest: str
+    source_digest: str
+    page_count: int
 
 
 def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
@@ -673,6 +692,7 @@ class DeclarativeSkillRunner:
         self._research_csv: _ResearchCsvMetadata | None = None
         self._research_markdown: _ResearchMarkdownMetadata | None = None
         self._research_docx: _ResearchDocxMetadata | None = None
+        self._research_pdf: _ResearchPdfMetadata | None = None
         self._next_step = 0
         self._prepared: _PreparedStep | None = None
 
@@ -1129,12 +1149,13 @@ class DeclarativeSkillRunner:
             )
         if step.tool is DeclarativeTool.RESEARCH_MARKDOWN_RENDER:
             from research.docx_artifact import DOCX_MEDIA_TYPE
+            from research.pdf_artifact import PDF_MEDIA_TYPE
 
             output = self._definition.output
             if (
                 output.output_type is not SkillOutputType.ARTIFACT
                 or output.media_type
-                not in {"text/markdown", DOCX_MEDIA_TYPE}
+                not in {"text/markdown", DOCX_MEDIA_TYPE, PDF_MEDIA_TYPE}
                 or output.fields
             ):
                 raise DeclarativeRunnerPlanningError(
@@ -1188,6 +1209,43 @@ class DeclarativeSkillRunner:
                     "Markdown report"
                 )
             return ResearchDocxRenderArguments(
+                report_content=report_content,
+                report_title=self._research_markdown.report_title,
+                requested_sections=(
+                    self._research_markdown.requested_sections
+                ),
+                field_ids=self._research_markdown.field_ids,
+                report_sha256=report_sha256,
+                source_digest=self._research_markdown.source_digest,
+                maximum_output_bytes=(
+                    self._definition.limits.max_output_bytes
+                ),
+            )
+        if step.tool is DeclarativeTool.RESEARCH_PDF_RENDER:
+            from research.pdf_artifact import PDF_MEDIA_TYPE
+
+            output = self._definition.output
+            if (
+                output.output_type is not SkillOutputType.ARTIFACT
+                or output.media_type != PDF_MEDIA_TYPE
+                or output.fields
+                or self._research_markdown is None
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Research PDF rendering requires one validated "
+                    "Markdown report and a declared PDF artifact"
+                )
+            report_content = _content_value(values["report_content"])
+            report_sha256 = hashlib.sha256(report_content).hexdigest()
+            if (
+                report_sha256
+                != self._research_markdown.content_sha256
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research PDF source does not match the validated "
+                    "Markdown report"
+                )
+            return ResearchPdfRenderArguments(
                 report_content=report_content,
                 report_title=self._research_markdown.report_title,
                 requested_sections=(
@@ -1333,6 +1391,51 @@ class DeclarativeSkillRunner:
                     research_docx_source_digest = (
                         self._research_docx.source_digest
                     )
+            research_pdf_report_title = None
+            research_pdf_field_ids: tuple[str, ...] = ()
+            research_pdf_requested_sections = None
+            research_pdf_report_sha256 = None
+            research_pdf_document_digest = None
+            research_pdf_source_digest = None
+            research_pdf_page_count = None
+            if self._research_pdf is not None:
+                from research.pdf_artifact import PDF_MEDIA_TYPE
+
+                if artifact_value.media_type == PDF_MEDIA_TYPE:
+                    if (
+                        actual_sha256
+                        != self._research_pdf.content_sha256
+                        or (
+                            expected_sha256 is not None
+                            and expected_sha256 != actual_sha256
+                        )
+                    ):
+                        raise DeclarativeRunnerOutputError(
+                            "Research PDF verifier digest does not "
+                            "match render"
+                        )
+                    expected_sha256 = actual_sha256
+                    research_pdf_report_title = (
+                        self._research_pdf.report_title
+                    )
+                    research_pdf_field_ids = (
+                        self._research_pdf.field_ids
+                    )
+                    research_pdf_requested_sections = (
+                        self._research_pdf.requested_sections
+                    )
+                    research_pdf_report_sha256 = (
+                        self._research_pdf.report_sha256
+                    )
+                    research_pdf_document_digest = (
+                        self._research_pdf.document_digest
+                    )
+                    research_pdf_source_digest = (
+                        self._research_pdf.source_digest
+                    )
+                    research_pdf_page_count = (
+                        self._research_pdf.page_count
+                    )
             return VerifyOutputArguments(
                 verifier_id=self._run.spec.verifier_id,
                 artifact_id=artifact_id,
@@ -1386,6 +1489,21 @@ class DeclarativeSkillRunner:
                 research_docx_source_digest=(
                     research_docx_source_digest
                 ),
+                research_pdf_report_title=research_pdf_report_title,
+                research_pdf_field_ids=research_pdf_field_ids,
+                research_pdf_requested_sections=(
+                    research_pdf_requested_sections
+                ),
+                research_pdf_report_sha256=(
+                    research_pdf_report_sha256
+                ),
+                research_pdf_document_digest=(
+                    research_pdf_document_digest
+                ),
+                research_pdf_source_digest=(
+                    research_pdf_source_digest
+                ),
+                research_pdf_page_count=research_pdf_page_count,
             )
         raise DeclarativeRunnerPlanningError(
             "Step tool is unavailable at call time"
@@ -1559,6 +1677,71 @@ class DeclarativeSkillRunner:
                 document_digest=model.document_digest,
                 source_digest=model.source_digest,
             )
+        if isinstance(prepared.arguments, ResearchPdfRenderArguments):
+            if execution.content is None:
+                raise DeclarativeRunnerOutputError(
+                    "Research PDF render returned no content"
+                )
+            from research.docx_artifact import (
+                research_markdown_to_docx_model,
+            )
+            from research.markdown_artifact import ResearchMarkdownSchema
+            from research.pdf_artifact import inspect_research_pdf
+
+            content = execution.content
+            if (
+                execution.result.output_digest
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research PDF render digest does not match its content"
+                )
+            schema = ResearchMarkdownSchema(
+                prepared.arguments.report_title,
+                prepared.arguments.field_ids,
+            )
+            model = research_markdown_to_docx_model(
+                prepared.arguments.report_content,
+                schema,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+            )
+            inspection = inspect_research_pdf(
+                content,
+                schema,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                maximum_bytes=(
+                    prepared.arguments.maximum_output_bytes
+                ),
+            )
+            if (
+                not inspection.structurally_valid
+                or inspection.document_digest != model.document_digest
+                or inspection.source_digest != model.source_digest
+                or model.report_sha256
+                != prepared.arguments.report_sha256
+                or model.source_digest
+                != prepared.arguments.source_digest
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research PDF render does not match the validated "
+                    "report model"
+                )
+            self._research_pdf = _ResearchPdfMetadata(
+                content_sha256=execution.result.output_digest,
+                report_title=prepared.arguments.report_title,
+                field_ids=prepared.arguments.field_ids,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                report_sha256=model.report_sha256,
+                document_digest=model.document_digest,
+                source_digest=model.source_digest,
+                page_count=inspection.page_count,
+            )
         if execution.pending_artifact is not None:
             arguments = prepared.arguments
             if not isinstance(arguments, ArtifactWriteArguments):
@@ -1649,6 +1832,7 @@ class DeclarativeSkillRunner:
                 "Artifact media type does not match the skill output"
             )
         from research.docx_artifact import DOCX_MEDIA_TYPE
+        from research.pdf_artifact import PDF_MEDIA_TYPE
 
         if (
             output.output_type is SkillOutputType.ARTIFACT
@@ -1661,6 +1845,19 @@ class DeclarativeSkillRunner:
             except (TypeError, ValueError) as exc:
                 raise DeclarativeRunnerOutputError(
                     "Declarative DOCX output is not an inert package"
+                ) from exc
+            return
+        if (
+            output.output_type is SkillOutputType.ARTIFACT
+            and media_type == PDF_MEDIA_TYPE
+        ):
+            from research.pdf_artifact import validate_safe_pdf_document
+
+            try:
+                validate_safe_pdf_document(content)
+            except (TypeError, ValueError) as exc:
+                raise DeclarativeRunnerOutputError(
+                    "Declarative PDF output is not an inert document"
                 ) from exc
             return
         try:

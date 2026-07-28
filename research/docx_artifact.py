@@ -1134,6 +1134,29 @@ def _digest_json(value: object) -> str:
     ).hexdigest()
 
 
+def validate_research_report_paragraphs(
+    paragraphs: tuple[ResearchDocxParagraph, ...],
+    schema: ResearchMarkdownSchema,
+    *,
+    requested_sections: int,
+) -> tuple[int, int, tuple[str, ...]]:
+    """Validate the shared visible report paragraph contract."""
+
+    return _validate_docx_paragraphs(
+        paragraphs,
+        schema,
+        requested_sections=requested_sections,
+    )
+
+
+def research_report_paragraph_digest(
+    paragraphs: tuple[ResearchDocxParagraph, ...],
+) -> str:
+    """Return the canonical digest shared by DOCX and PDF renderers."""
+
+    return _paragraph_digest(paragraphs)
+
+
 def _bounded_integer(
     value: object,
     minimum: int,
@@ -1155,7 +1178,9 @@ __all__ = [
     "ResearchDocxParagraph",
     "inspect_research_docx",
     "render_research_markdown_to_docx",
+    "research_report_paragraph_digest",
     "research_markdown_to_docx_model",
     "safe_docx_text_preview",
+    "validate_research_report_paragraphs",
     "validate_safe_docx_package",
 ]

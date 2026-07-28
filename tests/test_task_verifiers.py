@@ -17,6 +17,7 @@ from tasks.verifiers import (
     ResearchCsvFileExpectation,
     ResearchDocxFileExpectation,
     ResearchMarkdownFileExpectation,
+    ResearchPdfFileExpectation,
     RepositoryExpectation,
     RepositorySnapshot,
     UiStateExpectation,
@@ -27,6 +28,7 @@ from tasks.verifiers import (
     verify_research_csv_file,
     verify_research_docx_file,
     verify_research_markdown_file,
+    verify_research_pdf_file,
     verify_repository,
     verify_ui_state,
 )
@@ -329,6 +331,80 @@ class TaskVerifierTests(unittest.TestCase):
             content=content,
         )
         self.assertFalse(changed_text.postcondition_met)
+
+    def test_research_pdf_verifier_binds_pages_visible_text_and_report(self):
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from research.pdf_artifact import (
+            PDF_MEDIA_TYPE,
+            render_research_markdown_to_pdf,
+        )
+        from tests.test_research_csv import batch, record
+
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        report = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        artifact = render_research_markdown_to_pdf(
+            report.content,
+            schema,
+            requested_sections=1,
+            maximum_output_bytes=1024 * 1024,
+        )
+        snapshot = FileSnapshot(
+            artifact_id="research-pdf",
+            name="research.pdf",
+            media_type=PDF_MEDIA_TYPE,
+            byte_count=len(artifact.content),
+            sha256=artifact.sha256,
+            provenance_digest=DIGEST_A,
+            complete=True,
+        )
+        expectation = ResearchPdfFileExpectation(
+            file=FileExpectation(
+                expected_sha256=artifact.sha256,
+                expected_media_type=PDF_MEDIA_TYPE,
+                maximum_bytes=1024 * 1024,
+            ),
+            report_title=schema.title,
+            requested_field_ids=schema.requested_field_ids,
+            requested_sections=1,
+            report_sha256=report.sha256,
+            document_digest=artifact.document_digest,
+            source_digest=artifact.source_digest,
+            page_count=artifact.page_count,
+        )
+        accepted = verify_research_pdf_file(
+            snapshot,
+            expectation,
+            verifier_id="research-pdf-v1",
+            content=artifact.content,
+        )
+        self.assertTrue(accepted.postcondition_met)
+
+        wrong_page_count = verify_research_pdf_file(
+            snapshot,
+            ResearchPdfFileExpectation(
+                file=expectation.file,
+                report_title=schema.title,
+                requested_field_ids=schema.requested_field_ids,
+                requested_sections=1,
+                report_sha256=report.sha256,
+                document_digest=artifact.document_digest,
+                source_digest=artifact.source_digest,
+                page_count=artifact.page_count + 1,
+            ),
+            verifier_id="research-pdf-v1",
+            content=artifact.content,
+        )
+        self.assertFalse(wrong_page_count.postcondition_met)
 
     def test_api_response_verifier_binds_request_status_type_size_and_body(self):
         snapshot = ApiResponseSnapshot(

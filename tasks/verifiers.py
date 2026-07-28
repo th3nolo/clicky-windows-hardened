@@ -349,6 +349,65 @@ class ResearchDocxFileExpectation:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchPdfFileExpectation:
+    """Exact file, canonical PDF, and visible report text postconditions."""
+
+    file: FileExpectation
+    report_title: str
+    requested_field_ids: tuple[str, ...]
+    requested_sections: int
+    report_sha256: str
+    document_digest: str
+    source_digest: str
+    page_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileExpectation):
+            raise TypeError(
+                "Research PDF file expectation must be typed"
+            )
+        from research.markdown_artifact import ResearchMarkdownSchema
+        from research.pdf_artifact import (
+            MAX_RESEARCH_PDF_BYTES,
+            MAX_RESEARCH_PDF_PAGES,
+            PDF_MEDIA_TYPE,
+        )
+
+        ResearchMarkdownSchema(
+            self.report_title,
+            self.requested_field_ids,
+        )
+        if type(self.requested_sections) is not int or not (
+            1 <= self.requested_sections <= 100
+        ):
+            raise ValueError(
+                "Research PDF requested section count is invalid"
+            )
+        for value, label in (
+            (self.report_sha256, "report"),
+            (self.document_digest, "document"),
+            (self.source_digest, "source"),
+        ):
+            _sha256(value, f"Research PDF {label} digest")
+        if type(self.page_count) is not int or not (
+            1 <= self.page_count <= MAX_RESEARCH_PDF_PAGES
+        ):
+            raise ValueError(
+                "Research PDF page count is invalid"
+            )
+        if (
+            self.file.expected_sha256 is None
+            or self.file.expected_media_type != PDF_MEDIA_TYPE
+            or self.file.maximum_bytes is None
+            or self.file.maximum_bytes > MAX_RESEARCH_PDF_BYTES
+        ):
+            raise ValueError(
+                "Research PDF verification requires digest, media type, "
+                "and a bounded maximum size"
+            )
+
+
 def verify_file(
     snapshot: FileSnapshot,
     expectation: FileExpectation,
@@ -702,6 +761,99 @@ def verify_research_docx_file(
             "research_docx_result": inspection.result_code,
             "research_docx_sections": inspection.section_count,
             "research_docx_source_digest": inspection.source_digest,
+            "requested_sections": expectation.requested_sections,
+        },
+    )
+
+
+def verify_research_pdf_file(
+    snapshot: FileSnapshot,
+    expectation: ResearchPdfFileExpectation,
+    *,
+    verifier_id: str,
+    content: bytes,
+) -> VerificationEvidence:
+    """Verify exact identity, canonical inert PDF, and visible report text."""
+
+    if not isinstance(snapshot, FileSnapshot):
+        raise TypeError(
+            "Research PDF verifier snapshot is invalid"
+        )
+    if not isinstance(expectation, ResearchPdfFileExpectation):
+        raise TypeError(
+            "Research PDF verifier expectation is invalid"
+        )
+    if not isinstance(content, bytes):
+        raise TypeError(
+            "Research PDF verifier content must be immutable bytes"
+        )
+    from research.markdown_artifact import ResearchMarkdownSchema
+    from research.pdf_artifact import inspect_research_pdf
+
+    file = expectation.file
+    integrity = (
+        len(content) == snapshot.byte_count
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+    checks = {
+        "complete_pending_file": snapshot.complete,
+        "content_integrity": integrity,
+        "expected_sha256": (
+            snapshot.sha256 == file.expected_sha256
+        ),
+        "expected_media_type": (
+            snapshot.media_type == file.expected_media_type
+        ),
+        "maximum_bytes": (
+            file.maximum_bytes is not None
+            and snapshot.byte_count <= file.maximum_bytes
+        ),
+    }
+    if file.minimum_bytes is not None:
+        checks["minimum_bytes"] = (
+            snapshot.byte_count >= file.minimum_bytes
+        )
+    inspection = inspect_research_pdf(
+        content,
+        ResearchMarkdownSchema(
+            expectation.report_title,
+            expectation.requested_field_ids,
+        ),
+        requested_sections=expectation.requested_sections,
+        maximum_bytes=file.maximum_bytes,
+    )
+    checks["research_pdf_structure"] = inspection.structurally_valid
+    checks["research_pdf_sections"] = (
+        inspection.section_count == expectation.requested_sections
+    )
+    checks["research_pdf_document"] = (
+        inspection.document_digest == expectation.document_digest
+    )
+    checks["research_pdf_sources"] = (
+        inspection.source_digest == expectation.source_digest
+    )
+    checks["research_pdf_pages"] = (
+        inspection.page_count == expectation.page_count
+    )
+    return _evidence(
+        verifier_id=verifier_id,
+        subject_kind=VerificationSubjectKind.FILE,
+        subject_reference=snapshot.artifact_id,
+        subject_digest=snapshot.sha256,
+        checks=checks,
+        observed={
+            "byte_count": snapshot.byte_count,
+            "media_type": snapshot.media_type,
+            "provenance_digest": snapshot.provenance_digest,
+            "research_pdf_citations": inspection.citation_count,
+            "research_pdf_document_digest": inspection.document_digest,
+            "research_pdf_lines": inspection.text_line_count,
+            "research_pdf_pages": inspection.page_count,
+            "research_pdf_paragraphs": inspection.paragraph_count,
+            "research_pdf_report_sha256": expectation.report_sha256,
+            "research_pdf_result": inspection.result_code,
+            "research_pdf_sections": inspection.section_count,
+            "research_pdf_source_digest": inspection.source_digest,
             "requested_sections": expectation.requested_sections,
         },
     )
@@ -1118,6 +1270,7 @@ __all__ = [
     "ResearchCsvFileExpectation",
     "ResearchCsvFileVerification",
     "ResearchDocxFileExpectation",
+    "ResearchPdfFileExpectation",
     "ResearchMarkdownFileExpectation",
     "ResearchMarkdownFileVerification",
     "RepositoryExpectation",
@@ -1131,6 +1284,7 @@ __all__ = [
     "verify_research_csv_file",
     "verify_research_docx_file",
     "verify_research_markdown_file",
+    "verify_research_pdf_file",
     "verify_repository",
     "verify_ui_state",
 ]

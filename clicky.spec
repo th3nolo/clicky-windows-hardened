@@ -80,6 +80,7 @@ hidden = [
     "research.csv_artifact",
     "research.docx_artifact",
     "research.markdown_artifact",
+    "research.pdf_artifact",
     "research.tools",
     "sheets_contracts",
     "slides_contracts",
@@ -148,6 +149,10 @@ datas += [
     ),
     (
         "skills/declarative/research-to-docx.skill.json",
+        "skills/declarative",
+    ),
+    (
+        "skills/declarative/research-to-pdf.skill.json",
         "skills/declarative",
     ),
     (
