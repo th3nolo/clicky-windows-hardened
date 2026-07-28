@@ -459,8 +459,43 @@ class TaskToolBroker:
         self._workspace = workspace
         self._steps = steps
         self._model_stream = model_stream or _configured_model_stream
-        self._web_search = web_search or _bounded_web_search
-        self._web_fetch = web_fetch or _bounded_web_fetch
+        self._research_tools = None
+        if web_search is None or web_fetch is None:
+            from research.tools import (
+                MAX_RESEARCH_RESPONSE_BYTES,
+                MAX_RESEARCH_SEARCH_SOURCES,
+                BoundedResearchToolAdapter,
+                ResearchToolLimits,
+            )
+
+            self._research_tools = BoundedResearchToolAdapter(
+                ResearchToolLimits(
+                    # A zero-request task is rejected by broker preflight
+                    # before reaching the adapter. Keep construction typed.
+                    max_requests=max(
+                        1,
+                        run.spec.limits.max_network_requests,
+                    ),
+                    max_response_bytes=min(
+                        run.spec.limits.max_output_bytes,
+                        MAX_RESEARCH_RESPONSE_BYTES,
+                    ),
+                    max_sources=min(
+                        MAX_RESEARCH_SEARCH_SOURCES,
+                        max(1, run.spec.limits.max_network_requests * 5),
+                    ),
+                )
+            )
+        if web_search is None:
+            assert self._research_tools is not None
+            self._web_search = self._research_tools.search
+        else:
+            self._web_search = web_search
+        if web_fetch is None:
+            assert self._research_tools is not None
+            self._web_fetch = self._research_tools.fetch
+        else:
+            self._web_fetch = web_fetch
         self._artifact_manager = ArtifactAdoptionManager(
             run,
             workspace,
@@ -856,22 +891,6 @@ async def _configured_model_stream(
         model=selected_model,
     ):
         yield chunk
-
-
-async def _bounded_web_search(query: str, max_results: int) -> str:
-    from ai.web_search import search
-
-    return await search(
-        query,
-        max_results,
-        allow_provider_fallback=False,
-    )
-
-
-async def _bounded_web_fetch(url: str, max_chars: int) -> str:
-    from ai.web_search import fetch
-
-    return await fetch(url, max_chars)
 
 
 def broker_arguments_digest(arguments: BrokerArguments) -> str:
