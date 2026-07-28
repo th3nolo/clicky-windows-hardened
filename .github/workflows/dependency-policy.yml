@@ -79,6 +79,7 @@ jobs:
           tests.test_validation_boundary
           tests.test_windows_runtime_validation
           tests.test_windows_sandbox_results
+          tests.test_workspace_coding_threat_model
 
       - name: Parse every Python source file
         shell: pwsh

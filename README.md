@@ -89,6 +89,15 @@ message; response content is not sent to that fallback and barge-in cancels it.
 - Unfinished action capabilities have separate build availability, versioned
   user permission, and per-run grants. All seven action build flags are off in
   the baseline release, and no one layer can authorize another capability.
+- Workspace coding has an approved architecture decision but no enabled
+  implementation. Its only V1 execution boundary is a fresh,
+  network-disabled Windows Sandbox containing a secret-filtered isolated copy
+  of one selected Git working tree; there is no normal-process, worktree-only,
+  AppContainer, or path-check fallback. The original repository is not mapped,
+  dependencies cannot be installed, commands are typed and separately
+  approved, and results cannot reach the original repository until a later
+  exact Diff/Apply design passes its own gates. See
+  [WORKSPACE_CODING_SECURITY.md](WORKSPACE_CODING_SECURITY.md).
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state
   indicator contains no transcript text, and only a final transcript can
@@ -281,6 +290,8 @@ Startup Apps so the user can review or change that Windows-owned setting.
 - [BUILD.md](BUILD.md): frozen build and signing gates
 - [TESTING.md](TESTING.md): automated and manual verification
 - [SECURITY.md](SECURITY.md): reporting and security boundaries
+- [WORKSPACE_CODING_SECURITY.md](WORKSPACE_CODING_SECURITY.md): approved
+  Windows Sandbox boundary for the default-off coding-agent implementation
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution requirements
 
 ## Credits and license
