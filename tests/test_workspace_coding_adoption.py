@@ -260,6 +260,7 @@ class WorkspaceDiffReviewTests(unittest.TestCase):
                 fixture.result,
                 review,
             )
+            expected_source = fixture.source.resolve(strict=True)
 
         self.assertEqual(review.review_digest, second.review_digest)
         self.assertEqual(review.diff_sha256, second.diff_sha256)
@@ -295,7 +296,7 @@ class WorkspaceDiffReviewTests(unittest.TestCase):
         self.assertIn("-before", rendered)
         self.assertIn("+after", rendered)
         self.assertNotIn("git authority", rendered)
-        self.assertEqual(view.selected_path, fixture.source)
+        self.assertEqual(view.selected_path, expected_source)
         self.assertEqual(
             view.changed_paths,
             tuple(
