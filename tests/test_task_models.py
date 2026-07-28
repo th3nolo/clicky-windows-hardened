@@ -9,6 +9,7 @@ from tasks.models import (
     ApprovalRequest,
     Artifact,
     TaskRun,
+    TaskLimits,
     TaskSpec,
     TaskState,
     ToolCall,
@@ -32,6 +33,12 @@ def spec(run_id: str = "task-run-1") -> TaskSpec:
         requested_result="A source-backed table.",
         verifier_step_id="verify-output",
         verifier_id="table-postcondition-v1",
+        limits=TaskLimits(
+            runtime_seconds=300,
+            max_tool_calls=8,
+            max_network_requests=4,
+            max_output_bytes=4 * 1024 * 1024,
+        ),
     )
 
 
@@ -129,6 +136,12 @@ class TaskModelTests(unittest.TestCase):
                 requested_result="table",
                 verifier_step_id="verify",
                 verifier_id="verify-v1",
+                limits=TaskLimits(
+                    runtime_seconds=60,
+                    max_tool_calls=2,
+                    max_network_requests=0,
+                    max_output_bytes=1024,
+                ),
             )
         with self.assertRaisesRegex(ValueError, "Artifact digest"):
             Artifact(
