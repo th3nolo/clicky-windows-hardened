@@ -54,6 +54,7 @@ class TrayManager(QObject):
     on_attach_doc         = pyqtSignal()
     on_run_setup          = pyqtSignal()
     on_run_onboarding     = pyqtSignal()
+    on_manage_app_suggestions = pyqtSignal()
     on_open_startup_settings = pyqtSignal()
     on_privacy_permissions = pyqtSignal()
     on_manage_style_profiles = pyqtSignal()
@@ -329,6 +330,10 @@ class TrayManager(QObject):
         privacy_permissions.triggered.connect(self.on_privacy_permissions)
         onboarding = setup_menu.addAction("Practice hotkey && pointing…")
         onboarding.triggered.connect(self.on_run_onboarding)
+        app_suggestions = setup_menu.addAction("Local app suggestions…")
+        app_suggestions.triggered.connect(
+            self.on_manage_app_suggestions
+        )
         startup = setup_menu.addAction("Windows startup settings…")
         startup.triggered.connect(self.on_open_startup_settings)
         run_setup = setup_menu.addAction("Run setup wizard again…")

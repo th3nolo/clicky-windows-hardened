@@ -56,6 +56,8 @@ _PREFERENCE_BOOL_KEYS = {
     "connector_write_permission",
     "workspace_coding_permission",
     "desktop_automation_permission",
+    "app_suggestions_consent",
+    "app_suggestions_disabled",
 }
 _PREFERENCE_STRING_LIST_LIMITS = {
     "transcription_vocabulary": (63, 64),
@@ -470,6 +472,16 @@ class Config:
             _preference("desktop_automation_permission", False)
         )
     )
+    app_suggestions_consent: bool = field(
+        default_factory=lambda: bool(
+            _preference("app_suggestions_consent", False)
+        )
+    )
+    app_suggestions_disabled: bool = field(
+        default_factory=lambda: bool(
+            _preference("app_suggestions_disabled", False)
+        )
+    )
     stt_provider_preference: str = field(
         default_factory=lambda: _preference("stt_provider", "")
     )
@@ -804,6 +816,26 @@ class Config:
             )
         except (TypeError, ValueError):
             return False
+
+    def set_app_suggestions_preferences(
+        self,
+        *,
+        consent: bool,
+        disabled: bool,
+    ) -> None:
+        """Persist only the opt-in and disable flags, never app inventory."""
+        if type(consent) is not bool or type(disabled) is not bool:
+            raise TypeError("App suggestion preferences must be booleans")
+        if disabled and consent:
+            raise ValueError(
+                "Disabled app suggestions cannot retain enumeration consent"
+            )
+        self.app_suggestions_consent = consent
+        self.app_suggestions_disabled = disabled
+        _save_preferences(
+            app_suggestions_consent=consent,
+            app_suggestions_disabled=disabled,
+        )
 
     def set_journal_enabled(self, enabled: bool) -> None:
         self.journal_enabled = bool(enabled)

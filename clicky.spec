@@ -101,6 +101,8 @@ hidden = [
     # First-run setup wizard
     "ui.setup_wizard",
     "ui.onboarding_demo",
+    "ui.app_suggestions",
+    "onboarding.app_suggestions",
     "ui.microphone_test",
     "ui.voice_picker",
     "ui.walkthrough",
