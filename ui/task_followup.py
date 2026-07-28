@@ -53,6 +53,7 @@ from tasks.store import TaskStore
 from tasks.task_center import (
     ActiveTaskHandle,
     TaskCenterActionRegistry,
+    TaskDoneTitleKind,
     TaskDisplayContent,
 )
 
@@ -367,6 +368,10 @@ class TaskFollowupController(QObject):
                     ),
                 )
             )
+            self._actions.publish_commentary(
+                run.run_id,
+                "New linked run created after one-use review.",
+            )
             registered = True
             active = _ActiveFollowupTask(
                 run=run,
@@ -461,6 +466,10 @@ class TaskFollowupController(QObject):
     async def _execute(self, active: _ActiveFollowupTask) -> None:
         run_id = active.run.run_id
         try:
+            self._actions.publish_commentary(
+                run_id,
+                "Reading only the selected verified text sources.",
+            )
             remaining = active.review_expires_at - float(self._clock())
             if not math.isfinite(remaining) or remaining <= 0:
                 raise TaskFollowupContextError(
@@ -469,6 +478,10 @@ class TaskFollowupController(QObject):
             output = await asyncio.wait_for(
                 active.broker.execute(),
                 timeout=min(float(FOLLOWUP_RUNTIME_SECONDS), remaining),
+            )
+            self._actions.publish_commentary(
+                run_id,
+                "Response received; verifying bounded final delivery.",
             )
             verifier = verify_followup_output(active.run, output)
         except asyncio.CancelledError:
@@ -493,7 +506,16 @@ class TaskFollowupController(QObject):
                 self._store.record_tool_result(verifier)
                 active.run.complete(verifier)
                 self._store.sync_run(active.run)
+                record = self._store.get_task(run_id)
+                if record is None:
+                    raise TaskFollowupLaunchError(
+                        "Completed follow-up metadata disappeared"
+                    )
                 self._actions.publish_result(run_id, output.text)
+                self._actions.publish_done_title(
+                    record,
+                    TaskDoneTitleKind.LINKED_FOLLOWUP_RESULT,
+                )
                 self._actions.finish(run_id)
                 self._active.pop(run_id, None)
             except Exception:

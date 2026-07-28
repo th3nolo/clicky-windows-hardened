@@ -30,9 +30,16 @@ from tasks.task_center import (
     TaskActivityKind,
     TaskCenterActionRegistry,
     TaskCenterSnapshot,
+    TaskDoneTitle,
+    TaskDoneTitleKind,
     TaskDisplayContent,
+    TaskLiveCommentary,
+    TaskLivePresentation,
+    TaskNextAction,
+    TaskNextActionKind,
     build_task_center_snapshot,
     task_activities,
+    task_next_actions,
 )
 
 __all__ = [
@@ -47,7 +54,13 @@ __all__ = [
     "TaskActivityKind",
     "TaskCenterActionRegistry",
     "TaskCenterSnapshot",
+    "TaskDoneTitle",
+    "TaskDoneTitleKind",
     "TaskDisplayContent",
+    "TaskLiveCommentary",
+    "TaskLivePresentation",
+    "TaskNextAction",
+    "TaskNextActionKind",
     "TaskLimits",
     "TaskFollowupLink",
     "TaskRecord",
@@ -64,4 +77,5 @@ __all__ = [
     "ToolResultStatus",
     "build_task_center_snapshot",
     "task_activities",
+    "task_next_actions",
 ]
