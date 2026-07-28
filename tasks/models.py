@@ -30,6 +30,9 @@ MAX_MEDIA_TYPE_CHARS = 127
 MAX_RESULT_CODE_CHARS = 96
 MAX_PREVIEW_DIGESTS = 32
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_RUNTIME_SECONDS = 30 * 60
+MAX_TOOL_CALLS = 64
+MAX_NETWORK_REQUESTS = 32
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
@@ -68,6 +71,42 @@ class ToolResultStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskLimits:
+    """Execution ceilings copied from one reviewed skill definition."""
+
+    runtime_seconds: int
+    max_tool_calls: int
+    max_network_requests: int
+    max_output_bytes: int
+
+    def __post_init__(self) -> None:
+        _bounded_integer(
+            self.runtime_seconds,
+            minimum=1,
+            maximum=MAX_RUNTIME_SECONDS,
+            label="Task runtime limit",
+        )
+        _bounded_integer(
+            self.max_tool_calls,
+            minimum=1,
+            maximum=MAX_TOOL_CALLS,
+            label="Task tool-call limit",
+        )
+        _bounded_integer(
+            self.max_network_requests,
+            minimum=0,
+            maximum=MAX_NETWORK_REQUESTS,
+            label="Task network-request limit",
+        )
+        _bounded_integer(
+            self.max_output_bytes,
+            minimum=1,
+            maximum=MAX_ARTIFACT_BYTES,
+            label="Task output limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSpec:
     """Immutable user intent and the verifier that defines completion."""
 
@@ -79,6 +118,7 @@ class TaskSpec:
     requested_result: str
     verifier_step_id: str
     verifier_id: str
+    limits: TaskLimits
 
     def __post_init__(self) -> None:
         _bounded_id(self.run_id, label="Task run ID")
@@ -107,6 +147,8 @@ class TaskSpec:
         )
         _bounded_id(self.verifier_step_id, label="Verifier step ID")
         _bounded_id(self.verifier_id, label="Verifier ID")
+        if not isinstance(self.limits, TaskLimits):
+            raise TypeError("Task specification requires typed limits")
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,4 +600,16 @@ def _bounded_text(
 def _sha256(value: object, *, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{label} must be SHA-256")
+    return value
+
+
+def _bounded_integer(
+    value: object,
+    *,
+    minimum: int,
+    maximum: int,
+    label: str,
+) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{label} is invalid")
     return value
