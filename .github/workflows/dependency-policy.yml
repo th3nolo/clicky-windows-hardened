@@ -53,6 +53,7 @@ jobs:
           tests.test_compose_insertion
           tests.test_compose_service
           tests.test_desktop_automation_policy
+          tests.test_desktop_automation_task_center
           tests.test_desktop_automation_target_review
           tests.test_desktop_action_broker
           tests.test_desktop_action_protocol

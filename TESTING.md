@@ -205,6 +205,7 @@ Run:
 python -m unittest -v tests.test_desktop_automation_policy
 python -m unittest -v tests.test_desktop_automation_target_review tests.test_desktop_action_highlight
 python -m unittest -v tests.test_desktop_action_broker tests.test_desktop_action_protocol tests.test_desktop_uia_actions
+python -m unittest -v tests.test_desktop_automation_task_center
 ~~~
 
 Confirm the model binds one target to process ID and start time, application
@@ -223,6 +224,17 @@ wrong-nonce, and incorrectly authenticated responses. Every allowlisted
 pattern must be invoked at most once and must expose action-specific observed
 post-state. A failed postcondition cannot be success, and a post-delivery
 transport failure must remain an unknown outcome.
+
+Confirm the Task Center shows the exact reviewed target, semantic action,
+desktop capability, approval ID, truthful result code, observed postcondition
+when available, and verifier-evidence digest. Approval, rejection, timeout, and
+cancellation must consume the live callback exactly once. A task with only
+tutor, dictation, compose, pointing, response-provider, or workspace authority
+must never substitute that grant for `desktop.uia.action`. Stop an approved but
+queued action and confirm the worker is never launched. The integration suite
+must also prove that target swapping, focus theft, disappearing controls,
+misleading labels, elevation mismatch, and secure-desktop transitions end in
+an explicit failure without reaching the worker.
 
 On a disposable native Windows desktop containing only synthetic controls,
 start a source test build with desktop automation still build-unavailable and
