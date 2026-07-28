@@ -84,6 +84,7 @@ hidden = [
     "research.docx_artifact",
     "research.markdown_artifact",
     "research.pdf_artifact",
+    "research.xlsx_artifact",
     "research.tools",
     "sheets_contracts",
     "slides_contracts",
@@ -156,6 +157,10 @@ datas += [
     ),
     (
         "skills/declarative/research-to-pdf.skill.json",
+        "skills/declarative",
+    ),
+    (
+        "skills/declarative/research-to-xlsx.skill.json",
         "skills/declarative",
     ),
     (

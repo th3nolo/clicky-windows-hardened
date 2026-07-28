@@ -408,6 +408,55 @@ class ResearchPdfFileExpectation:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchXlsxFileExpectation:
+    """Exact file, canonical workbook, and source-table postconditions."""
+
+    file: FileExpectation
+    requested_field_ids: tuple[str, ...]
+    requested_rows: int
+    source_csv_sha256: str
+    schema_digest: str
+    table_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileExpectation):
+            raise TypeError(
+                "Research XLSX file expectation must be typed"
+            )
+        from research.csv_artifact import ResearchCsvSchema
+        from research.xlsx_artifact import (
+            MAX_RESEARCH_XLSX_BYTES,
+            XLSX_MEDIA_TYPE,
+        )
+
+        schema = ResearchCsvSchema(self.requested_field_ids)
+        if type(self.requested_rows) is not int or not (
+            1 <= self.requested_rows <= 100
+        ):
+            raise ValueError(
+                "Research XLSX requested row count is invalid"
+            )
+        for value, label in (
+            (self.source_csv_sha256, "source CSV"),
+            (self.schema_digest, "schema"),
+            (self.table_digest, "table"),
+        ):
+            _sha256(value, f"Research XLSX {label} digest")
+        if self.schema_digest != schema.schema_digest:
+            raise ValueError("Research XLSX schema digest is invalid")
+        if (
+            self.file.expected_sha256 is None
+            or self.file.expected_media_type != XLSX_MEDIA_TYPE
+            or self.file.maximum_bytes is None
+            or self.file.maximum_bytes > MAX_RESEARCH_XLSX_BYTES
+        ):
+            raise ValueError(
+                "Research XLSX verification requires digest, media type, "
+                "and a bounded maximum size"
+            )
+
+
 def verify_file(
     snapshot: FileSnapshot,
     expectation: FileExpectation,
@@ -859,6 +908,91 @@ def verify_research_pdf_file(
     )
 
 
+def verify_research_xlsx_file(
+    snapshot: FileSnapshot,
+    expectation: ResearchXlsxFileExpectation,
+    *,
+    verifier_id: str,
+    content: bytes,
+) -> VerificationEvidence:
+    """Verify exact identity, canonical inert XLSX, and source-table parity."""
+
+    if not isinstance(snapshot, FileSnapshot):
+        raise TypeError("Research XLSX verifier snapshot is invalid")
+    if not isinstance(expectation, ResearchXlsxFileExpectation):
+        raise TypeError("Research XLSX verifier expectation is invalid")
+    if not isinstance(content, bytes):
+        raise TypeError(
+            "Research XLSX verifier content must be immutable bytes"
+        )
+    from research.csv_artifact import ResearchCsvSchema
+    from research.xlsx_artifact import inspect_research_xlsx
+
+    file = expectation.file
+    integrity = (
+        len(content) == snapshot.byte_count
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+    checks = {
+        "complete_pending_file": snapshot.complete,
+        "content_integrity": integrity,
+        "expected_sha256": snapshot.sha256 == file.expected_sha256,
+        "expected_media_type": (
+            snapshot.media_type == file.expected_media_type
+        ),
+        "maximum_bytes": (
+            file.maximum_bytes is not None
+            and snapshot.byte_count <= file.maximum_bytes
+        ),
+    }
+    if file.minimum_bytes is not None:
+        checks["minimum_bytes"] = (
+            snapshot.byte_count >= file.minimum_bytes
+        )
+    inspection = inspect_research_xlsx(
+        content,
+        ResearchCsvSchema(expectation.requested_field_ids),
+        requested_rows=expectation.requested_rows,
+        maximum_bytes=file.maximum_bytes,
+    )
+    checks["research_xlsx_structure"] = inspection.structurally_valid
+    checks["research_xlsx_rows"] = (
+        inspection.row_count == expectation.requested_rows
+    )
+    checks["research_xlsx_source_csv"] = (
+        inspection.source_csv_sha256 == expectation.source_csv_sha256
+    )
+    checks["research_xlsx_schema"] = (
+        inspection.schema_digest == expectation.schema_digest
+    )
+    checks["research_xlsx_table"] = (
+        inspection.table_digest == expectation.table_digest
+    )
+    return _evidence(
+        verifier_id=verifier_id,
+        subject_kind=VerificationSubjectKind.FILE,
+        subject_reference=snapshot.artifact_id,
+        subject_digest=snapshot.sha256,
+        checks=checks,
+        observed={
+            "byte_count": snapshot.byte_count,
+            "media_type": snapshot.media_type,
+            "provenance_digest": snapshot.provenance_digest,
+            "research_xlsx_cells": inspection.cell_count,
+            "research_xlsx_columns": inspection.column_count,
+            "research_xlsx_parts": inspection.package_part_count,
+            "research_xlsx_result": inspection.result_code,
+            "research_xlsx_rows": inspection.row_count,
+            "research_xlsx_schema_digest": inspection.schema_digest,
+            "research_xlsx_source_csv_sha256": (
+                inspection.source_csv_sha256
+            ),
+            "research_xlsx_table_digest": inspection.table_digest,
+            "requested_rows": expectation.requested_rows,
+        },
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ApiResponseSnapshot:
     response_id: str
@@ -1271,6 +1405,7 @@ __all__ = [
     "ResearchCsvFileVerification",
     "ResearchDocxFileExpectation",
     "ResearchPdfFileExpectation",
+    "ResearchXlsxFileExpectation",
     "ResearchMarkdownFileExpectation",
     "ResearchMarkdownFileVerification",
     "RepositoryExpectation",
@@ -1285,6 +1420,7 @@ __all__ = [
     "verify_research_docx_file",
     "verify_research_markdown_file",
     "verify_research_pdf_file",
+    "verify_research_xlsx_file",
     "verify_repository",
     "verify_ui_state",
 ]

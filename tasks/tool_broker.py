@@ -83,11 +83,13 @@ from tasks.verifiers import (
     ResearchDocxFileExpectation,
     ResearchMarkdownFileExpectation,
     ResearchPdfFileExpectation,
+    ResearchXlsxFileExpectation,
     verify_file,
     verify_research_csv_file,
     verify_research_docx_file,
     verify_research_markdown_file,
     verify_research_pdf_file,
+    verify_research_xlsx_file,
 )
 
 
@@ -131,6 +133,10 @@ _INERT_ARTIFACT_MEDIA = frozenset(
         "application/pdf",
         (
             "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        (
+            "application/vnd.openxmlformats-officedocument."
             "wordprocessingml.document"
         ),
         "text/csv",
@@ -141,6 +147,10 @@ _INERT_ARTIFACT_MEDIA = frozenset(
 _MEDIA_EXTENSIONS = {
     "application/json": frozenset({".json"}),
     "application/pdf": frozenset({".pdf"}),
+    (
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet"
+    ): frozenset({".xlsx"}),
     (
         "application/vnd.openxmlformats-officedocument."
         "wordprocessingml.document"
@@ -983,6 +993,49 @@ class ResearchPdfRenderArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchXlsxRenderArguments:
+    csv_content: bytes = field(repr=False)
+    requested_rows: int
+    field_ids: tuple[str, ...]
+    source_csv_sha256: str
+    schema_digest: str
+    maximum_output_bytes: int
+
+    def __post_init__(self) -> None:
+        from research.csv_artifact import ResearchCsvSchema
+        from research.models import MAX_RESEARCH_BYTES
+        from research.xlsx_artifact import MAX_RESEARCH_XLSX_BYTES
+
+        if (
+            not isinstance(self.csv_content, bytes)
+            or not 1 <= len(self.csv_content) <= MAX_RESEARCH_BYTES
+        ):
+            raise ValueError("Research XLSX source CSV is invalid")
+        schema = ResearchCsvSchema(self.field_ids)
+        _bounded_integer(
+            self.requested_rows,
+            1,
+            100,
+            "Research XLSX requested row count",
+        )
+        if (
+            not isinstance(self.source_csv_sha256, str)
+            or _SHA256.fullmatch(self.source_csv_sha256) is None
+            or self.source_csv_sha256
+            != hashlib.sha256(self.csv_content).hexdigest()
+        ):
+            raise ValueError("Research XLSX source CSV digest is invalid")
+        if self.schema_digest != schema.schema_digest:
+            raise ValueError("Research XLSX schema digest is invalid")
+        _bounded_integer(
+            self.maximum_output_bytes,
+            1,
+            MAX_RESEARCH_XLSX_BYTES,
+            "Research XLSX output limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactWriteArguments:
     artifact_id: str
     name: str
@@ -1063,6 +1116,11 @@ class VerifyOutputArguments:
     research_pdf_document_digest: str | None = None
     research_pdf_source_digest: str | None = None
     research_pdf_page_count: int | None = None
+    research_xlsx_field_ids: tuple[str, ...] = ()
+    research_xlsx_requested_rows: int | None = None
+    research_xlsx_source_csv_sha256: str | None = None
+    research_xlsx_schema_digest: str | None = None
+    research_xlsx_table_digest: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_token(
@@ -1325,8 +1383,70 @@ class VerifyOutputArguments:
                     "Research PDF verifier requires digest, media type, "
                     "and a bounded maximum size"
                 )
+        research_xlsx = any(
+            (
+                bool(self.research_xlsx_field_ids),
+                self.research_xlsx_requested_rows is not None,
+                self.research_xlsx_source_csv_sha256 is not None,
+                self.research_xlsx_schema_digest is not None,
+                self.research_xlsx_table_digest is not None,
+            )
+        )
+        if research_xlsx:
+            from research.csv_artifact import ResearchCsvSchema
+            from research.xlsx_artifact import (
+                MAX_RESEARCH_XLSX_BYTES,
+                XLSX_MEDIA_TYPE,
+            )
+
+            if (
+                self.research_xlsx_requested_rows is None
+                or self.research_xlsx_source_csv_sha256 is None
+                or self.research_xlsx_schema_digest is None
+                or self.research_xlsx_table_digest is None
+            ):
+                raise ValueError(
+                    "Research XLSX verifier metadata is incomplete"
+                )
+            schema = ResearchCsvSchema(self.research_xlsx_field_ids)
+            _bounded_integer(
+                self.research_xlsx_requested_rows,
+                1,
+                100,
+                "Research XLSX requested row count",
+            )
+            for value in (
+                self.research_xlsx_source_csv_sha256,
+                self.research_xlsx_schema_digest,
+                self.research_xlsx_table_digest,
+            ):
+                if (
+                    not isinstance(value, str)
+                    or _SHA256.fullmatch(value) is None
+                ):
+                    raise ValueError(
+                        "Research XLSX verifier digest is invalid"
+                    )
+            if self.research_xlsx_schema_digest != schema.schema_digest:
+                raise ValueError("Research XLSX schema digest is invalid")
+            if (
+                self.expected_sha256 is None
+                or self.expected_media_type != XLSX_MEDIA_TYPE
+                or self.maximum_bytes is None
+                or self.maximum_bytes > MAX_RESEARCH_XLSX_BYTES
+            ):
+                raise ValueError(
+                    "Research XLSX verifier requires digest, media type, "
+                    "and a bounded maximum size"
+                )
         if sum(
-            (research_csv, research_markdown, research_docx, research_pdf)
+            (
+                research_csv,
+                research_markdown,
+                research_docx,
+                research_pdf,
+                research_xlsx,
+            )
         ) > 1:
             raise ValueError(
                 "Verifier cannot combine research artifact schemas"
@@ -1342,6 +1462,7 @@ class VerifyOutputArguments:
                 research_markdown,
                 research_docx,
                 research_pdf,
+                research_xlsx,
             )
         ):
             raise ValueError("Verifier requires an explicit postcondition")
@@ -1365,6 +1486,7 @@ BrokerArguments = (
     | ResearchMarkdownRenderArguments
     | ResearchDocxRenderArguments
     | ResearchPdfRenderArguments
+    | ResearchXlsxRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
     | VerifyOutputArguments
@@ -1629,6 +1751,7 @@ class TaskToolBroker:
             content_digest = hashlib.sha256(arguments.content).hexdigest()
             from research.docx_artifact import DOCX_MEDIA_TYPE
             from research.pdf_artifact import PDF_MEDIA_TYPE
+            from research.xlsx_artifact import XLSX_MEDIA_TYPE
 
             if arguments.media_type == DOCX_MEDIA_TYPE:
                 from research.docx_artifact import safe_docx_text_preview
@@ -1638,6 +1761,10 @@ class TaskToolBroker:
                 from research.pdf_artifact import safe_pdf_text_preview
 
                 excerpt = safe_pdf_text_preview(arguments.content)
+            elif arguments.media_type == XLSX_MEDIA_TYPE:
+                from research.xlsx_artifact import safe_xlsx_table_preview
+
+                excerpt = safe_xlsx_table_preview(arguments.content)
             else:
                 excerpt = arguments.content.decode("utf-8")[:24 * 1024]
             target = task_artifact_target(
@@ -1963,6 +2090,8 @@ class TaskToolBroker:
             return self._render_research_docx(call, arguments)
         if type(arguments) is ResearchPdfRenderArguments:
             return self._render_research_pdf(call, arguments)
+        if type(arguments) is ResearchXlsxRenderArguments:
+            return self._render_research_xlsx(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
             return self._write_artifact(call, arguments)
         if type(arguments) is ArtifactReadArguments:
@@ -2421,6 +2550,38 @@ class TaskToolBroker:
             content=artifact.content,
         )
 
+    def _render_research_xlsx(
+        self,
+        call: ToolCall,
+        arguments: ResearchXlsxRenderArguments,
+    ) -> BrokerExecution:
+        from research.csv_artifact import ResearchCsvSchema
+        from research.xlsx_artifact import render_research_csv_to_xlsx
+
+        try:
+            artifact = render_research_csv_to_xlsx(
+                arguments.csv_content,
+                ResearchCsvSchema(arguments.field_ids),
+                requested_rows=arguments.requested_rows,
+                maximum_output_bytes=arguments.maximum_output_bytes,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "research_xlsx_render_failed"
+            ) from exc
+        if (
+            artifact.source_csv_sha256 != arguments.source_csv_sha256
+            or artifact.schema_digest != arguments.schema_digest
+        ):
+            raise TaskToolBrokerOperationError(
+                "research_xlsx_render_failed"
+            )
+        self._reserve_output(len(artifact.content))
+        return BrokerExecution(
+            result=_succeeded_result(call, artifact.content),
+            content=artifact.content,
+        )
+
     def _render_notion_draft(
         self,
         call: ToolCall,
@@ -2483,6 +2644,7 @@ class TaskToolBroker:
         research_markdown_verification = None
         research_docx_verification = None
         research_pdf_verification = None
+        research_xlsx_verification = None
         if arguments.research_csv_requested_rows is not None:
             research_verification = verify_research_csv_file(
                 pending.file_snapshot(),
@@ -2585,6 +2747,26 @@ class TaskToolBroker:
                 content=content,
             )
             evidence = research_pdf_verification
+        elif arguments.research_xlsx_requested_rows is not None:
+            assert arguments.research_xlsx_source_csv_sha256 is not None
+            assert arguments.research_xlsx_schema_digest is not None
+            assert arguments.research_xlsx_table_digest is not None
+            research_xlsx_verification = verify_research_xlsx_file(
+                pending.file_snapshot(),
+                ResearchXlsxFileExpectation(
+                    file=file_expectation,
+                    requested_field_ids=arguments.research_xlsx_field_ids,
+                    requested_rows=arguments.research_xlsx_requested_rows,
+                    source_csv_sha256=(
+                        arguments.research_xlsx_source_csv_sha256
+                    ),
+                    schema_digest=arguments.research_xlsx_schema_digest,
+                    table_digest=arguments.research_xlsx_table_digest,
+                ),
+                verifier_id=arguments.verifier_id,
+                content=content,
+            )
+            evidence = research_xlsx_verification
         else:
             evidence = verify_file(
                 pending.file_snapshot(),
@@ -2894,6 +3076,15 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "requested_sections": arguments.requested_sections,
             "source_digest": arguments.source_digest,
         }
+    if type(arguments) is ResearchXlsxRenderArguments:
+        return {
+            "csv_bytes": len(arguments.csv_content),
+            "field_ids": list(arguments.field_ids),
+            "maximum_output_bytes": arguments.maximum_output_bytes,
+            "requested_rows": arguments.requested_rows,
+            "schema_digest": arguments.schema_digest,
+            "source_csv_sha256": arguments.source_csv_sha256,
+        }
     if type(arguments) is ArtifactWriteArguments:
         return {
             "artifact_id": arguments.artifact_id,
@@ -2991,6 +3182,21 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "research_pdf_source_digest": (
                 arguments.research_pdf_source_digest
             ),
+            "research_xlsx_field_ids": list(
+                arguments.research_xlsx_field_ids
+            ),
+            "research_xlsx_requested_rows": (
+                arguments.research_xlsx_requested_rows
+            ),
+            "research_xlsx_schema_digest": (
+                arguments.research_xlsx_schema_digest
+            ),
+            "research_xlsx_source_csv_sha256": (
+                arguments.research_xlsx_source_csv_sha256
+            ),
+            "research_xlsx_table_digest": (
+                arguments.research_xlsx_table_digest
+            ),
             "verifier_id": arguments.verifier_id,
         }
     raise TypeError("Broker arguments use an unknown schema")
@@ -3006,6 +3212,7 @@ _ARGUMENT_TYPES = {
     ),
     DeclarativeTool.RESEARCH_DOCX_RENDER: ResearchDocxRenderArguments,
     DeclarativeTool.RESEARCH_PDF_RENDER: ResearchPdfRenderArguments,
+    DeclarativeTool.RESEARCH_XLSX_RENDER: ResearchXlsxRenderArguments,
     DeclarativeTool.NOTION_DRAFT_RENDER: NotionDraftRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
@@ -3103,6 +3310,7 @@ def _validate_inert_artifact_content(
 ) -> None:
     from research.docx_artifact import DOCX_MEDIA_TYPE
     from research.pdf_artifact import PDF_MEDIA_TYPE
+    from research.xlsx_artifact import XLSX_MEDIA_TYPE
 
     if media_type == DOCX_MEDIA_TYPE:
         from research.docx_artifact import validate_safe_docx_package
@@ -3122,6 +3330,16 @@ def _validate_inert_artifact_content(
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 "PDF artifact document is not inert and valid"
+            ) from exc
+        return
+    if media_type == XLSX_MEDIA_TYPE:
+        from research.xlsx_artifact import validate_safe_xlsx_package
+
+        try:
+            validate_safe_xlsx_package(content)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "XLSX artifact package is not inert and valid"
             ) from exc
         return
     try:
@@ -3321,6 +3539,7 @@ __all__ = [
     "ResearchDocxRenderArguments",
     "ResearchMarkdownRenderArguments",
     "ResearchPdfRenderArguments",
+    "ResearchXlsxRenderArguments",
     "ResolvedSlidesExportArguments",
     "ResolvedSheetsExportArguments",
     "SheetsExportArguments",
