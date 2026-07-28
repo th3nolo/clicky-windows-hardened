@@ -196,6 +196,35 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
+### Workspace coding threat-model gate
+
+`WORKSPACE_CODING_SECURITY.md` selects a fresh, network-disabled Windows
+Sandbox as the only V1 execution boundary. Merging that decision permits later
+implementation work; it does not make workspace coding build-available.
+
+Before implementing the boundary, confirm the source-level regression test:
+
+~~~powershell
+python -m unittest -v tests.test_workspace_coding_threat_model
+~~~
+
+It must prove that workspace read, write, and command remain separate
+capabilities; writes and commands require action approval; the baseline build
+flag remains unavailable; Codex and Qwen Code response providers receive no
+workspace capability; networking and host redirections are disabled; the
+original repository is never mapped; command strings and dependency
+installation are unavailable; and isolated result production grants no Apply
+authority.
+
+The future interactive gate must use a disposable synthetic Git repository on
+a fixed local NTFS drive. It must demonstrate Sandbox-unavailable fail-closed
+behavior, exact two-mapping configuration, no host profile/credential/original
+repository visibility, denied path/reparse/hardlink/alternate-stream handling,
+dirty and untracked baseline preservation, offline tokenized command approval,
+process-tree cancellation, bounded untrusted output, and stale-original
+rejection. Do not test with real secrets or a repository containing personal
+data.
+
 ### Screen-Aware Compose contract
 
 Use a test build where only Screen-Aware Compose is build-available. Grant its
