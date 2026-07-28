@@ -99,6 +99,7 @@ hidden = [
     "workspace_coding.sandbox",
     "workspace_coding.snapshot",
     "handoff.image_capture",
+    "handoff.routing",
     "handoff.selection",
 
     # Lazy STT providers

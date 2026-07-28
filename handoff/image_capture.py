@@ -155,7 +155,7 @@ def build_selected_image(
                     relative_left + region.width,
                     relative_top + region.height,
                 )
-            ).convert("RGBA")
+            ).convert("RGB")
     except HandoffSelectionError:
         raise
     except Exception as exc:
@@ -197,13 +197,19 @@ def build_selected_image(
         ImageDraw.Draw(mask).polygon(polygon, fill=255)
         mask_bytes = mask.tobytes()
         mask_sha256 = hashlib.sha256(mask_bytes).hexdigest()
-        image.putalpha(mask)
+        background = Image.new("RGB", image.size, (16, 24, 39))
+        image = Image.composite(image, background, mask)
 
     output = io.BytesIO()
-    image.save(output, format="PNG", optimize=True)
+    image.save(
+        output,
+        format="JPEG",
+        quality=90,
+        optimize=True,
+    )
     return BuiltSelectionImage(
         content=bytearray(output.getvalue()),
-        media_type="image/png",
+        media_type="image/jpeg",
         mask_sha256=mask_sha256,
     )
 

@@ -1,8 +1,7 @@
-"""Locked-PyQt tests for the explicit, preview-only region UI."""
+"""Locked-PyQt tests for the explicit one-use region UI."""
 
 from __future__ import annotations
 
-import base64
 import io
 import os
 import unittest
@@ -16,6 +15,7 @@ try:
     from PyQt6.QtWidgets import QApplication
 
     from handoff.models import (
+        HandoffDestination,
         PhysicalRegion,
         SelectionShape,
         topology_digest,
@@ -65,9 +65,6 @@ class RegionHandoffUiTests(unittest.TestCase):
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG")
         self.jpeg = buffer.getvalue()
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        self.png = buffer.getvalue()
 
     def _bundle(self) -> RegionCaptureBundle:
         return RegionCaptureBundle(
@@ -89,8 +86,8 @@ class RegionHandoffUiTests(unittest.TestCase):
             bundle,
             image_builder=lambda _frame, _region, _points: (
                 BuiltSelectionImage(
-                    bytearray(self.png),
-                    "image/png",
+                    bytearray(self.jpeg),
+                    "image/jpeg",
                 )
             ),
             topology_provider=lambda: (self.monitor,),
@@ -124,8 +121,12 @@ class RegionHandoffUiTests(unittest.TestCase):
             overlay.close()
 
     def test_preview_requires_destination_and_purpose(self) -> None:
-        preview = RegionHandoffPreview(self._payload())
+        preview = RegionHandoffPreview(
+            self._payload(),
+            (HandoffDestination.TUTOR_CONTEXT,),
+        )
         try:
+            self.assertEqual(preview._destination.count(), 2)
             self.assertIsNone(preview._destination.currentData())
             self.assertFalse(preview._approve.isEnabled())
             preview._destination.setCurrentIndex(1)
@@ -142,6 +143,9 @@ class RegionHandoffUiTests(unittest.TestCase):
         captured = self._bundle()
         controller = QtRegionHandoffController(
             turns,
+            available_destinations=(
+                HandoffDestination.TUTOR_CONTEXT,
+            ),
             clock=lambda: 20.0,
             mode_picker=lambda: SelectionShape.RECTANGLE,
             capture_factory=lambda **_kwargs: captured,

@@ -183,7 +183,7 @@ class TrayManager(QObject):
         scope_action = menu.addAction(scope_label)
         scope_action.triggered.connect(self._prompt_custom_instructions)
         region_action = menu.addAction(
-            "Select screen region (preview only)…"
+            "Select screen region…"
         )
         region_action.triggered.connect(self.on_select_region)
         if build_feature_available(

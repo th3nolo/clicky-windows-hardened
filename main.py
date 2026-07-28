@@ -148,10 +148,27 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    import secrets
+
+    from handoff.models import HandoffDestination
+    from handoff.routing import HandoffRouter, HandoffRoutingError
     from ui.region_handoff import QtRegionHandoffController
 
+    handoff_router = HandoffRouter(
+        {
+            HandoffDestination.TUTOR_CONTEXT: (
+                manager.route_region_to_tutor
+            ),
+        },
+        route_id_factory=lambda: (
+            f"route-{secrets.token_hex(16)}"
+        ),
+    )
     region_handoff = QtRegionHandoffController(
-        manager.turn_coordinator
+        manager.turn_coordinator,
+        available_destinations=(
+            handoff_router.available_destinations
+        ),
     )
     _region_handoff_keepalive[0] = region_handoff
     if privacy_permission_error is not None:
@@ -359,13 +376,17 @@ def main():
 
     def _reviewed_region_handoff(result):
         try:
+            receipt = handoff_router.route(result)
             tray.show_notification(
-                "Screen region reviewed",
-                f"Destination: {result.review.destination_label}. "
-                "Preview only: nothing was routed or changed.",
+                "Screen region routed",
+                f"Destination: {receipt.destination.value}. "
+                "The reviewed crop was accepted for one use.",
             )
-        finally:
-            result.wipe()
+        except HandoffRoutingError as exc:
+            tray.show_notification(
+                "Screen region discarded",
+                str(exc),
+            )
 
     region_handoff.reviewed.connect(_reviewed_region_handoff)
     region_handoff.failed.connect(

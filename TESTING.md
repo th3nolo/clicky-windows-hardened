@@ -196,16 +196,17 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
-### Preview-only screen-region selection
+### One-use screen-region selection and Tutor routing
 
 Run the pure contract and wiring tests without screen access:
 
 ~~~powershell
-python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_wiring
+python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_routing tests.test_region_handoff_wiring
 ~~~
 
-The locked Windows suite additionally runs `tests.test_region_handoff_ui`.
-Confirm a fresh tray menu includes **Select screen region (preview only)…**.
+The locked Windows suite additionally runs `tests.test_region_handoff_ui` and
+`tests.test_region_handoff_tutor`. Confirm a fresh tray menu includes
+**Select screen region…**.
 Without the current screen-capture permission it must fail before capture.
 With permission, choose Rectangle and Freehand circle separately on every
 monitor, including negative-origin and mixed-DPI arrangements. Confirm the
@@ -218,14 +219,20 @@ lasso, capture-exclusion failure, and application shutdown must close every
 overlay and wipe the transient frames.
 
 The review must show the exact selected image, require the user to choose
-Tutor context, Compose preview, or New Task Agent run, require a purpose, and
-label the data as selected screen pixels. Approve each destination and confirm
-the current revision reports **Preview only**, sends no provider request,
-starts no task, inserts nothing, changes no desktop state, and immediately
-wipes the selected bytes. Inspect the packaged smoke build to confirm the
-three lazy region modules are present. These source/UI checks are not live
-proof of compositor exclusion, multi-monitor DPI behavior, or pixel wiping;
-record those native observations separately.
+Tutor context, require a purpose, and label the data as selected screen pixels.
+Compose preview and New Task Agent run must not appear because the current build
+has no registered caller for either destination. Approve Tutor once and confirm
+one new provider request contains only the exact reviewed JPEG and purpose,
+with an empty conversation history. Confirm it does not recapture the screen,
+start a task, insert text, emit a drawing action, or change desktop state.
+Attempt to reuse the same intent and confirm it is rejected before a second
+provider call. Revoke screen permission, change the selected bytes, expire the
+intent, cancel with Escape, and stop the accepted turn; each path must fail
+closed and wipe its transient bytearrays. Inspect the packaged smoke build to
+confirm the four lazy region modules are present. These source/UI checks are
+not live proof of provider delivery, compositor exclusion, multi-monitor DPI
+behavior, cancellation timing, or pixel wiping; record those native
+observations separately.
 
 ### Desktop automation target, approval, and one-shot action boundary
 

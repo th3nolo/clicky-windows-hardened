@@ -218,18 +218,24 @@ show an explicit Tutor, Compose, or new Task Agent destination and the data
 class that may leave the process. Focus cannot select a destination, and a
 selection grants no insertion, connector, coding, task, or desktop-action
 authority. Topology, DPI, capture-generation, bounds, or expiry changes fail
-closed. The tray now exposes a preview-only rectangle or freehand-circle
+closed. The tray exposes a rectangle or freehand-circle
 selection flow. It captures full-resolution frozen monitor frames through the
 same owned-window exclusion boundary, consumes pointer input in one overlay per
 monitor, binds the selection to the shared Escape/supersession coordinator, and
 wipes full frames after completion, cancellation, expiry, or failure. The
 review requires a destination, purpose, and visible screen-pixel data class,
-but this revision intentionally discards the reviewed pixels without routing
-them. Tutor, Compose, and new Task Agent caller adapters remain unavailable.
-The bytearray buffers are overwritten before release and selection windows are
-destroyed, but Python, Qt, image codecs, GPU/compositor memory, paging, crash
-dumps, and other same-user processes prevent this from being a forensic-erasure
-guarantee.
+and exposes only caller adapters registered in the current build. The current
+build registers Tutor context only. One approval claims the reviewed intent
+before dispatch and sends one owned copy of the exact reviewed JPEG to a new
+Tutor turn. That turn has no conversation history, does not recapture the
+screen, strips drawing tags, and receives no insertion, connector, coding,
+task, or desktop-action authority. Replay, expiry, changed bytes, unavailable
+destinations, and failed dispatch are rejected and consumed. Compose and new
+Task Agent callers remain unavailable and therefore do not appear in the
+review. The bytearray buffers are overwritten before release and selection
+windows are destroyed, but provider serialization, Python, Qt, image codecs,
+GPU/compositor memory, paging, crash dumps, and other same-user processes
+prevent this from being a forensic-erasure guarantee.
 
 ## Release and executable policy
 

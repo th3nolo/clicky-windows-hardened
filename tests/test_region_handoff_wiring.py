@@ -1,4 +1,4 @@
-"""Source-level guardrails for the preview-only region selection caller."""
+"""Source-level guardrails for one-use region selection and routing."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RegionHandoffWiringTests(unittest.TestCase):
-    def test_tray_and_main_expose_one_explicit_preview_only_caller(
+    def test_tray_and_main_expose_one_explicit_one_use_caller(
         self,
     ) -> None:
         tray = (ROOT / "ui" / "tray.py").read_text(encoding="utf-8")
         main = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("on_select_region = pyqtSignal()", tray)
         self.assertIn(
-            "Select screen region (preview only)…",
+            "Select screen region…",
             tray,
         )
         self.assertIn(
@@ -26,7 +26,7 @@ class RegionHandoffWiringTests(unittest.TestCase):
             main,
         )
         self.assertIn(
-            "Preview only: nothing was routed or changed.",
+            "handoff_router.route(result)",
             main,
         )
         self.assertIn(
@@ -78,11 +78,36 @@ class RegionHandoffWiringTests(unittest.TestCase):
         source = (ROOT / "clicky.spec").read_text(encoding="utf-8")
         for module in (
             '"handoff.image_capture"',
+            '"handoff.routing"',
             '"handoff.selection"',
             '"ui.region_handoff"',
         ):
             with self.subTest(module=module):
                 self.assertIn(module, source)
+
+    def test_tutor_route_uses_reviewed_crop_without_recapture_or_history(
+        self,
+    ) -> None:
+        path = ROOT / "companion_manager.py"
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        methods = {
+            node.name: ast.get_source_segment(source, node) or ""
+            for node in ast.walk(tree)
+            if isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            )
+        }
+        route = methods["route_region_to_tutor"]
+        worker = methods["_run_region_tutor"]
+        self.assertNotIn("capture_all_screens(", route)
+        self.assertNotIn("capture_all_screens(", worker)
+        self.assertIn("screenshots_b64=[encoded]", worker)
+        self.assertIn("history=[]", worker)
+        self.assertNotIn("_app_memory", worker)
+        self.assertNotIn("journal.", worker)
+        self.assertNotIn("tasks.", worker)
 
 
 if __name__ == "__main__":
