@@ -30,6 +30,9 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 hidden = [
     "automation.models",
     "automation.policy",
+    "automation.review",
+    "automation.stop",
+    "automation.targeting",
     # Lazy LLM providers
     "ai.claude_provider",
     "ai.openai_provider",
@@ -77,6 +80,7 @@ hidden = [
     "ui.skills_catalog",
     "ui.task_center",
     "ui.connected_accounts",
+    "ui.desktop_action_highlight",
     "ui.workspace_diff_review",
     "workspace_coding.adoption",
     "workspace_coding.broker",
