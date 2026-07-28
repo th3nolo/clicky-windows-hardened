@@ -78,6 +78,7 @@ hidden = [
     "notion_contracts",
     "research.models",
     "research.csv_artifact",
+    "research.markdown_artifact",
     "research.tools",
     "sheets_contracts",
     "slides_contracts",
@@ -142,6 +143,10 @@ datas += [
     ("skills/declarative/manifest.json", "skills/declarative"),
     (
         "skills/declarative/research-to-csv.skill.json",
+        "skills/declarative",
+    ),
+    (
+        "skills/declarative/research-to-markdown.skill.json",
         "skills/declarative",
     ),
     ("skills/example_self_mode.py", "skills"),

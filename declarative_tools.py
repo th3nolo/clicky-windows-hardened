@@ -16,6 +16,7 @@ class DeclarativeTool(str, Enum):
     WEB_SEARCH = "web.search"
     WEB_FETCH = "web.fetch"
     RESEARCH_CSV_RENDER = "research.csv.render"
+    RESEARCH_MARKDOWN_RENDER = "research.markdown.render"
     NOTION_DRAFT_RENDER = "notion.draft.render"
     ARTIFACT_READ = "artifact.read"
     ARTIFACT_WRITE = "artifact.write"
@@ -32,6 +33,7 @@ TOOL_CAPABILITIES: Mapping[
         DeclarativeTool.WEB_SEARCH: CapabilityId.WEB_SEARCH_BOUNDED,
         DeclarativeTool.WEB_FETCH: CapabilityId.WEB_FETCH_BOUNDED,
         DeclarativeTool.RESEARCH_CSV_RENDER: CapabilityId.TASK_AGENT_RUN,
+        DeclarativeTool.RESEARCH_MARKDOWN_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.NOTION_DRAFT_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.ARTIFACT_READ: CapabilityId.LOCAL_ARTIFACT_READ,
         DeclarativeTool.ARTIFACT_WRITE: CapabilityId.LOCAL_ARTIFACT_WRITE,

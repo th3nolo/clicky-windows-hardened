@@ -71,8 +71,10 @@ from tasks.models import (
 from tasks.verifiers import (
     FileExpectation,
     ResearchCsvFileExpectation,
+    ResearchMarkdownFileExpectation,
     verify_file,
     verify_research_csv_file,
+    verify_research_markdown_file,
 )
 
 
@@ -717,6 +719,44 @@ class ResearchCsvRenderArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchMarkdownRenderArguments:
+    records_json: str = field(repr=False)
+    source_context: str = field(repr=False)
+    report_title: str
+    requested_sections: int
+    field_ids: tuple[str, ...]
+    maximum_output_bytes: int
+
+    def __post_init__(self) -> None:
+        _bounded_text(
+            self.records_json,
+            MAX_RESEARCH_RECORD_JSON_CHARS,
+            "Research record JSON",
+        )
+        _bounded_text(
+            self.source_context,
+            MAX_MODEL_CONTEXT_CHARS,
+            "Research source context",
+        )
+        _bounded_integer(
+            self.requested_sections,
+            1,
+            100,
+            "Research requested section count",
+        )
+        from research.markdown_artifact import ResearchMarkdownSchema
+        from research.models import MAX_RESEARCH_BYTES
+
+        ResearchMarkdownSchema(self.report_title, self.field_ids)
+        _bounded_integer(
+            self.maximum_output_bytes,
+            1,
+            MAX_RESEARCH_BYTES,
+            "Research Markdown output limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactWriteArguments:
     artifact_id: str
     name: str
@@ -780,6 +820,10 @@ class VerifyOutputArguments:
     required_utf8_substrings: tuple[str, ...] = ()
     research_csv_field_ids: tuple[str, ...] = ()
     research_csv_requested_rows: int | None = None
+    research_markdown_report_title: str | None = None
+    research_markdown_field_ids: tuple[str, ...] = ()
+    research_markdown_requested_sections: int | None = None
+    research_markdown_source_digest: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_token(
@@ -863,6 +907,62 @@ class VerifyOutputArguments:
                     "Research CSV verifier requires digest, text/csv, "
                     "and a bounded maximum size"
                 )
+        research_markdown = any(
+            (
+                self.research_markdown_report_title is not None,
+                bool(self.research_markdown_field_ids),
+                self.research_markdown_requested_sections is not None,
+                self.research_markdown_source_digest is not None,
+            )
+        )
+        if research_markdown:
+            from research.markdown_artifact import ResearchMarkdownSchema
+            from research.models import MAX_RESEARCH_BYTES
+
+            if (
+                self.research_markdown_report_title is None
+                or self.research_markdown_requested_sections is None
+                or self.research_markdown_source_digest is None
+            ):
+                raise ValueError(
+                    "Research Markdown verifier metadata is incomplete"
+                )
+            ResearchMarkdownSchema(
+                self.research_markdown_report_title,
+                self.research_markdown_field_ids,
+            )
+            _bounded_integer(
+                self.research_markdown_requested_sections,
+                1,
+                100,
+                "Research Markdown requested section count",
+            )
+            if (
+                not isinstance(
+                    self.research_markdown_source_digest,
+                    str,
+                )
+                or _SHA256.fullmatch(
+                    self.research_markdown_source_digest
+                ) is None
+            ):
+                raise ValueError(
+                    "Research Markdown source digest is invalid"
+                )
+            if (
+                self.expected_sha256 is None
+                or self.expected_media_type != "text/markdown"
+                or self.maximum_bytes is None
+                or self.maximum_bytes > MAX_RESEARCH_BYTES
+            ):
+                raise ValueError(
+                    "Research Markdown verifier requires digest, "
+                    "text/markdown, and a bounded maximum size"
+                )
+        if research_csv and research_markdown:
+            raise ValueError(
+                "Verifier cannot combine research artifact schemas"
+            )
         if not any(
             (
                 self.expected_sha256 is not None,
@@ -871,6 +971,7 @@ class VerifyOutputArguments:
                 self.maximum_bytes is not None,
                 bool(self.required_utf8_substrings),
                 research_csv,
+                research_markdown,
             )
         ):
             raise ValueError("Verifier requires an explicit postcondition")
@@ -888,6 +989,7 @@ BrokerArguments = (
     | NotionSelectedPageArguments
     | NotionDraftRenderArguments
     | ResearchCsvRenderArguments
+    | ResearchMarkdownRenderArguments
     | ArtifactWriteArguments
     | ArtifactReadArguments
     | VerifyOutputArguments
@@ -1441,6 +1543,8 @@ class TaskToolBroker:
             return self._render_notion_draft(call, arguments)
         if type(arguments) is ResearchCsvRenderArguments:
             return self._render_research_csv(call, arguments)
+        if type(arguments) is ResearchMarkdownRenderArguments:
+            return self._render_research_markdown(call, arguments)
         if type(arguments) is ArtifactWriteArguments:
             return self._write_artifact(call, arguments)
         if type(arguments) is ArtifactReadArguments:
@@ -1763,6 +1867,54 @@ class TaskToolBroker:
             text=artifact.content.decode("utf-8"),
         )
 
+    def _render_research_markdown(
+        self,
+        call: ToolCall,
+        arguments: ResearchMarkdownRenderArguments,
+    ) -> BrokerExecution:
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_json_to_markdown,
+        )
+        from research.tools import cited_source_urls
+
+        try:
+            artifact = render_research_json_to_markdown(
+                arguments.records_json,
+                ResearchMarkdownSchema(
+                    arguments.report_title,
+                    arguments.field_ids,
+                ),
+                requested_sections=arguments.requested_sections,
+                maximum_output_bytes=arguments.maximum_output_bytes,
+                allowed_source_urls=cited_source_urls(
+                    arguments.source_context
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskToolBrokerOperationError(
+                "research_markdown_render_failed"
+            ) from exc
+        self._reserve_output(len(artifact.content))
+        if not artifact.complete:
+            return BrokerExecution(
+                result=ToolResult(
+                    result_id=_result_id(call),
+                    call_id=call.call_id,
+                    run_id=call.run_id,
+                    step_id=call.step_id,
+                    status=ToolResultStatus.PARTIAL,
+                    output_digest=artifact.sha256,
+                    output_bytes=len(artifact.content),
+                    error_code="research_markdown_section_shortfall",
+                ),
+                text=artifact.content.decode("utf-8"),
+            )
+        return BrokerExecution(
+            result=_succeeded_result(call, artifact.content),
+            text=artifact.content.decode("utf-8"),
+        )
+
     def _render_notion_draft(
         self,
         call: ToolCall,
@@ -1822,6 +1974,7 @@ class TaskToolBroker:
             ),
         )
         research_verification = None
+        research_markdown_verification = None
         if arguments.research_csv_requested_rows is not None:
             research_verification = verify_research_csv_file(
                 pending.file_snapshot(),
@@ -1838,6 +1991,30 @@ class TaskToolBroker:
                 content=content,
             )
             evidence = research_verification.evidence
+        elif arguments.research_markdown_requested_sections is not None:
+            assert arguments.research_markdown_report_title is not None
+            assert arguments.research_markdown_source_digest is not None
+            research_markdown_verification = verify_research_markdown_file(
+                pending.file_snapshot(),
+                ResearchMarkdownFileExpectation(
+                    file=file_expectation,
+                    report_title=(
+                        arguments.research_markdown_report_title
+                    ),
+                    requested_field_ids=(
+                        arguments.research_markdown_field_ids
+                    ),
+                    requested_sections=(
+                        arguments.research_markdown_requested_sections
+                    ),
+                    source_digest=(
+                        arguments.research_markdown_source_digest
+                    ),
+                ),
+                verifier_id=arguments.verifier_id,
+                content=content,
+            )
+            evidence = research_markdown_verification.evidence
         else:
             evidence = verify_file(
                 pending.file_snapshot(),
@@ -1859,6 +2036,23 @@ class TaskToolBroker:
                 output_digest=evidence.evidence_digest,
                 output_bytes=evidence.evidence_bytes,
                 error_code="research_csv_row_shortfall",
+                verifier_id=evidence.verifier_id,
+                postcondition_met=False,
+                evidence_digest=evidence.evidence_digest,
+            )
+        elif (
+            research_markdown_verification is not None
+            and research_markdown_verification.partial
+        ):
+            result = ToolResult(
+                result_id=_result_id(call),
+                call_id=call.call_id,
+                run_id=call.run_id,
+                step_id=call.step_id,
+                status=ToolResultStatus.PARTIAL,
+                output_digest=evidence.evidence_digest,
+                output_bytes=evidence.evidence_bytes,
+                error_code="research_markdown_section_shortfall",
                 verifier_id=evidence.verifier_id,
                 postcondition_met=False,
                 evidence_digest=evidence.evidence_digest,
@@ -2062,6 +2256,27 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
                 arguments.source_context.encode("utf-8")
             ).hexdigest(),
         }
+    if type(arguments) is ResearchMarkdownRenderArguments:
+        return {
+            "field_ids": list(arguments.field_ids),
+            "maximum_output_bytes": arguments.maximum_output_bytes,
+            "records_json_bytes": len(
+                arguments.records_json.encode("utf-8")
+            ),
+            "records_json_sha256": hashlib.sha256(
+                arguments.records_json.encode("utf-8")
+            ).hexdigest(),
+            "report_title_sha256": hashlib.sha256(
+                arguments.report_title.encode("utf-8")
+            ).hexdigest(),
+            "requested_sections": arguments.requested_sections,
+            "source_context_bytes": len(
+                arguments.source_context.encode("utf-8")
+            ),
+            "source_context_sha256": hashlib.sha256(
+                arguments.source_context.encode("utf-8")
+            ).hexdigest(),
+        }
     if type(arguments) is ArtifactWriteArguments:
         return {
             "artifact_id": arguments.artifact_id,
@@ -2090,6 +2305,24 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "research_csv_requested_rows": (
                 arguments.research_csv_requested_rows
             ),
+            "research_markdown_field_ids": list(
+                arguments.research_markdown_field_ids
+            ),
+            "research_markdown_report_title_sha256": (
+                hashlib.sha256(
+                    arguments.research_markdown_report_title.encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                if arguments.research_markdown_report_title is not None
+                else None
+            ),
+            "research_markdown_requested_sections": (
+                arguments.research_markdown_requested_sections
+            ),
+            "research_markdown_source_digest": (
+                arguments.research_markdown_source_digest
+            ),
             "verifier_id": arguments.verifier_id,
         }
     raise TypeError("Broker arguments use an unknown schema")
@@ -2100,6 +2333,9 @@ _ARGUMENT_TYPES = {
     DeclarativeTool.WEB_SEARCH: WebSearchArguments,
     DeclarativeTool.WEB_FETCH: WebFetchArguments,
     DeclarativeTool.RESEARCH_CSV_RENDER: ResearchCsvRenderArguments,
+    DeclarativeTool.RESEARCH_MARKDOWN_RENDER: (
+        ResearchMarkdownRenderArguments
+    ),
     DeclarativeTool.NOTION_DRAFT_RENDER: NotionDraftRenderArguments,
     DeclarativeTool.ARTIFACT_READ: ArtifactReadArguments,
     DeclarativeTool.ARTIFACT_WRITE: ArtifactWriteArguments,
@@ -2373,6 +2609,7 @@ __all__ = [
     "NotionDraftRenderArguments",
     "NotionSelectedPageArguments",
     "ResearchCsvRenderArguments",
+    "ResearchMarkdownRenderArguments",
     "ResolvedSlidesExportArguments",
     "ResolvedSheetsExportArguments",
     "SheetsExportArguments",

@@ -218,6 +218,86 @@ class ResearchCsvFileVerification:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchMarkdownFileExpectation:
+    """Exact file and source-complete report postconditions."""
+
+    file: FileExpectation
+    report_title: str
+    requested_field_ids: tuple[str, ...]
+    requested_sections: int
+    source_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileExpectation):
+            raise TypeError(
+                "Research Markdown file expectation must be typed"
+            )
+        from research.markdown_artifact import ResearchMarkdownSchema
+        from research.models import MAX_RESEARCH_BYTES
+
+        ResearchMarkdownSchema(
+            self.report_title,
+            self.requested_field_ids,
+        )
+        if type(self.requested_sections) is not int or not (
+            1 <= self.requested_sections <= 100
+        ):
+            raise ValueError(
+                "Research Markdown requested section count is invalid"
+            )
+        _sha256(
+            self.source_digest,
+            "Research Markdown source digest",
+        )
+        if (
+            self.file.expected_sha256 is None
+            or self.file.expected_media_type != "text/markdown"
+            or self.file.maximum_bytes is None
+            or self.file.maximum_bytes > MAX_RESEARCH_BYTES
+        ):
+            raise ValueError(
+                "Research Markdown verification requires digest, media "
+                "type, and a bounded maximum size"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchMarkdownFileVerification:
+    """Verifier evidence plus a content-free shortfall classification."""
+
+    evidence: VerificationEvidence
+    section_count: int
+    requested_sections: int
+    citation_count: int
+    partial: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence, VerificationEvidence):
+            raise TypeError(
+                "Research Markdown verification evidence is invalid"
+            )
+        if (
+            type(self.section_count) is not int
+            or type(self.requested_sections) is not int
+            or type(self.citation_count) is not int
+            or not 0 <= self.section_count <= 100
+            or not 1 <= self.requested_sections <= 100
+            or self.citation_count < 0
+            or type(self.partial) is not bool
+        ):
+            raise ValueError(
+                "Research Markdown verification metadata is invalid"
+            )
+        if self.partial and (
+            self.evidence.postcondition_met
+            or self.section_count >= self.requested_sections
+        ):
+            raise ValueError(
+                "Research Markdown partial verification is inconsistent"
+            )
+
+
 def verify_file(
     snapshot: FileSnapshot,
     expectation: FileExpectation,
@@ -369,6 +449,120 @@ def verify_research_csv_file(
         evidence=evidence,
         row_count=inspection.row_count,
         requested_rows=inspection.requested_rows,
+        partial=partial,
+    )
+
+
+def verify_research_markdown_file(
+    snapshot: FileSnapshot,
+    expectation: ResearchMarkdownFileExpectation,
+    *,
+    verifier_id: str,
+    content: bytes,
+) -> ResearchMarkdownFileVerification:
+    """Verify exact identity plus canonical, source-complete Markdown."""
+
+    if not isinstance(snapshot, FileSnapshot):
+        raise TypeError(
+            "Research Markdown verifier snapshot is invalid"
+        )
+    if not isinstance(expectation, ResearchMarkdownFileExpectation):
+        raise TypeError(
+            "Research Markdown verifier expectation is invalid"
+        )
+    if not isinstance(content, bytes):
+        raise TypeError(
+            "Research Markdown verifier content must be immutable bytes"
+        )
+    from research.markdown_artifact import (
+        ResearchMarkdownSchema,
+        inspect_research_markdown,
+    )
+
+    file = expectation.file
+    integrity = (
+        len(content) == snapshot.byte_count
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+    checks = {
+        "complete_pending_file": snapshot.complete,
+        "content_integrity": integrity,
+        "expected_sha256": (
+            snapshot.sha256 == file.expected_sha256
+        ),
+        "expected_media_type": (
+            snapshot.media_type == file.expected_media_type
+        ),
+        "maximum_bytes": (
+            file.maximum_bytes is not None
+            and snapshot.byte_count <= file.maximum_bytes
+        ),
+    }
+    if file.minimum_bytes is not None:
+        checks["minimum_bytes"] = (
+            snapshot.byte_count >= file.minimum_bytes
+        )
+    if file.required_utf8_substrings:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            checks["required_utf8_substrings"] = False
+        else:
+            checks["required_utf8_substrings"] = all(
+                substring in text
+                for substring in file.required_utf8_substrings
+            )
+    inspection = inspect_research_markdown(
+        content,
+        ResearchMarkdownSchema(
+            expectation.report_title,
+            expectation.requested_field_ids,
+        ),
+        requested_sections=expectation.requested_sections,
+        maximum_bytes=file.maximum_bytes,
+    )
+    checks["research_markdown_structure"] = (
+        inspection.structurally_valid
+    )
+    checks["research_markdown_requested_sections"] = (
+        inspection.complete
+    )
+    checks["research_markdown_sources"] = (
+        inspection.source_digest == expectation.source_digest
+    )
+    evidence = _evidence(
+        verifier_id=verifier_id,
+        subject_kind=VerificationSubjectKind.FILE,
+        subject_reference=snapshot.artifact_id,
+        subject_digest=snapshot.sha256,
+        checks=checks,
+        observed={
+            "byte_count": snapshot.byte_count,
+            "media_type": snapshot.media_type,
+            "provenance_digest": snapshot.provenance_digest,
+            "research_markdown_citations": inspection.citation_count,
+            "research_markdown_result": inspection.result_code,
+            "research_markdown_schema_digest": inspection.schema_digest,
+            "research_markdown_sections": inspection.section_count,
+            "research_markdown_source_digest": inspection.source_digest,
+            "research_markdown_title_digest": inspection.title_digest,
+            "requested_sections": inspection.requested_sections,
+        },
+    )
+    file_checks_without_section_count = all(
+        value
+        for name, value in checks.items()
+        if name != "research_markdown_requested_sections"
+    )
+    partial = (
+        inspection.partial
+        and file_checks_without_section_count
+    )
+    return ResearchMarkdownFileVerification(
+        evidence=evidence,
+        section_count=inspection.section_count,
+        requested_sections=inspection.requested_sections,
+        citation_count=inspection.citation_count,
         partial=partial,
     )
 
@@ -783,6 +977,8 @@ __all__ = [
     "FileSnapshot",
     "ResearchCsvFileExpectation",
     "ResearchCsvFileVerification",
+    "ResearchMarkdownFileExpectation",
+    "ResearchMarkdownFileVerification",
     "RepositoryExpectation",
     "RepositorySnapshot",
     "UiStateExpectation",
@@ -792,6 +988,7 @@ __all__ = [
     "verify_api_response",
     "verify_file",
     "verify_research_csv_file",
+    "verify_research_markdown_file",
     "verify_repository",
     "verify_ui_state",
 ]

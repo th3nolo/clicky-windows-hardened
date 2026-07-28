@@ -37,6 +37,7 @@ from tasks.tool_broker import (
     DeclaredToolStep,
     ModelGenerateArguments,
     ResearchCsvRenderArguments,
+    ResearchMarkdownRenderArguments,
     TaskToolBroker,
     TaskToolBrokerLimitError,
     TaskToolBrokerValidationError,
@@ -883,6 +884,124 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(rejected.text)
 
+    async def test_research_markdown_renderer_and_verifier_bind_exact_sources(
+        self,
+    ):
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from tests.test_research_csv import batch, record
+
+        render_step = declared_step(
+            "render",
+            DeclarativeTool.RESEARCH_MARKDOWN_RENDER,
+        )
+        verify_after_render = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("render",),
+        )
+        render_broker, _, _ = self.create_broker(
+            (render_step, verify_after_render)
+        )
+        source = "https://creator.example/one"
+        render_arguments = ResearchMarkdownRenderArguments(
+            records_json=json.dumps(
+                {
+                    "records": [
+                        {
+                            "entity": {
+                                "value": "Creator one",
+                                "source_urls": [source],
+                            },
+                            "public_url": {
+                                "value": source,
+                                "source_urls": [source],
+                            },
+                            "rationale": {
+                                "value": "Matches the request.",
+                                "source_urls": [source],
+                            },
+                            "requested_fields": {},
+                        }
+                    ]
+                }
+            ),
+            source_context=f"[1] Creator one — {source}",
+            report_title="Creator research",
+            requested_sections=1,
+            field_ids=(),
+            maximum_output_bytes=64 * 1024,
+        )
+        rendered_execution = await render_broker.execute(
+            call_for(render_step, render_arguments),
+            render_arguments,
+        )
+        self.assertEqual(
+            rendered_execution.result.status,
+            ToolResultStatus.SUCCEEDED,
+        )
+        self.assertIn("## 1. Creator one", rendered_execution.text)
+        self.assertIn(f"[S001] <{source}>", rendered_execution.text)
+
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, _ = self.create_broker(
+            (write_step, verify_step),
+            run_id="task-broker-markdown-adoption",
+        )
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        artifact = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        write_arguments = ArtifactWriteArguments(
+            artifact_id="research-markdown",
+            name="research.md",
+            media_type="text/markdown",
+            content=artifact.content,
+        )
+        write_call = call_for(
+            write_step,
+            write_arguments,
+            run_id=run.run_id,
+        )
+        self.approve(run, write_call)
+        await broker.execute(write_call, write_arguments)
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-markdown",
+            expected_sha256=artifact.sha256,
+            expected_media_type="text/markdown",
+            maximum_bytes=64 * 1024,
+            research_markdown_report_title=schema.title,
+            research_markdown_field_ids=schema.requested_field_ids,
+            research_markdown_requested_sections=1,
+            research_markdown_source_digest=artifact.source_digest,
+        )
+        verified = await broker.execute(
+            call_for(
+                verify_step,
+                verify_arguments,
+                run_id=run.run_id,
+            ),
+            verify_arguments,
+        )
+        self.assertTrue(verified.result.is_successful_verification)
+        self.assertIsNotNone(verified.artifact)
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
@@ -1088,6 +1207,15 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 verifier_id=VERIFIER_ID,
                 artifact_id="report",
             )
+        with self.assertRaisesRegex(ValueError, "metadata is incomplete"):
+            VerifyOutputArguments(
+                verifier_id=VERIFIER_ID,
+                artifact_id="report",
+                expected_sha256=DIGEST,
+                expected_media_type="text/markdown",
+                maximum_bytes=1024,
+                research_markdown_report_title="Report",
+            )
 
     def test_shared_vocabulary_excludes_powerful_initial_tools(self):
         self.assertEqual(
@@ -1097,6 +1225,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.WEB_SEARCH,
                 DeclarativeTool.WEB_FETCH,
                 DeclarativeTool.RESEARCH_CSV_RENDER,
+                DeclarativeTool.RESEARCH_MARKDOWN_RENDER,
                 DeclarativeTool.NOTION_DRAFT_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,

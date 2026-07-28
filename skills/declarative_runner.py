@@ -65,6 +65,7 @@ from tasks.tool_broker import (
     NotionDraftRenderArguments,
     NotionSelectedPageArguments,
     ResearchCsvRenderArguments,
+    ResearchMarkdownRenderArguments,
     SheetsExportArguments,
     SlidesExportArguments,
     TaskToolBroker,
@@ -109,6 +110,14 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
+        ),
+        DeclarativeTool.RESEARCH_MARKDOWN_RENDER: frozenset(
+            {
+                "records_json",
+                "report_title",
+                "requested_sections",
+                "source_context",
+            }
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {
@@ -157,6 +166,14 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
+        ),
+        DeclarativeTool.RESEARCH_MARKDOWN_RENDER: frozenset(
+            {
+                "records_json",
+                "report_title",
+                "requested_sections",
+                "source_context",
+            }
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {"blocks_json", "title"}
@@ -275,6 +292,15 @@ class _ResearchCsvMetadata:
     content_sha256: str
     field_ids: tuple[str, ...]
     requested_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchMarkdownMetadata:
+    content_sha256: str
+    report_title: str
+    field_ids: tuple[str, ...]
+    requested_sections: int
+    source_digest: str
 
 
 def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
@@ -627,6 +653,7 @@ class DeclarativeSkillRunner:
         self._results: list[ToolResult] = []
         self._artifacts: list[Artifact] = []
         self._research_csv: _ResearchCsvMetadata | None = None
+        self._research_markdown: _ResearchMarkdownMetadata | None = None
         self._next_step = 0
         self._prepared: _PreparedStep | None = None
 
@@ -1081,6 +1108,39 @@ class DeclarativeSkillRunner:
                     self._definition.limits.max_output_bytes
                 ),
             )
+        if step.tool is DeclarativeTool.RESEARCH_MARKDOWN_RENDER:
+            output = self._definition.output
+            if (
+                output.output_type is not SkillOutputType.ARTIFACT
+                or output.media_type != "text/markdown"
+                or output.fields
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Research Markdown rendering requires a declared "
+                    "Markdown artifact"
+                )
+            return ResearchMarkdownRenderArguments(
+                records_json=_text_value(
+                    values["records_json"],
+                    "Research record JSON",
+                ),
+                source_context=_text_value(
+                    values["source_context"],
+                    "Research source context",
+                ),
+                report_title=_text_value(
+                    values["report_title"],
+                    "Research report title",
+                ),
+                requested_sections=_integer_value(
+                    values["requested_sections"],
+                    "Research requested section count",
+                ),
+                field_ids=(),
+                maximum_output_bytes=(
+                    self._definition.limits.max_output_bytes
+                ),
+            )
         if step.tool is DeclarativeTool.ARTIFACT_READ:
             return ArtifactReadArguments(
                 artifact_id=_artifact_id_value(values["artifact_id"])
@@ -1137,6 +1197,42 @@ class DeclarativeSkillRunner:
                 research_csv_requested_rows = (
                     self._research_csv.requested_rows
                 )
+            research_markdown_report_title = None
+            research_markdown_field_ids: tuple[str, ...] = ()
+            research_markdown_requested_sections = None
+            research_markdown_source_digest = None
+            if self._research_markdown is not None:
+                source_output = self._artifact_source_output(artifact_id)
+                artifact_value = self._outputs[source_output]
+                assert isinstance(artifact_value, _ArtifactValue)
+                actual_sha256 = hashlib.sha256(
+                    artifact_value.content
+                ).hexdigest()
+                if (
+                    actual_sha256
+                    != self._research_markdown.content_sha256
+                    or (
+                        expected_sha256 is not None
+                        and expected_sha256 != actual_sha256
+                    )
+                ):
+                    raise DeclarativeRunnerOutputError(
+                        "Research Markdown verifier digest does not "
+                        "match render"
+                    )
+                expected_sha256 = actual_sha256
+                research_markdown_report_title = (
+                    self._research_markdown.report_title
+                )
+                research_markdown_field_ids = (
+                    self._research_markdown.field_ids
+                )
+                research_markdown_requested_sections = (
+                    self._research_markdown.requested_sections
+                )
+                research_markdown_source_digest = (
+                    self._research_markdown.source_digest
+                )
             return VerifyOutputArguments(
                 verifier_id=self._run.spec.verifier_id,
                 artifact_id=artifact_id,
@@ -1164,6 +1260,18 @@ class DeclarativeSkillRunner:
                 ),
                 research_csv_field_ids=research_csv_field_ids,
                 research_csv_requested_rows=research_csv_requested_rows,
+                research_markdown_report_title=(
+                    research_markdown_report_title
+                ),
+                research_markdown_field_ids=(
+                    research_markdown_field_ids
+                ),
+                research_markdown_requested_sections=(
+                    research_markdown_requested_sections
+                ),
+                research_markdown_source_digest=(
+                    research_markdown_source_digest
+                ),
             )
         raise DeclarativeRunnerPlanningError(
             "Step tool is unavailable at call time"
@@ -1223,6 +1331,55 @@ class DeclarativeSkillRunner:
                 content_sha256=execution.result.output_digest,
                 field_ids=prepared.arguments.field_ids,
                 requested_rows=prepared.arguments.requested_rows,
+            )
+        if isinstance(
+            prepared.arguments,
+            ResearchMarkdownRenderArguments,
+        ):
+            if execution.text is None:
+                raise DeclarativeRunnerOutputError(
+                    "Research Markdown render returned no content"
+                )
+            from research.markdown_artifact import (
+                ResearchMarkdownSchema,
+                inspect_research_markdown,
+            )
+
+            content = execution.text.encode("utf-8")
+            if (
+                execution.result.output_digest
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research Markdown render digest does not match "
+                    "its content"
+                )
+            inspection = inspect_research_markdown(
+                content,
+                ResearchMarkdownSchema(
+                    prepared.arguments.report_title,
+                    prepared.arguments.field_ids,
+                ),
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                maximum_bytes=(
+                    prepared.arguments.maximum_output_bytes
+                ),
+            )
+            if not inspection.complete:
+                raise DeclarativeRunnerOutputError(
+                    "Research Markdown render did not produce a "
+                    "complete canonical report"
+                )
+            self._research_markdown = _ResearchMarkdownMetadata(
+                content_sha256=execution.result.output_digest,
+                report_title=prepared.arguments.report_title,
+                field_ids=prepared.arguments.field_ids,
+                requested_sections=(
+                    prepared.arguments.requested_sections
+                ),
+                source_digest=inspection.source_digest,
             )
         if execution.pending_artifact is not None:
             arguments = prepared.arguments
