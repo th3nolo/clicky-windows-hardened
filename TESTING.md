@@ -201,12 +201,13 @@ confirm startup refuses the invalid configuration rather than granting access.
 Run the pure contract and wiring tests without screen access:
 
 ~~~powershell
-python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_routing tests.test_region_handoff_wiring
+python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_routing tests.test_region_handoff_wiring tests.test_region_compose_context tests.test_region_compose_wiring
 ~~~
 
 The locked Windows suite additionally runs `tests.test_region_handoff_ui` and
-`tests.test_region_handoff_tutor`. Confirm a fresh tray menu includes
-**Select screen region…**.
+`tests.test_region_handoff_tutor`, `tests.test_region_compose_ui`,
+`tests.test_compose_preview`, and the existing Compose service/insertion tests.
+Confirm a fresh default-build tray menu includes **Select screen region…**.
 Without the current screen-capture permission it must fail before capture.
 With permission, choose Rectangle and Freehand circle separately on every
 monitor, including negative-origin and mixed-DPI arrangements. Confirm the
@@ -220,8 +221,8 @@ overlay and wipe the transient frames.
 
 The review must show the exact selected image, require the user to choose
 Tutor context, require a purpose, and label the data as selected screen pixels.
-Compose preview and New Task Agent run must not appear because the current build
-has no registered caller for either destination. Approve Tutor once and confirm
+Compose preview and New Task Agent run must not appear in the default build
+because their build flags remain unavailable. Approve Tutor once and confirm
 one new provider request contains only the exact reviewed JPEG and purpose,
 with an empty conversation history. Confirm it does not recapture the screen,
 start a task, insert text, emit a drawing action, or change desktop state.
@@ -233,6 +234,29 @@ confirm the four lazy region modules are present. These source/UI checks are
 not live proof of provider delivery, compositor exclusion, multi-monitor DPI
 behavior, cancellation timing, or pixel wiping; record those native
 observations separately.
+
+For a controlled source test build only, make Screen-Aware Compose available
+with the current permission schema while leaving every other action build flag
+off. Confirm Compose preview appears only after its independent user permission
+and screen permission are granted. Route a synthetic region to Compose and
+confirm the non-activating target picker names only application/control
+metadata. It must ignore transient or blocked targets and bind only after three
+identical allowed observations. Change focus, identity, policy, integrity,
+desktop, provider, model, vision capability, permission, pixels, or expiry
+before generation; no provider request may occur.
+
+With a stable disposable editable field, confirm exactly one request contains
+the exact reviewed JPEG and purpose, uses empty history and no tools, and
+produces a non-activating draft preview naming the target application. The
+region draft must disable Regenerate and require a new region selection for
+another provider use. Cancel and close must change nothing. Copy may change
+only the clipboard after the explicit Copy click. Insert must revalidate the
+remembered field and produce at most one truthful insertion result without
+sending or submitting the containing application. Exercise Escape before
+target binding, while queued, during streaming, and during preview; late
+provider output must not appear. Keep the default build flag off until this
+passes on the representative Win32, WPF, browser, Electron, and Qt target
+matrix.
 
 ### Desktop automation target, approval, and one-shot action boundary
 

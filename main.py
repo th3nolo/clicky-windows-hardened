@@ -154,12 +154,50 @@ def main():
     from handoff.routing import HandoffRouter, HandoffRoutingError
     from ui.region_handoff import QtRegionHandoffController
 
-    handoff_router = HandoffRouter(
-        {
-            HandoffDestination.TUTOR_CONTEXT: (
-                manager.route_region_to_tutor
+    handoff_handlers = {
+        HandoffDestination.TUTOR_CONTEXT: (
+            manager.route_region_to_tutor
+        ),
+    }
+    compose_region = None
+    if build_feature_available(
+        ActionCapability.SCREEN_AWARE_COMPOSE
+    ):
+        from compose.insertion import ComposeInsertionService
+        from compose.models import ComposeProviderSelection
+        from compose.service import ComposeService
+        from ui.region_compose import (
+            ComposeRegionHandoffController,
+        )
+
+        compose_targets = manager.compose_target_guard
+        compose_insertion = ComposeInsertionService(
+            manager.compose_insertion_broker
+        )
+        compose_region = ComposeRegionHandoffController(
+            manager.turn_coordinator,
+            targets=compose_targets,
+            service_factory=lambda gateway: ComposeService(
+                targets=compose_targets,
+                capture_gateway=gateway,
             ),
-        },
+            insertion_service=compose_insertion,
+            provider_selection=lambda: ComposeProviderSelection(
+                cfg.llm_provider(),
+                manager.current_response_model or "",
+            ),
+            response_language=lambda: (
+                cfg.response_language or "en"
+            ),
+            submit=manager.submit_owned_turn,
+            config_provider=lambda: cfg,
+        )
+        handoff_handlers[
+            HandoffDestination.COMPOSE_PREVIEW
+        ] = compose_region.route
+
+    handoff_router = HandoffRouter(
+        handoff_handlers,
         route_id_factory=lambda: (
             f"route-{secrets.token_hex(16)}"
         ),
@@ -171,6 +209,35 @@ def main():
         ),
     )
     _region_handoff_keepalive[0] = region_handoff
+    if compose_region is not None:
+        compose_region.failed.connect(
+            lambda message: tray.show_notification(
+                "Compose region discarded",
+                message,
+            )
+        )
+        compose_region.draft_shown.connect(
+            lambda _run_id: tray.show_notification(
+                "Compose draft ready",
+                "Review the draft before choosing Copy or Insert.",
+            )
+        )
+        compose_region.copy_finished.connect(
+            lambda _run_id, copied: tray.show_notification(
+                "Compose draft",
+                (
+                    "Draft copied to the clipboard."
+                    if copied
+                    else "The draft could not be copied."
+                ),
+            )
+        )
+        compose_region.insertion_finished.connect(
+            lambda status, code: tray.show_notification(
+                "Compose insertion result",
+                f"Status: {status}. Result: {code}.",
+            )
+        )
     if privacy_permission_error is not None:
         tray.show_notification(
             "Privacy permissions unavailable",

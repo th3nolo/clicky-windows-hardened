@@ -55,6 +55,7 @@ class ComposePreviewPanel(QWidget):
         self._active = False
         self._copy_pending = False
         self._regeneration_pending = False
+        self._regeneration_allowed = False
 
         self._expiry = QTimer(self)
         self._expiry.setSingleShot(True)
@@ -146,7 +147,40 @@ class ComposePreviewPanel(QWidget):
     ) -> None:
         """Show a validated draft while retaining its original target lease."""
 
+        self._show_draft(
+            draft,
+            target,
+            grant,
+            regeneration_allowed=True,
+        )
+
+    @pyqtSlot(object, object, object)
+    def show_region_draft(
+        self,
+        draft: Draft,
+        target: TargetLease,
+        grant: CapabilityGrant,
+    ) -> None:
+        """Show a one-use region draft without reusing its screen pixels."""
+
+        self._show_draft(
+            draft,
+            target,
+            grant,
+            regeneration_allowed=False,
+        )
+
+    def _show_draft(
+        self,
+        draft: Draft,
+        target: TargetLease,
+        grant: CapabilityGrant,
+        *,
+        regeneration_allowed: bool,
+    ) -> None:
         validate_draft_review_context(draft, target, grant)
+        if type(regeneration_allowed) is not bool:
+            raise TypeError("Compose regeneration policy is invalid")
         self.clear_sensitive()
         self._draft = draft
         self._target = target
@@ -154,11 +188,18 @@ class ComposePreviewPanel(QWidget):
         self._active = True
         self._copy_pending = False
         self._regeneration_pending = False
+        self._regeneration_allowed = regeneration_allowed
         provenance = draft.provenance
         profile = provenance.style_profile_id or "Default"
-        self._status.setText(
-            "Review this draft. Nothing has been inserted or sent."
-        )
+        if regeneration_allowed:
+            self._status.setText(
+                "Review this draft. Nothing has been inserted or sent."
+            )
+        else:
+            self._status.setText(
+                "Review this one-use region draft. Select a new region to "
+                "generate another draft."
+            )
         self._destination.setText(
             f"Destination: {provenance.destination_application}"
         )
@@ -171,7 +212,11 @@ class ComposePreviewPanel(QWidget):
             f"{draft.character_count} characters"
         )
         self._copy_button.setText("Copy")
-        self._regenerate_button.setText("Regenerate")
+        self._regenerate_button.setText(
+            "Regenerate"
+            if regeneration_allowed
+            else "Select region again"
+        )
         self._set_actions_enabled(True)
         self._expiry.start(COMPOSE_PREVIEW_TTL_MS)
         self.adjustSize()
@@ -194,6 +239,7 @@ class ComposePreviewPanel(QWidget):
         self._active = False
         self._copy_pending = False
         self._regeneration_pending = False
+        self._regeneration_allowed = False
         self._set_actions_enabled(False)
 
     @pyqtSlot(str, bool)
@@ -301,6 +347,7 @@ class ComposePreviewPanel(QWidget):
             not self._active
             or draft is None
             or self._regeneration_pending
+            or not self._regeneration_allowed
         ):
             return
         self._regeneration_pending = True
@@ -322,7 +369,9 @@ class ComposePreviewPanel(QWidget):
     def _set_actions_enabled(self, enabled: bool) -> None:
         self._insert_button.setEnabled(enabled)
         self._copy_button.setEnabled(enabled)
-        self._regenerate_button.setEnabled(enabled)
+        self._regenerate_button.setEnabled(
+            enabled and self._regeneration_allowed
+        )
         self._cancel_button.setEnabled(enabled)
 
     def closeEvent(self, event: QCloseEvent) -> None:

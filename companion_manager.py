@@ -409,6 +409,38 @@ class CompanionManager(QObject):
 
         return self._turns
 
+    @property
+    def compose_target_guard(self) -> SecureTargetGuard:
+        """Expose the shared metadata-only target guard to Compose UI."""
+
+        return self._dictation_targets
+
+    @property
+    def compose_insertion_broker(self) -> InsertionBroker:
+        """Expose the shared reviewed insertion adapters to Compose."""
+
+        return self._dictation_insertion
+
+    @property
+    def current_response_model(self) -> str | None:
+        """Return the model currently visible in the main panel."""
+
+        return self._current_model
+
+    def submit_owned_turn(
+        self,
+        coroutine,
+        session: TurnSession,
+    ):
+        """Schedule one controller coroutine under the shared turn."""
+
+        if not isinstance(session, TurnSession):
+            close = getattr(coroutine, "close", None)
+            if callable(close):
+                close()
+            raise TypeError("Owned turn submission requires a turn session")
+        return self._submit(coroutine, session)
+
     def route_region_to_tutor(self, context) -> str:
         """Accept one reviewed JPEG as a new isolated Tutor turn."""
 
