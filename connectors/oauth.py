@@ -729,24 +729,10 @@ def prepare_authorization(
 ) -> OAuthAuthorizationSession:
     """Bind loopback first and return exact consent before browser launch."""
 
-    if not isinstance(registration, OAuthClientRegistration):
-        raise TypeError("OAuth client registration is invalid")
-    policy = require_desktop_oauth_policy(registration.provider)
-    if connector not in PROVIDER_CONNECTORS[registration.provider]:
-        raise ValueError("OAuth provider does not own this connector")
-    oauth_scopes = _validate_connector_capabilities(
+    consent = describe_authorization(
+        registration,
         connector,
         capabilities,
-    )
-    consent = OAuthConsentSummary(
-        provider=registration.provider,
-        connector=connector,
-        capabilities=capabilities,
-        oauth_scopes=oauth_scopes,
-        provider_scopes=_provider_scopes(
-            registration.provider,
-            oauth_scopes,
-        ),
     )
     if not callable(_server_factory):
         raise TypeError("OAuth loopback server factory must be callable")
@@ -783,6 +769,34 @@ def prepare_authorization(
         state.close()
         verifier.close()
         raise
+
+
+def describe_authorization(
+    registration: OAuthClientRegistration,
+    connector: ConnectorId,
+    capabilities: frozenset[CapabilityId],
+) -> OAuthConsentSummary:
+    """Return exact non-secret consent without opening a listener or browser."""
+
+    if not isinstance(registration, OAuthClientRegistration):
+        raise TypeError("OAuth client registration is invalid")
+    require_desktop_oauth_policy(registration.provider)
+    if connector not in PROVIDER_CONNECTORS[registration.provider]:
+        raise ValueError("OAuth provider does not own this connector")
+    oauth_scopes = _validate_connector_capabilities(
+        connector,
+        capabilities,
+    )
+    return OAuthConsentSummary(
+        provider=registration.provider,
+        connector=connector,
+        capabilities=capabilities,
+        oauth_scopes=oauth_scopes,
+        provider_scopes=_provider_scopes(
+            registration.provider,
+            oauth_scopes,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1004,19 +1018,23 @@ class OAuthTokenClient:
 
     def revoke(
         self,
-        registration: OAuthClientRegistration,
+        registration: OAuthClientRegistration | ConnectorProviderId,
         request: ConnectorRevocationRequest,
         refresh_token: SecretValue,
     ) -> ConnectorRevocationResult:
-        if not isinstance(registration, OAuthClientRegistration):
+        if isinstance(registration, OAuthClientRegistration):
+            provider = registration.provider
+        elif isinstance(registration, ConnectorProviderId):
+            provider = registration
+        else:
             raise TypeError("OAuth client registration is invalid")
-        policy = require_desktop_oauth_policy(registration.provider)
+        policy = require_desktop_oauth_policy(provider)
         if not isinstance(request, ConnectorRevocationRequest):
             raise TypeError("OAuth revocation request is invalid")
         if (
-            request.provider is not registration.provider
+            request.provider is not provider
             or request.connector
-            not in PROVIDER_CONNECTORS[registration.provider]
+            not in PROVIDER_CONNECTORS[provider]
         ):
             raise ConnectorAuthorizationError(
                 "OAuth revocation authority does not match registration"
@@ -1034,7 +1052,7 @@ class OAuthTokenClient:
         try:
             fields = {"token": token_bytes.decode("ascii")}
             response = self._transport.post_form(
-                provider=registration.provider,
+                provider=provider,
                 endpoint=policy.revocation_endpoint,
                 fields=fields,
             )
@@ -1459,6 +1477,7 @@ __all__ = [
     "OAuthProviderUnavailableError",
     "OAuthSessionState",
     "OAuthTokenClient",
+    "describe_authorization",
     "prepare_authorization",
     "require_desktop_oauth_policy",
 ]
