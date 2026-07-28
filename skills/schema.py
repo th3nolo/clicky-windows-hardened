@@ -30,7 +30,9 @@ from capability_registry import (
     CapabilityId,
     ConnectorId,
     FeatureCapability,
+    OAuthScopeId,
     require_capability,
+    require_oauth_scope,
 )
 from declarative_tools import DeclarativeTool, TOOL_CAPABILITIES
 
@@ -123,44 +125,11 @@ class BindingSource(str, Enum):
     LITERAL = "literal"
 
 
-class OAuthScopeId(str, Enum):
-    """Stable semantic scopes; provider strings stay inside OAuth adapters."""
-
-    GMAIL_MESSAGES_READ = "gmail.messages.read"
-    GMAIL_DRAFTS_WRITE = "gmail.drafts.write"
-    CALENDAR_EVENTS_READ = "google_calendar.events.read"
-    CALENDAR_EVENTS_WRITE = "google_calendar.events.write"
-    NOTION_PAGES_READ = "notion.pages.read"
-    NOTION_PAGES_WRITE = "notion.pages.write"
-    SHEETS_VALUES_READ = "google_sheets.values.read"
-    SHEETS_VALUES_WRITE = "google_sheets.values.write"
-    SLIDES_PRESENTATIONS_READ = "google_slides.presentations.read"
-    SLIDES_PRESENTATIONS_WRITE = "google_slides.presentations.write"
-
-
 _TOOL_CAPABILITIES = TOOL_CAPABILITIES
 _CONNECTOR_TOOL_FEATURES = MappingProxyType(
     {
         DeclarativeTool.CONNECTOR_READ: FeatureCapability.CONNECTOR_READ,
         DeclarativeTool.CONNECTOR_WRITE: FeatureCapability.CONNECTOR_WRITE,
-    }
-)
-_CAPABILITY_SCOPES = MappingProxyType(
-    {
-        CapabilityId.GMAIL_MESSAGE_READ: OAuthScopeId.GMAIL_MESSAGES_READ,
-        CapabilityId.GMAIL_DRAFT_WRITE: OAuthScopeId.GMAIL_DRAFTS_WRITE,
-        CapabilityId.CALENDAR_EVENT_READ: OAuthScopeId.CALENDAR_EVENTS_READ,
-        CapabilityId.CALENDAR_EVENT_WRITE: OAuthScopeId.CALENDAR_EVENTS_WRITE,
-        CapabilityId.NOTION_PAGE_READ: OAuthScopeId.NOTION_PAGES_READ,
-        CapabilityId.NOTION_PAGE_WRITE: OAuthScopeId.NOTION_PAGES_WRITE,
-        CapabilityId.SHEETS_VALUES_READ: OAuthScopeId.SHEETS_VALUES_READ,
-        CapabilityId.SHEETS_VALUES_WRITE: OAuthScopeId.SHEETS_VALUES_WRITE,
-        CapabilityId.SLIDES_PRESENTATION_READ: (
-            OAuthScopeId.SLIDES_PRESENTATIONS_READ
-        ),
-        CapabilityId.SLIDES_PRESENTATION_WRITE: (
-            OAuthScopeId.SLIDES_PRESENTATIONS_WRITE
-        ),
     }
 )
 _NETWORK_TOOLS = frozenset(
@@ -577,12 +546,7 @@ class ConnectorRequirement(_StrictModel):
                 raise ValueError(
                     "Connector requirement contains another connector"
                 )
-            scope = _CAPABILITY_SCOPES.get(capability)
-            if scope is None:
-                raise ValueError(
-                    "Connector capability has no approved semantic scope"
-                )
-            expected_scopes.add(scope)
+            expected_scopes.add(require_oauth_scope(capability))
         if set(self.oauth_scopes) != expected_scopes:
             raise ValueError(
                 "OAuth scopes must exactly match connector capabilities"
