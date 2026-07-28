@@ -180,6 +180,9 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             model_stream=model_stream,
             web_search=web_search,
             web_fetch=web_fetch,
+            artifact_root=(
+                Path(self.temporary.name).absolute() / "adopted-artifacts"
+            ),
         )
         return broker, run, workspace
 
@@ -361,9 +364,11 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.approve(run, call)
         result = await broker.execute(call, arguments)
         self.assertEqual(result.result.status, ToolResultStatus.SUCCEEDED)
-        self.assertEqual(result.artifact.sha256, hashlib.sha256(
-            arguments.content
-        ).hexdigest())
+        self.assertIsNone(result.artifact)
+        self.assertEqual(
+            result.pending_artifact.sha256,
+            hashlib.sha256(arguments.content).hexdigest(),
+        )
         self.assertGreater(workspace.verify()[0], 0)
 
         with self.assertRaisesRegex(
@@ -371,6 +376,157 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             "consumed|completed",
         ):
             await broker.execute(call, arguments)
+
+    async def test_rejected_exact_preview_payload_produces_no_write(self):
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, workspace = self.create_broker(
+            (write_step, verify_step)
+        )
+        arguments = ArtifactWriteArguments(
+            artifact_id="reviewed-report",
+            name="reviewed-report.md",
+            media_type="text/markdown",
+            content=b"# Exact preview\nSensitive bounded body.\n",
+        )
+        call = call_for(write_step, arguments)
+        payload = broker.approval_payload(
+            call,
+            arguments,
+            approval_id="approval-reviewed-report",
+            reason="Review the exact target and content.",
+            expires_at=100.0,
+        )
+        self.assertEqual(payload.target.reference, "reviewed-report")
+        self.assertEqual(payload.target.label, "reviewed-report.md")
+        self.assertEqual(
+            payload.preview.content_sha256,
+            hashlib.sha256(arguments.content).hexdigest(),
+        )
+        self.assertEqual(
+            payload.request.preview_digests,
+            (
+                payload.target.target_digest,
+                payload.preview.preview_digest,
+            ),
+        )
+        run.request_approval(call, payload.request, now=10.0)
+        run.reject_approval(
+            payload.request.approval_id,
+            payload.request.action_digest,
+            now=11.0,
+        )
+        self.assertEqual(run.state, TaskState.FAILED)
+        self.assertEqual(run.result_code, "approval_rejected")
+        with self.assertRaisesRegex(
+            TaskToolBrokerValidationError,
+            "not running",
+        ):
+            await broker.execute(call, arguments)
+        self.assertEqual(workspace.verify(), (0, 0))
+        self.assertFalse(
+            (
+                Path(self.temporary.name).absolute()
+                / "adopted-artifacts"
+            ).exists()
+        )
+
+    async def test_expired_approval_produces_no_write(self):
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, workspace = self.create_broker(
+            (write_step, verify_step)
+        )
+        arguments = ArtifactWriteArguments(
+            artifact_id="expired-report",
+            name="expired-report.txt",
+            media_type="text/plain",
+            content=b"Never write this expired action.",
+        )
+        call = call_for(write_step, arguments)
+        payload = broker.approval_payload(
+            call,
+            arguments,
+            approval_id="approval-expired-report",
+            reason="Review before expiry.",
+            expires_at=20.0,
+        )
+        run.request_approval(call, payload.request, now=10.0)
+        run.expire_approval(now=21.0)
+        self.assertEqual(run.state, TaskState.EXPIRED)
+        self.assertEqual(run.result_code, "approval_expired")
+        with self.assertRaisesRegex(
+            TaskToolBrokerValidationError,
+            "not running",
+        ):
+            await broker.execute(call, arguments)
+        self.assertEqual(workspace.verify(), (0, 0))
+
+    async def test_partial_output_is_labeled_never_promoted_and_cancelled(self):
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, workspace = self.create_broker(
+            (write_step, verify_step)
+        )
+        arguments = ArtifactWriteArguments(
+            artifact_id="partial-report",
+            name="partial-report.md",
+            media_type="text/markdown",
+            content=b"# Partial\nOnly one of five requested records.\n",
+            complete=False,
+            partial_reason="source_request_limit_reached",
+        )
+        call = call_for(write_step, arguments)
+        self.approve(run, call)
+        partial = await broker.execute(call, arguments)
+        self.assertEqual(partial.result.status, ToolResultStatus.PARTIAL)
+        self.assertEqual(partial.result.error_code, "partial_output")
+        self.assertFalse(partial.pending_artifact.complete)
+        self.assertIsNone(partial.artifact)
+
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="partial-report",
+            expected_sha256=hashlib.sha256(arguments.content).hexdigest(),
+        )
+        with self.assertRaisesRegex(
+            TaskToolBrokerValidationError,
+            "dependencies",
+        ):
+            await broker.execute(
+                call_for(verify_step, verify_arguments),
+                verify_arguments,
+            )
+        broker.cancel()
+        self.assertEqual(run.state, TaskState.CANCELLED)
+        self.assertEqual(workspace.verify(), (0, 0))
+        self.assertFalse(
+            (
+                Path(self.temporary.name).absolute()
+                / "adopted-artifacts"
+            ).exists()
+        )
 
     async def test_artifact_write_read_verify_and_completion(self):
         write_step = declared_step(
@@ -380,15 +536,15 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         read_step = declared_step(
             "read",
             DeclarativeTool.ARTIFACT_READ,
-            depends_on=("write",),
+            depends_on=("verify",),
         )
         verify_step = declared_step(
             "verify",
             DeclarativeTool.VERIFY_OUTPUT,
-            depends_on=("read",),
+            depends_on=("write",),
         )
         broker, run, _ = self.create_broker(
-            (write_step, read_step, verify_step)
+            (write_step, verify_step, read_step)
         )
         content = b"# Sources\n\nEvidence-backed result.\n"
         write_arguments = ArtifactWriteArguments(
@@ -401,16 +557,6 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.approve(run, write_call)
         written = await broker.execute(write_call, write_arguments)
         self.assertEqual(written.result.status, ToolResultStatus.SUCCEEDED)
-
-        read_arguments = ArtifactReadArguments(
-            artifact_id="research-report"
-        )
-        read = await broker.execute(
-            call_for(read_step, read_arguments),
-            read_arguments,
-        )
-        self.assertEqual(read.content, content)
-        self.assertEqual(read.artifact.artifact_id, "research-report")
 
         verify_arguments = VerifyOutputArguments(
             verifier_id=VERIFIER_ID,
@@ -426,6 +572,21 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             verify_arguments,
         )
         self.assertTrue(verified.result.is_successful_verification)
+        self.assertTrue(verified.artifact.adopted)
+        self.assertEqual(
+            verified.artifact.verification_result_id,
+            verified.result.result_id,
+        )
+
+        read_arguments = ArtifactReadArguments(
+            artifact_id="research-report"
+        )
+        read = await broker.execute(
+            call_for(read_step, read_arguments),
+            read_arguments,
+        )
+        self.assertEqual(read.content, content)
+        self.assertEqual(read.artifact.artifact_id, "research-report")
         run.complete(verified.result)
         self.assertEqual(run.state, TaskState.COMPLETED)
 
@@ -473,14 +634,14 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             DeclarativeTool.ARTIFACT_WRITE,
         )
         read_step = declared_step(
-            "read",
-            DeclarativeTool.ARTIFACT_READ,
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
             depends_on=("write",),
         )
         verify_step = declared_step(
-            "verify",
-            DeclarativeTool.VERIFY_OUTPUT,
-            depends_on=("read",),
+            "read",
+            DeclarativeTool.ARTIFACT_READ,
+            depends_on=("verify",),
         )
         broker, run, workspace = self.create_broker(
             (write_step, read_step, verify_step)
@@ -495,17 +656,24 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.approve(run, write_call)
         await broker.execute(write_call, write_arguments)
         artifact_path = next(
-            (workspace.path / "artifacts").glob("*.artifact")
+            (workspace.path / "pending-artifacts").glob("*.artifact")
         )
         artifact_path.write_bytes(b"altered")
 
-        read_arguments = ArtifactReadArguments(artifact_id="report")
+        read_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="report",
+            expected_sha256=hashlib.sha256(b"trusted").hexdigest(),
+        )
         result = await broker.execute(
             call_for(read_step, read_arguments),
             read_arguments,
         )
         self.assertEqual(result.result.status, ToolResultStatus.FAILED)
-        self.assertEqual(result.result.error_code, "artifact_read_failed")
+        self.assertEqual(
+            result.result.error_code,
+            "artifact_verification_input_failed",
+        )
         self.assertEqual(result.result.output_bytes, 0)
         self.assertIsNone(result.content)
 

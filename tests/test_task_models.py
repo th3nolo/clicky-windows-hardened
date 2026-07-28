@@ -115,6 +115,13 @@ class TaskModelTests(unittest.TestCase):
     def test_models_are_typed_bounded_and_do_not_repr_sensitive_goal(self):
         task_spec = spec()
         self.assertNotIn(task_spec.goal, repr(task_spec))
+        request = approval(
+            call(
+                CapabilityId.LOCAL_ARTIFACT_WRITE,
+                action_digest=DIGEST_C,
+            )
+        )
+        self.assertNotIn(request.reason, repr(request))
         artifact = Artifact(
             artifact_id="artifact-1",
             run_id=task_spec.run_id,
@@ -123,8 +130,11 @@ class TaskModelTests(unittest.TestCase):
             media_type="text/csv",
             byte_count=128,
             sha256=DIGEST_A,
+            verification_result_id="result-1",
+            verification_evidence_digest=DIGEST_B,
         )
         self.assertEqual(artifact.sha256, DIGEST_A)
+        self.assertTrue(artifact.adopted)
 
         with self.assertRaisesRegex(ValueError, "Task goal"):
             TaskSpec(
@@ -414,6 +424,19 @@ class TaskModelTests(unittest.TestCase):
                 output_bytes=1,
                 error_code="unexpected",
             )
+
+        partial = ToolResult(
+            result_id="partial-result",
+            call_id="partial-call",
+            run_id="task-run-1",
+            step_id="write-output",
+            status=ToolResultStatus.PARTIAL,
+            output_digest=DIGEST_A,
+            output_bytes=40,
+            error_code="partial_output",
+        )
+        self.assertEqual(partial.status, ToolResultStatus.PARTIAL)
+        self.assertFalse(partial.is_successful_verification)
 
 
 if __name__ == "__main__":

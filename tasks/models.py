@@ -66,6 +66,7 @@ TERMINAL_TASK_STATES = frozenset(
 
 class ToolResultStatus(str, Enum):
     SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -251,7 +252,7 @@ class ToolResult:
 
 @dataclass(frozen=True, slots=True)
 class Artifact:
-    """Non-sensitive artifact metadata; contents are stored separately."""
+    """Adopted artifact metadata; contents are stored separately."""
 
     artifact_id: str
     run_id: str
@@ -260,6 +261,8 @@ class Artifact:
     media_type: str
     byte_count: int
     sha256: str
+    verification_result_id: str | None = None
+    verification_evidence_digest: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_id(self.artifact_id, label="Artifact ID")
@@ -289,6 +292,29 @@ class Artifact:
         ):
             raise ValueError("Artifact size is invalid")
         _sha256(self.sha256, label="Artifact digest")
+        adoption_fields = (
+            self.verification_result_id,
+            self.verification_evidence_digest,
+        )
+        if all(value is None for value in adoption_fields):
+            return
+        if any(value is None for value in adoption_fields):
+            raise ValueError("Artifact adoption evidence must be complete")
+        _bounded_id(
+            self.verification_result_id,
+            label="Artifact verification result ID",
+        )
+        _sha256(
+            self.verification_evidence_digest,
+            label="Artifact verification evidence digest",
+        )
+
+    @property
+    def adopted(self) -> bool:
+        return (
+            self.verification_result_id is not None
+            and self.verification_evidence_digest is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +326,7 @@ class ApprovalRequest:
     call_id: str
     capability: CapabilityId
     action_digest: str
-    reason: str
+    reason: str = field(repr=False)
     preview_digests: tuple[str, ...]
     expires_at: float
 
@@ -452,25 +478,54 @@ class TaskRun:
         *,
         now: float,
     ) -> None:
-        self._require_state(TaskState.WAITING_FOR_APPROVAL)
-        request = self._pending_approval
-        if request is None:
-            raise ValueError("Task has no pending approval")
-        _bounded_id(approval_id, label="Approval decision ID")
-        _sha256(action_digest, label="Approval decision digest")
-        if (
-            approval_id != request.approval_id
-            or action_digest != request.action_digest
-            or not isinstance(now, (int, float))
-            or isinstance(now, bool)
-            or not math.isfinite(float(now))
-            or now < 0
-            or now > request.expires_at
-        ):
-            raise ValueError("Approval decision does not match or has expired")
+        request = self._matching_pending_decision(
+            approval_id,
+            action_digest,
+            now=now,
+            allow_expired=False,
+        )
         self._approved_actions[request.call_id] = request.action_digest
         object.__setattr__(self, "_pending_approval", None)
         object.__setattr__(self, "_state", TaskState.RUNNING)
+
+    def reject_approval(
+        self,
+        approval_id: str,
+        action_digest: str,
+        *,
+        now: float,
+    ) -> None:
+        """Reject the exact pending action and terminate without authority."""
+
+        request = self._matching_pending_decision(
+            approval_id,
+            action_digest,
+            now=now,
+            allow_expired=False,
+        )
+        assert request is self._pending_approval
+        self._finish_without_completion(
+            TaskState.FAILED,
+            "approval_rejected",
+        )
+
+    def expire_approval(self, *, now: float) -> None:
+        """Expire one pending action only after its reviewed deadline."""
+
+        self._require_state(TaskState.WAITING_FOR_APPROVAL)
+        request = self._pending_approval
+        if (
+            request is None
+            or not isinstance(now, (int, float))
+            or isinstance(now, bool)
+            or not math.isfinite(float(now))
+            or now <= request.expires_at
+        ):
+            raise ValueError("Pending approval has not expired")
+        self._finish_without_completion(
+            TaskState.EXPIRED,
+            "approval_expired",
+        )
 
     def authorize_tool_call(self, call: ToolCall) -> None:
         """Validate authority and consume approval before any side effect."""
@@ -540,6 +595,32 @@ class TaskRun:
             raise ValueError("Tool call belongs to another task run")
         if not self.grant.allows(call.capability):
             raise ValueError("Task grant does not allow this tool call")
+
+    def _matching_pending_decision(
+        self,
+        approval_id: str,
+        action_digest: str,
+        *,
+        now: float,
+        allow_expired: bool,
+    ) -> ApprovalRequest:
+        self._require_state(TaskState.WAITING_FOR_APPROVAL)
+        request = self._pending_approval
+        if request is None:
+            raise ValueError("Task has no pending approval")
+        _bounded_id(approval_id, label="Approval decision ID")
+        _sha256(action_digest, label="Approval decision digest")
+        if (
+            approval_id != request.approval_id
+            or action_digest != request.action_digest
+            or not isinstance(now, (int, float))
+            or isinstance(now, bool)
+            or not math.isfinite(float(now))
+            or now < 0
+            or (not allow_expired and now > request.expires_at)
+        ):
+            raise ValueError("Approval decision does not match or has expired")
+        return request
 
     def _require_state(self, state: TaskState) -> None:
         if self.state is not state:
