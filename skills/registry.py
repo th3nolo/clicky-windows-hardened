@@ -65,7 +65,10 @@ _BUNDLED_DECLARATIVE_SKILL_DIGESTS = MappingProxyType(
         ),
         "research-to-markdown.skill.json": (
             "47e9e4496e4318551fde7d00a28fff92339b2c3187cc851517e2e380e93d7570"
-        )
+        ),
+        "research-to-pdf.skill.json": (
+            "b97c079071efcddd98faa4f8bd2562f3544db641710c87c87a76adf1a12b0568"
+        ),
     }
 )
 

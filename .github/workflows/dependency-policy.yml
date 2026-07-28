@@ -79,6 +79,7 @@ jobs:
           tests.test_quarantine_harness
           tests.test_research_models
           tests.test_research_csv
+          tests.test_research_pdf
           tests.test_research_tools
           tests.test_response_provider_terminology
           tests.test_security_hardening

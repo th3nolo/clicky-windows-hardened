@@ -39,6 +39,7 @@ from tasks.tool_broker import (
     ResearchCsvRenderArguments,
     ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
+    ResearchPdfRenderArguments,
     TaskToolBroker,
     TaskToolBrokerLimitError,
     TaskToolBrokerValidationError,
@@ -1096,6 +1097,99 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             broker_arguments_digest(render_arguments),
         )
 
+    async def test_research_pdf_is_adopted_only_after_page_text_verification(
+        self,
+    ):
+        from research.markdown_artifact import (
+            ResearchMarkdownSchema,
+            render_research_markdown,
+        )
+        from research.pdf_artifact import (
+            PDF_MEDIA_TYPE,
+            render_research_markdown_to_pdf,
+        )
+        from tests.test_research_csv import batch, record
+
+        schema = ResearchMarkdownSchema(
+            "Creator research",
+            ("audience",),
+        )
+        report = render_research_markdown(
+            batch(record("one")),
+            schema,
+            requested_sections=1,
+        )
+        artifact = render_research_markdown_to_pdf(
+            report.content,
+            schema,
+            requested_sections=1,
+            maximum_output_bytes=1024 * 1024,
+        )
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, _ = self.create_broker(
+            (write_step, verify_step),
+            run_id="task-broker-pdf-adoption",
+        )
+        write_arguments = ArtifactWriteArguments(
+            artifact_id="research-pdf",
+            name="research.pdf",
+            media_type=PDF_MEDIA_TYPE,
+            content=artifact.content,
+        )
+        write_call = call_for(
+            write_step,
+            write_arguments,
+            run_id=run.run_id,
+        )
+        self.approve(run, write_call)
+        await broker.execute(write_call, write_arguments)
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-pdf",
+            expected_sha256=artifact.sha256,
+            expected_media_type=PDF_MEDIA_TYPE,
+            maximum_bytes=1024 * 1024,
+            research_pdf_report_title=schema.title,
+            research_pdf_field_ids=schema.requested_field_ids,
+            research_pdf_requested_sections=1,
+            research_pdf_report_sha256=report.sha256,
+            research_pdf_document_digest=artifact.document_digest,
+            research_pdf_source_digest=artifact.source_digest,
+            research_pdf_page_count=artifact.page_count,
+        )
+        verified = await broker.execute(
+            call_for(
+                verify_step,
+                verify_arguments,
+                run_id=run.run_id,
+            ),
+            verify_arguments,
+        )
+        self.assertTrue(verified.result.is_successful_verification)
+        self.assertIsNotNone(verified.artifact)
+
+        render_arguments = ResearchPdfRenderArguments(
+            report_content=report.content,
+            report_title=schema.title,
+            requested_sections=1,
+            field_ids=schema.requested_field_ids,
+            report_sha256=report.sha256,
+            source_digest=report.source_digest,
+            maximum_output_bytes=1024 * 1024,
+        )
+        self.assertEqual(
+            broker_arguments_digest(render_arguments),
+            broker_arguments_digest(render_arguments),
+        )
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
@@ -1334,6 +1428,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.RESEARCH_CSV_RENDER,
                 DeclarativeTool.RESEARCH_MARKDOWN_RENDER,
                 DeclarativeTool.RESEARCH_DOCX_RENDER,
+                DeclarativeTool.RESEARCH_PDF_RENDER,
                 DeclarativeTool.NOTION_DRAFT_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,

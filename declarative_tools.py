@@ -18,6 +18,7 @@ class DeclarativeTool(str, Enum):
     RESEARCH_CSV_RENDER = "research.csv.render"
     RESEARCH_MARKDOWN_RENDER = "research.markdown.render"
     RESEARCH_DOCX_RENDER = "research.docx.render"
+    RESEARCH_PDF_RENDER = "research.pdf.render"
     NOTION_DRAFT_RENDER = "notion.draft.render"
     ARTIFACT_READ = "artifact.read"
     ARTIFACT_WRITE = "artifact.write"
@@ -36,6 +37,7 @@ TOOL_CAPABILITIES: Mapping[
         DeclarativeTool.RESEARCH_CSV_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.RESEARCH_MARKDOWN_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.RESEARCH_DOCX_RENDER: CapabilityId.TASK_AGENT_RUN,
+        DeclarativeTool.RESEARCH_PDF_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.NOTION_DRAFT_RENDER: CapabilityId.TASK_AGENT_RUN,
         DeclarativeTool.ARTIFACT_READ: CapabilityId.LOCAL_ARTIFACT_READ,
         DeclarativeTool.ARTIFACT_WRITE: CapabilityId.LOCAL_ARTIFACT_WRITE,
