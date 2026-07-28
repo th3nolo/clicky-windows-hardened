@@ -42,7 +42,12 @@ from tasks.models import (
     ToolResult,
     ToolResultStatus,
 )
-from tasks.verifiers import FileExpectation, verify_file
+from tasks.verifiers import (
+    FileExpectation,
+    ResearchCsvFileExpectation,
+    verify_file,
+    verify_research_csv_file,
+)
 
 
 MAX_MODEL_PROMPT_CHARS = 32 * 1024
@@ -287,6 +292,8 @@ class VerifyOutputArguments:
     minimum_bytes: int | None = None
     maximum_bytes: int | None = None
     required_utf8_substrings: tuple[str, ...] = ()
+    research_csv_field_ids: tuple[str, ...] = ()
+    research_csv_requested_rows: int | None = None
 
     def __post_init__(self) -> None:
         _bounded_token(
@@ -346,6 +353,30 @@ class VerifyOutputArguments:
             set(self.required_utf8_substrings)
         ):
             raise ValueError("Verifier substrings must be unique")
+        research_csv = bool(self.research_csv_field_ids) or (
+            self.research_csv_requested_rows is not None
+        )
+        if research_csv:
+            from research.csv_artifact import ResearchCsvSchema
+            from research.models import MAX_RESEARCH_BYTES
+
+            ResearchCsvSchema(self.research_csv_field_ids)
+            _bounded_integer(
+                self.research_csv_requested_rows,
+                1,
+                100,
+                "Research CSV requested row count",
+            )
+            if (
+                self.expected_sha256 is None
+                or self.expected_media_type != "text/csv"
+                or self.maximum_bytes is None
+                or self.maximum_bytes > MAX_RESEARCH_BYTES
+            ):
+                raise ValueError(
+                    "Research CSV verifier requires digest, text/csv, "
+                    "and a bounded maximum size"
+                )
         if not any(
             (
                 self.expected_sha256 is not None,
@@ -353,6 +384,7 @@ class VerifyOutputArguments:
                 self.minimum_bytes is not None,
                 self.maximum_bytes is not None,
                 bool(self.required_utf8_substrings),
+                research_csv,
             )
         ):
             raise ValueError("Verifier requires an explicit postcondition")
@@ -824,22 +856,59 @@ class TaskToolBroker:
             raise TaskToolBrokerOperationError(
                 "artifact_verification_input_failed"
             ) from exc
-        evidence = verify_file(
-            pending.file_snapshot(),
-            FileExpectation(
-                expected_sha256=arguments.expected_sha256,
-                expected_media_type=arguments.expected_media_type,
-                minimum_bytes=arguments.minimum_bytes,
-                maximum_bytes=arguments.maximum_bytes,
-                required_utf8_substrings=(
-                    arguments.required_utf8_substrings
-                ),
+        file_expectation = FileExpectation(
+            expected_sha256=arguments.expected_sha256,
+            expected_media_type=arguments.expected_media_type,
+            minimum_bytes=arguments.minimum_bytes,
+            maximum_bytes=arguments.maximum_bytes,
+            required_utf8_substrings=(
+                arguments.required_utf8_substrings
             ),
-            verifier_id=arguments.verifier_id,
-            content=content,
         )
+        research_verification = None
+        if arguments.research_csv_requested_rows is not None:
+            research_verification = verify_research_csv_file(
+                pending.file_snapshot(),
+                ResearchCsvFileExpectation(
+                    file=file_expectation,
+                    requested_field_ids=(
+                        arguments.research_csv_field_ids
+                    ),
+                    requested_rows=(
+                        arguments.research_csv_requested_rows
+                    ),
+                ),
+                verifier_id=arguments.verifier_id,
+                content=content,
+            )
+            evidence = research_verification.evidence
+        else:
+            evidence = verify_file(
+                pending.file_snapshot(),
+                file_expectation,
+                verifier_id=arguments.verifier_id,
+                content=content,
+            )
         self._reserve_output(evidence.evidence_bytes)
-        result = evidence.to_tool_result(call)
+        if (
+            research_verification is not None
+            and research_verification.partial
+        ):
+            result = ToolResult(
+                result_id=_result_id(call),
+                call_id=call.call_id,
+                run_id=call.run_id,
+                step_id=call.step_id,
+                status=ToolResultStatus.PARTIAL,
+                output_digest=evidence.evidence_digest,
+                output_bytes=evidence.evidence_bytes,
+                error_code="research_csv_row_shortfall",
+                verifier_id=evidence.verifier_id,
+                postcondition_met=False,
+                evidence_digest=evidence.evidence_digest,
+            )
+        else:
+            result = evidence.to_tool_result(call)
         artifact = None
         if result.is_successful_verification:
             try:
@@ -970,6 +1039,12 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "minimum_bytes": arguments.minimum_bytes,
             "required_utf8_substrings": list(
                 arguments.required_utf8_substrings
+            ),
+            "research_csv_field_ids": list(
+                arguments.research_csv_field_ids
+            ),
+            "research_csv_requested_rows": (
+                arguments.research_csv_requested_rows
             ),
             "verifier_id": arguments.verifier_id,
         }

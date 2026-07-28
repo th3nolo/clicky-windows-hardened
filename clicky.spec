@@ -48,6 +48,7 @@ hidden = [
     "ai.figure_detector",
     "memory.style_profiles",
     "research.models",
+    "research.csv_artifact",
     "research.tools",
     "skills.declarative_runner",
     "skills.registry",

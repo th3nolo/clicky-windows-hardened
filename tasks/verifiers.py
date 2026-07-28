@@ -150,6 +150,74 @@ class FileExpectation:
             raise ValueError("File verifier requires a postcondition")
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchCsvFileExpectation:
+    """Exact file and research-table postconditions for one CSV artifact."""
+
+    file: FileExpectation
+    requested_field_ids: tuple[str, ...]
+    requested_rows: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, FileExpectation):
+            raise TypeError(
+                "Research CSV file expectation must be typed"
+            )
+        from research.csv_artifact import ResearchCsvSchema
+        from research.models import MAX_RESEARCH_BYTES
+
+        ResearchCsvSchema(self.requested_field_ids)
+        if type(self.requested_rows) is not int or not (
+            1 <= self.requested_rows <= 100
+        ):
+            raise ValueError(
+                "Research CSV requested row count is invalid"
+            )
+        if (
+            self.file.expected_sha256 is None
+            or self.file.expected_media_type != "text/csv"
+            or self.file.maximum_bytes is None
+            or self.file.maximum_bytes > MAX_RESEARCH_BYTES
+        ):
+            raise ValueError(
+                "Research CSV verification requires digest, media type, "
+                "and a bounded maximum size"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchCsvFileVerification:
+    """Verifier evidence plus a content-free shortfall classification."""
+
+    evidence: VerificationEvidence
+    row_count: int
+    requested_rows: int
+    partial: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence, VerificationEvidence):
+            raise TypeError(
+                "Research CSV verification evidence is invalid"
+            )
+        if (
+            type(self.row_count) is not int
+            or type(self.requested_rows) is not int
+            or not 0 <= self.row_count <= 100
+            or not 1 <= self.requested_rows <= 100
+            or type(self.partial) is not bool
+        ):
+            raise ValueError(
+                "Research CSV verification metadata is invalid"
+            )
+        if self.partial and (
+            self.evidence.postcondition_met
+            or self.row_count >= self.requested_rows
+        ):
+            raise ValueError(
+                "Research CSV partial verification is inconsistent"
+            )
+
+
 def verify_file(
     snapshot: FileSnapshot,
     expectation: FileExpectation,
@@ -206,6 +274,102 @@ def verify_file(
             "media_type": snapshot.media_type,
             "provenance_digest": snapshot.provenance_digest,
         },
+    )
+
+
+def verify_research_csv_file(
+    snapshot: FileSnapshot,
+    expectation: ResearchCsvFileExpectation,
+    *,
+    verifier_id: str,
+    content: bytes,
+) -> ResearchCsvFileVerification:
+    """Verify exact file identity plus canonical, source-backed CSV content."""
+
+    if not isinstance(snapshot, FileSnapshot):
+        raise TypeError("Research CSV verifier snapshot is invalid")
+    if not isinstance(expectation, ResearchCsvFileExpectation):
+        raise TypeError("Research CSV verifier expectation is invalid")
+    if not isinstance(content, bytes):
+        raise TypeError(
+            "Research CSV verifier content must be immutable bytes"
+        )
+    from research.csv_artifact import (
+        ResearchCsvSchema,
+        inspect_research_csv,
+    )
+
+    file = expectation.file
+    integrity = (
+        len(content) == snapshot.byte_count
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+    checks = {
+        "complete_pending_file": snapshot.complete,
+        "content_integrity": integrity,
+        "expected_sha256": (
+            snapshot.sha256 == file.expected_sha256
+        ),
+        "expected_media_type": (
+            snapshot.media_type == file.expected_media_type
+        ),
+        "maximum_bytes": (
+            file.maximum_bytes is not None
+            and snapshot.byte_count <= file.maximum_bytes
+        ),
+    }
+    if file.minimum_bytes is not None:
+        checks["minimum_bytes"] = (
+            snapshot.byte_count >= file.minimum_bytes
+        )
+    if file.required_utf8_substrings:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            checks["required_utf8_substrings"] = False
+        else:
+            checks["required_utf8_substrings"] = all(
+                substring in text
+                for substring in file.required_utf8_substrings
+            )
+    inspection = inspect_research_csv(
+        content,
+        ResearchCsvSchema(expectation.requested_field_ids),
+        requested_rows=expectation.requested_rows,
+        maximum_bytes=file.maximum_bytes,
+    )
+    checks["research_csv_structure"] = inspection.structurally_valid
+    checks["research_csv_requested_rows"] = inspection.complete
+    evidence = _evidence(
+        verifier_id=verifier_id,
+        subject_kind=VerificationSubjectKind.FILE,
+        subject_reference=snapshot.artifact_id,
+        subject_digest=snapshot.sha256,
+        checks=checks,
+        observed={
+            "byte_count": snapshot.byte_count,
+            "media_type": snapshot.media_type,
+            "provenance_digest": snapshot.provenance_digest,
+            "research_csv_result": inspection.result_code,
+            "research_csv_rows": inspection.row_count,
+            "research_csv_schema_digest": inspection.schema_digest,
+            "requested_rows": inspection.requested_rows,
+        },
+    )
+    file_checks_without_row_count = all(
+        value
+        for name, value in checks.items()
+        if name != "research_csv_requested_rows"
+    )
+    partial = (
+        inspection.partial
+        and file_checks_without_row_count
+    )
+    return ResearchCsvFileVerification(
+        evidence=evidence,
+        row_count=inspection.row_count,
+        requested_rows=inspection.requested_rows,
+        partial=partial,
     )
 
 
@@ -617,6 +781,8 @@ __all__ = [
     "ApiResponseSnapshot",
     "FileExpectation",
     "FileSnapshot",
+    "ResearchCsvFileExpectation",
+    "ResearchCsvFileVerification",
     "RepositoryExpectation",
     "RepositorySnapshot",
     "UiStateExpectation",
@@ -625,6 +791,7 @@ __all__ = [
     "VerificationSubjectKind",
     "verify_api_response",
     "verify_file",
+    "verify_research_csv_file",
     "verify_repository",
     "verify_ui_state",
 ]

@@ -637,6 +637,99 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             run.complete(verified.result)
         self.assertEqual(run.state, TaskState.RUNNING)
 
+    async def test_research_csv_is_adopted_only_at_exact_unique_row_count(self):
+        from research.csv_artifact import (
+            ResearchCsvSchema,
+            render_research_csv,
+        )
+        from tests.test_research_csv import batch, record
+
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, _ = self.create_broker(
+            (write_step, verify_step)
+        )
+        schema = ResearchCsvSchema(("audience",))
+        rendered = render_research_csv(
+            batch(record("one")),
+            schema,
+            requested_rows=1,
+        )
+        write_arguments = ArtifactWriteArguments(
+            artifact_id="research-csv",
+            name="research.csv",
+            media_type="text/csv",
+            content=rendered.content,
+        )
+        write_call = call_for(write_step, write_arguments)
+        self.approve(run, write_call)
+        await broker.execute(write_call, write_arguments)
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-csv",
+            expected_sha256=rendered.sha256,
+            expected_media_type="text/csv",
+            maximum_bytes=64 * 1024,
+            research_csv_field_ids=("audience",),
+            research_csv_requested_rows=1,
+        )
+        verified = await broker.execute(
+            call_for(verify_step, verify_arguments),
+            verify_arguments,
+        )
+        self.assertTrue(verified.result.is_successful_verification)
+        self.assertIsNotNone(verified.artifact)
+
+        short_broker, short_run, short_workspace = self.create_broker(
+            (write_step, verify_step),
+            run_id="task-broker-shortfall",
+        )
+        short_write_call = call_for(
+            write_step,
+            write_arguments,
+            run_id=short_run.run_id,
+        )
+        self.approve(short_run, short_write_call)
+        await short_broker.execute(
+            short_write_call,
+            write_arguments,
+        )
+        short_verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-csv",
+            expected_sha256=rendered.sha256,
+            expected_media_type="text/csv",
+            maximum_bytes=64 * 1024,
+            research_csv_field_ids=("audience",),
+            research_csv_requested_rows=2,
+        )
+        short = await short_broker.execute(
+            call_for(
+                verify_step,
+                short_verify_arguments,
+                run_id=short_run.run_id,
+            ),
+            short_verify_arguments,
+        )
+        self.assertEqual(short.result.status, ToolResultStatus.PARTIAL)
+        self.assertEqual(
+            short.result.error_code,
+            "research_csv_row_shortfall",
+        )
+        self.assertFalse(short.result.postcondition_met)
+        self.assertIsNone(short.artifact)
+        self.assertGreater(short_workspace.verify()[0], 0)
+        short_broker.cancel()
+        self.assertEqual(short_run.state, TaskState.CANCELLED)
+        self.assertEqual(short_workspace.verify(), (0, 0))
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
