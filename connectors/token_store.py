@@ -33,6 +33,7 @@ from connectors.base import (
     ConnectionHealth,
     ConnectorAuthorizationError,
     ConnectorProviderId,
+    ConnectorTokenExpiredError,
     SecretValue,
 )
 from security.dpapi import decrypt_current_user, encrypt_current_user
@@ -590,6 +591,15 @@ class AccessTokenCache:
         checked_scopes = _scopes(required_scopes)
         now = _timestamp(self._clock(), "Access-token cache time")
         with self._lock:
+            existing = self._entries.get(checked_id)
+            if (
+                existing is not None
+                and existing.metadata.expires_at <= now
+            ):
+                self._entries.pop(checked_id).token.close()
+                raise ConnectorTokenExpiredError(
+                    "Connected-account access token expired"
+                )
             self._prune_locked(now)
             entry = self._entries.get(checked_id)
             if entry is None:

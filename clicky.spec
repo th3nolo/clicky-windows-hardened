@@ -47,6 +47,7 @@ hidden = [
     "ai.hybrid_pointer",
     "ai.figure_detector",
     "connectors.base",
+    "connectors.oauth",
     "connectors.token_store",
     "memory.style_profiles",
     "research.models",

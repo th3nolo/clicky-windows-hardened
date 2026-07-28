@@ -21,6 +21,7 @@ from connectors.base import (
     ConnectionHealth,
     ConnectorAuthorizationError,
     ConnectorProviderId,
+    ConnectorTokenExpiredError,
     SecretValue,
 )
 from connectors.token_store import (
@@ -293,14 +294,14 @@ class AccessTokenCacheTests(unittest.TestCase):
                 ),
             )
         self.now = 200.0
-        self.assertIsNone(self.cache.get_metadata("auth-1"))
-        with self.assertRaises(ConnectorTokenNotFoundError):
+        with self.assertRaises(ConnectorTokenExpiredError):
             self.cache.lease(
                 "auth-1",
                 required_scopes=frozenset(
                     {OAuthScopeId.GMAIL_MESSAGES_READ}
                 ),
             )
+        self.assertIsNone(self.cache.get_metadata("auth-1"))
 
     def test_cache_is_bounded_evictable_and_has_no_filesystem_path(self):
         self.cache.put(
