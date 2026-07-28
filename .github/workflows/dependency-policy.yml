@@ -43,6 +43,8 @@ jobs:
           tests.test_connector_google_drive_task_bridge
           tests.test_connector_google_sheets
           tests.test_connector_google_sheets_task_bridge
+          tests.test_connector_google_docs
+          tests.test_connector_google_docs_task_bridge
           tests.test_connector_google_slides
           tests.test_connector_google_slides_task_bridge
           tests.test_connector_notion

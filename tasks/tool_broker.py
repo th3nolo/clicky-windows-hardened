@@ -26,6 +26,14 @@ from declarative_tools import (
     TOOL_CAPABILITIES,
     DeclarativeTool,
 )
+from docs_contracts import (
+    MAX_DOCS_PROVIDER_EVIDENCE_BYTES,
+    MAX_DOCS_PROVIDER_REQUESTS,
+    validate_docs_body,
+    validate_docs_document_id,
+    validate_docs_idempotency_key,
+    validate_docs_title,
+)
 from notion_contracts import (
     MAX_NOTION_PROVIDER_REQUESTS,
     render_notion_local_draft,
@@ -49,6 +57,7 @@ from tasks.approvals import (
     ApprovalPreview,
     build_approval_payload,
     gmail_draft_target,
+    google_docs_create_target,
     google_sheets_export_target,
     google_slides_export_target,
     task_artifact_target,
@@ -226,6 +235,7 @@ class DeclaredToolStep:
                 or self.capability
                 not in {
                     CapabilityId.CALENDAR_EVENT_READ,
+                    CapabilityId.DOCS_DOCUMENT_READ,
                     CapabilityId.DRIVE_SELECTED_FILE_READ,
                     CapabilityId.GMAIL_MESSAGE_READ,
                     CapabilityId.NOTION_PAGE_READ,
@@ -240,6 +250,7 @@ class DeclaredToolStep:
                 or self.connector is not definition.connector
                 or self.capability
                 not in {
+                    CapabilityId.DOCS_DOCUMENT_CREATE,
                     CapabilityId.GMAIL_DRAFT_WRITE,
                     CapabilityId.SHEETS_VALUES_WRITE,
                     CapabilityId.SLIDES_PRESENTATION_WRITE,
@@ -455,6 +466,70 @@ class DriveSelectedFileArguments:
             1,
             MAX_CONNECTOR_OUTPUT_BYTES,
             "Drive response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocsSelectedDocumentArguments:
+    """One exact connected account and explicitly selected Google document."""
+
+    authorization_id: str
+    selected_document_id: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Google Docs account authorization ID",
+        )
+        validate_docs_document_id(self.selected_document_id)
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Google Docs response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DocsCreateArguments:
+    """One exact reviewed Google document and create-once target."""
+
+    authorization_id: str
+    title: str
+    body_text: str = field(repr=False)
+    idempotency_key: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Google Docs account authorization ID",
+        )
+        validate_docs_title(self.title)
+        validate_docs_body(self.body_text)
+        validate_docs_idempotency_key(self.idempotency_key)
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Google Docs response limit",
+        )
+
+    @property
+    def body_sha256(self) -> str:
+        return hashlib.sha256(self.body_text.encode("utf-8")).hexdigest()
+
+    def preview_bytes(self) -> bytes:
+        return _canonical_json(
+            {
+                "body_text": self.body_text,
+                "title": self.title,
+            }
         )
 
 
@@ -1277,6 +1352,8 @@ BrokerArguments = (
     | WebSearchArguments
     | WebFetchArguments
     | CalendarAvailabilityArguments
+    | DocsSelectedDocumentArguments
+    | DocsCreateArguments
     | DriveSelectedFileArguments
     | GmailSelectedThreadArguments
     | GmailDraftArguments
@@ -1398,6 +1475,7 @@ ConnectorReadAdapter = Callable[
     [
         ToolCall,
         CalendarAvailabilityArguments
+        | DocsSelectedDocumentArguments
         | DriveSelectedFileArguments
         | GmailSelectedThreadArguments
         | NotionSelectedPageArguments,
@@ -1407,7 +1485,8 @@ ConnectorReadAdapter = Callable[
 ConnectorWriteAdapter = Callable[
     [
         ToolCall,
-        GmailDraftArguments
+        DocsCreateArguments
+        | GmailDraftArguments
         | ResolvedSheetsExportArguments
         | ResolvedSlidesExportArguments,
     ],
@@ -1532,6 +1611,7 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: (
             ArtifactWriteArguments
+            | DocsCreateArguments
             | GmailDraftArguments
             | SheetsExportArguments
             | SlidesExportArguments
@@ -1568,7 +1648,21 @@ class TaskToolBroker:
             media_type = arguments.media_type
             byte_count = len(arguments.content)
         elif step.tool is DeclarativeTool.CONNECTOR_WRITE:
-            if isinstance(arguments, GmailDraftArguments):
+            if isinstance(arguments, DocsCreateArguments):
+                preview_bytes = arguments.preview_bytes()
+                content_digest = arguments.body_sha256
+                excerpt = preview_bytes.decode("utf-8")
+                target = google_docs_create_target(
+                    authorization_id=arguments.authorization_id,
+                    title=arguments.title,
+                    body_sha256=arguments.body_sha256,
+                    idempotency_key_sha256=hashlib.sha256(
+                        arguments.idempotency_key.encode("utf-8")
+                    ).hexdigest(),
+                )
+                media_type = "application/json"
+                byte_count = len(arguments.body_text.encode("utf-8"))
+            elif isinstance(arguments, GmailDraftArguments):
                 preview_bytes = arguments.preview_bytes()
                 content_digest = hashlib.sha256(preview_bytes).hexdigest()
                 excerpt = preview_bytes.decode("utf-8")
@@ -1808,6 +1902,8 @@ class TaskToolBroker:
         elif isinstance(
             arguments,
             (
+                DocsSelectedDocumentArguments,
+                DocsCreateArguments,
                 DriveSelectedFileArguments,
                 GmailSelectedThreadArguments,
                 GmailDraftArguments,
@@ -1841,6 +1937,10 @@ class TaskToolBroker:
             return self._text_execution(call, _require_text_output(text))
         if type(arguments) is CalendarAvailabilityArguments:
             return await self._read_connector(call, arguments)
+        if type(arguments) is DocsSelectedDocumentArguments:
+            return await self._read_connector(call, arguments)
+        if type(arguments) is DocsCreateArguments:
+            return await self._write_connector(call, arguments)
         if type(arguments) is DriveSelectedFileArguments:
             return await self._read_connector(call, arguments)
         if type(arguments) is GmailSelectedThreadArguments:
@@ -1878,6 +1978,7 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: (
             CalendarAvailabilityArguments
+            | DocsSelectedDocumentArguments
             | DriveSelectedFileArguments
             | GmailSelectedThreadArguments
             | NotionSelectedPageArguments
@@ -1925,7 +2026,8 @@ class TaskToolBroker:
         self,
         call: ToolCall,
         arguments: (
-            GmailDraftArguments
+            DocsCreateArguments
+            | GmailDraftArguments
             | SheetsExportArguments
             | SlidesExportArguments
         ),
@@ -1933,7 +2035,8 @@ class TaskToolBroker:
         if self._connector_write is None:
             raise TaskToolBrokerOperationError("connector_write_unavailable")
         resolved_arguments: (
-            GmailDraftArguments
+            DocsCreateArguments
+            | GmailDraftArguments
             | ResolvedSheetsExportArguments
             | ResolvedSlidesExportArguments
         )
@@ -1957,7 +2060,17 @@ class TaskToolBroker:
         if not isinstance(output, ConnectorReadOutput):
             raise TaskToolBrokerOperationError("connector_output_invalid")
         evidence_limit = (
-            MAX_SHEETS_PROVIDER_EVIDENCE_BYTES
+            min(
+                MAX_DOCS_PROVIDER_EVIDENCE_BYTES,
+                (
+                    MAX_DOCS_PROVIDER_REQUESTS
+                    * arguments.maximum_response_bytes
+                    + MAX_DOCS_PROVIDER_REQUESTS
+                    - 1
+                ),
+            )
+            if isinstance(arguments, DocsCreateArguments)
+            else MAX_SHEETS_PROVIDER_EVIDENCE_BYTES
             if isinstance(arguments, SheetsExportArguments)
             else
             (
@@ -2645,6 +2758,23 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "time_max": arguments.time_max,
             "time_min": arguments.time_min,
         }
+    if type(arguments) is DocsSelectedDocumentArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "selected_document_id": arguments.selected_document_id,
+        }
+    if type(arguments) is DocsCreateArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "body_bytes": len(arguments.body_text.encode("utf-8")),
+            "body_sha256": arguments.body_sha256,
+            "idempotency_key_sha256": hashlib.sha256(
+                arguments.idempotency_key.encode("utf-8")
+            ).hexdigest(),
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "title": arguments.title,
+        }
     if type(arguments) is DriveSelectedFileArguments:
         return {
             "authorization_id": arguments.authorization_id,
@@ -2884,6 +3014,8 @@ _ARGUMENT_TYPES = {
 
 _CONNECTOR_ARGUMENT_TYPES = {
     CapabilityId.CALENDAR_EVENT_READ: CalendarAvailabilityArguments,
+    CapabilityId.DOCS_DOCUMENT_READ: DocsSelectedDocumentArguments,
+    CapabilityId.DOCS_DOCUMENT_CREATE: DocsCreateArguments,
     CapabilityId.DRIVE_SELECTED_FILE_READ: DriveSelectedFileArguments,
     CapabilityId.GMAIL_MESSAGE_READ: GmailSelectedThreadArguments,
     CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
@@ -2921,6 +3053,11 @@ def _network_request_cost(
         and isinstance(arguments, DriveSelectedFileArguments)
     ):
         return 2
+    if (
+        tool is DeclarativeTool.CONNECTOR_WRITE
+        and isinstance(arguments, DocsCreateArguments)
+    ):
+        return MAX_DOCS_PROVIDER_REQUESTS
     if tool in {
         DeclarativeTool.WEB_SEARCH,
         DeclarativeTool.WEB_FETCH,
@@ -3172,6 +3309,8 @@ __all__ = [
     "ConnectorWriteAdapter",
     "ConnectorWriteOutput",
     "DeclaredToolStep",
+    "DocsCreateArguments",
+    "DocsSelectedDocumentArguments",
     "DriveSelectedFileArguments",
     "GmailDraftArguments",
     "GmailSelectedThreadArguments",

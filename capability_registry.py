@@ -47,6 +47,7 @@ class UserPermissionId(str, Enum):
 class ConnectorId(str, Enum):
     GMAIL = "gmail"
     GOOGLE_CALENDAR = "google_calendar"
+    GOOGLE_DOCS = "google_docs"
     GOOGLE_DRIVE = "google_drive"
     NOTION = "notion"
     GOOGLE_SHEETS = "google_sheets"
@@ -60,6 +61,8 @@ class OAuthScopeId(str, Enum):
     GMAIL_DRAFTS_WRITE = "gmail.drafts.write"
     CALENDAR_EVENTS_READ = "google_calendar.events.read"
     CALENDAR_EVENTS_WRITE = "google_calendar.events.write"
+    DOCS_SELECTED_DOCUMENT_READ = "google_docs.selected_document.read"
+    DOCS_DOCUMENT_CREATE = "google_docs.document.create"
     DRIVE_SELECTED_FILE_READ = "google_drive.selected_file.read"
     NOTION_PAGES_READ = "notion.pages.read"
     NOTION_PAGES_WRITE = "notion.pages.write"
@@ -85,6 +88,8 @@ class CapabilityId(str, Enum):
     GMAIL_DRAFT_WRITE = "gmail.draft.write"
     CALENDAR_EVENT_READ = "google_calendar.event.read"
     CALENDAR_EVENT_WRITE = "google_calendar.event.write"
+    DOCS_DOCUMENT_READ = "google_docs.document.read"
+    DOCS_DOCUMENT_CREATE = "google_docs.document.create"
     DRIVE_SELECTED_FILE_READ = "google_drive.selected_file.read"
     NOTION_PAGE_READ = "notion.page.read"
     NOTION_PAGE_WRITE = "notion.page.write"
@@ -253,6 +258,21 @@ _DEFINITIONS = (
         approval=True,
     ),
     _definition(
+        CapabilityId.DOCS_DOCUMENT_READ,
+        "Read one explicitly selected Google Docs document",
+        FeatureCapability.CONNECTOR_READ,
+        UserPermissionId.CONNECTOR_READ,
+        connector=ConnectorId.GOOGLE_DOCS,
+    ),
+    _definition(
+        CapabilityId.DOCS_DOCUMENT_CREATE,
+        "Create one reviewed Google Docs document",
+        FeatureCapability.CONNECTOR_WRITE,
+        UserPermissionId.CONNECTOR_WRITE,
+        connector=ConnectorId.GOOGLE_DOCS,
+        approval=True,
+    ),
+    _definition(
         CapabilityId.DRIVE_SELECTED_FILE_READ,
         "Read one explicitly selected Google Drive file",
         FeatureCapability.CONNECTOR_READ,
@@ -354,6 +374,12 @@ CAPABILITY_OAUTH_SCOPES: Mapping[
         CapabilityId.GMAIL_DRAFT_WRITE: OAuthScopeId.GMAIL_DRAFTS_WRITE,
         CapabilityId.CALENDAR_EVENT_READ: OAuthScopeId.CALENDAR_EVENTS_READ,
         CapabilityId.CALENDAR_EVENT_WRITE: OAuthScopeId.CALENDAR_EVENTS_WRITE,
+        CapabilityId.DOCS_DOCUMENT_READ: (
+            OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ
+        ),
+        CapabilityId.DOCS_DOCUMENT_CREATE: (
+            OAuthScopeId.DOCS_DOCUMENT_CREATE
+        ),
         CapabilityId.DRIVE_SELECTED_FILE_READ: (
             OAuthScopeId.DRIVE_SELECTED_FILE_READ
         ),

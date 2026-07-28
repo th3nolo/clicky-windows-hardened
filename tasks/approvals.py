@@ -213,6 +213,39 @@ def gmail_draft_target(
     )
 
 
+def google_docs_create_target(
+    *,
+    authorization_id: str,
+    title: str,
+    body_sha256: str,
+    idempotency_key_sha256: str,
+) -> ApprovalTarget:
+    """Bind approval to one account, exact document, and create-once key."""
+
+    _bounded_reference(authorization_id)
+    _bounded_text(title, MAX_TARGET_LABEL_CHARS, "Document title")
+    _sha256(body_sha256, "Google Docs body digest")
+    _sha256(idempotency_key_sha256, "Google Docs idempotency digest")
+    target_digest = hashlib.sha256(
+        _canonical_json(
+            {
+                "authorization_id": authorization_id,
+                "body_sha256": body_sha256,
+                "idempotency_key_sha256": idempotency_key_sha256,
+                "kind": ApprovalTargetKind.API_MUTATION.value,
+                "operation": "google_docs.create_reviewed_document",
+                "title": title,
+            }
+        )
+    ).hexdigest()
+    return ApprovalTarget(
+        kind=ApprovalTargetKind.API_MUTATION,
+        reference=authorization_id,
+        label=f"Create one Google document: {title}",
+        target_digest=target_digest,
+    )
+
+
 def google_sheets_export_target(
     *,
     authorization_id: str,
@@ -325,6 +358,7 @@ __all__ = [
     "ApprovalTargetKind",
     "build_approval_payload",
     "gmail_draft_target",
+    "google_docs_create_target",
     "google_sheets_export_target",
     "google_slides_export_target",
     "task_artifact_target",

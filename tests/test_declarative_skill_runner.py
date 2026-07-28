@@ -723,6 +723,148 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("gmail.send", {item.value for item in CapabilityId})
 
+    def test_google_docs_compiles_exact_selected_read_and_reviewed_create(self):
+        read_payload = definition_payload()
+        read_payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.DOCS_DOCUMENT_READ.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.docs-one",
+                },
+                {
+                    "argument_id": "selected_document_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "document_123",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_DOCS.value,
+            "approval_id": None,
+        }
+        read_payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.DOCS_DOCUMENT_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        read_payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_DOCS.value,
+                "capabilities": [CapabilityId.DOCS_DOCUMENT_READ.value],
+                "oauth_scopes": [
+                    OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ.value
+                ],
+            }
+        ]
+        read_definition = parsed_definition(read_payload)
+        read_run = make_run(
+            read_definition,
+            {"query": "selected Google document"},
+        )
+        read_plan = compile_declarative_plan(
+            read_definition,
+            read_run,
+        )
+        self.assertEqual(
+            read_plan.declared_steps[0].capability,
+            CapabilityId.DOCS_DOCUMENT_READ,
+        )
+
+        create_payload = definition_payload()
+        create_payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_WRITE.value,
+            "capability": CapabilityId.DOCS_DOCUMENT_CREATE.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.docs-one",
+                },
+                {
+                    "argument_id": "title",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Reviewed memo",
+                },
+                {
+                    "argument_id": "body_text",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Exact reviewed body",
+                },
+                {
+                    "argument_id": "idempotency_key",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "run.docs-create-1",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_DOCS.value,
+            "approval_id": "approve_docs_create",
+        }
+        create_payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.DOCS_DOCUMENT_CREATE.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        create_payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_DOCS.value,
+                "capabilities": [
+                    CapabilityId.DOCS_DOCUMENT_CREATE.value
+                ],
+                "oauth_scopes": [
+                    OAuthScopeId.DOCS_DOCUMENT_CREATE.value
+                ],
+            }
+        ]
+        create_payload["approvals"].append(
+            {
+                "approval_id": "approve_docs_create",
+                "capability": CapabilityId.DOCS_DOCUMENT_CREATE.value,
+                "reason": "Review the exact Google document content.",
+                "preview_references": ["input.query"],
+            }
+        )
+        create_payload["limits"]["max_network_requests"] = 6
+        create_definition = parsed_definition(create_payload)
+        create_run = make_run(
+            create_definition,
+            {"query": "create reviewed Google document"},
+        )
+        create_plan = compile_declarative_plan(
+            create_definition,
+            create_run,
+        )
+        self.assertEqual(
+            create_plan.declared_steps[0].approval_id,
+            "approve_docs_create",
+        )
+
+        create_payload["limits"]["max_network_requests"] = 5
+        too_small = parsed_definition(create_payload)
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "network limit",
+        ):
+            compile_declarative_plan(
+                too_small,
+                make_run(
+                    too_small,
+                    {"query": "create reviewed Google document"},
+                ),
+            )
+
     def test_sheets_export_compiles_only_with_exact_source_and_six_calls(self):
         payload = definition_payload()
         payload["steps"][0] = {
