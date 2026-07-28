@@ -81,6 +81,7 @@ jobs:
           tests.test_windows_sandbox_results
           tests.test_workspace_coding_threat_model
           tests.test_workspace_coding_isolation
+          tests.test_workspace_coding_adoption
 
       - name: Parse every Python source file
         shell: pwsh
