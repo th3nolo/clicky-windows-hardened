@@ -148,6 +148,12 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    from ui.region_handoff import QtRegionHandoffController
+
+    region_handoff = QtRegionHandoffController(
+        manager.turn_coordinator
+    )
+    _region_handoff_keepalive[0] = region_handoff
     if privacy_permission_error is not None:
         tray.show_notification(
             "Privacy permissions unavailable",
@@ -347,6 +353,35 @@ def main():
     tray.on_toggle_journal.connect(manager.set_journal)
     tray.on_toggle_ocr.connect(manager.set_ocr_enabled)
 
+    def _start_region_handoff():
+        manager.stop()
+        region_handoff.start()
+
+    def _reviewed_region_handoff(result):
+        try:
+            tray.show_notification(
+                "Screen region reviewed",
+                f"Destination: {result.review.destination_label}. "
+                "Preview only: nothing was routed or changed.",
+            )
+        finally:
+            result.wipe()
+
+    region_handoff.reviewed.connect(_reviewed_region_handoff)
+    region_handoff.failed.connect(
+        lambda message: tray.show_notification(
+            "Screen region unavailable",
+            message,
+        )
+    )
+    region_handoff.cancelled.connect(
+        lambda message: tray.show_notification(
+            "Screen region discarded",
+            message,
+        )
+    )
+    tray.on_select_region.connect(_start_region_handoff)
+
     # Lesson recording
     def _record_start():
         out = manager.start_recording()
@@ -432,7 +467,11 @@ def main():
         )
 
     tray.on_switch_provider.connect(_switch)
-    tray.on_stop.connect(manager.stop)
+    def _stop_all():
+        region_handoff.cancel()
+        manager.stop()
+
+    tray.on_stop.connect(_stop_all)
     tray.on_copilot_login.connect(lambda: _copilot_login_flow(tray, panel, manager))
     tray.on_copilot_refresh.connect(manager.refresh_copilot_models)
 
@@ -670,7 +709,7 @@ def main():
             dictation_hotkey.start()
 
     # Esc = cancel current generation (kills Ollama ramble mid-stream)
-    stop_key = StopHotkey(on_stop=manager.stop, key="esc")
+    stop_key = StopHotkey(on_stop=_stop_all, key="esc")
     stop_key.start()
 
     # ── Show UI + start listener ──────────────────────────────────────────────
@@ -717,6 +756,7 @@ _style_profiles_keepalive: list = [None]
 _skills_catalog_keepalive: list = [None]
 _task_center_keepalive: list = [None]
 _connected_accounts_keepalive: list = [None]
+_region_handoff_keepalive: list = [None]
 
 
 if __name__ == "__main__":
