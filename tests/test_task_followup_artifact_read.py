@@ -12,6 +12,7 @@ from tasks.artifacts import (
     ArtifactAdoptionError,
     _artifact_filename,
     _run_directory_name,
+    locate_adopted_artifact,
     read_adopted_artifact,
 )
 from tasks.models import Artifact
@@ -52,6 +53,14 @@ class TaskFollowupArtifactReadTests(unittest.TestCase):
             self.assertEqual(
                 read_adopted_artifact(item, adoption_root=root),
                 CONTENT,
+            )
+            self.assertEqual(
+                locate_adopted_artifact(item, adoption_root=root),
+                (
+                    root
+                    / _run_directory_name(item.run_id)
+                    / _artifact_filename(item.artifact_id)
+                ),
             )
 
     def test_changed_and_unadopted_artifacts_fail_closed(self) -> None:

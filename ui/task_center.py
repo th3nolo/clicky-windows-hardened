@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QTextCursor
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,6 +23,10 @@ from PyQt6.QtWidgets import (
 
 from capability_registry import require_capability
 from feature_gates import ActionCapability, build_feature_available
+from tasks.artifacts import (
+    locate_adopted_artifact,
+    read_adopted_artifact,
+)
 from tasks.models import TaskState
 from tasks.followup_context import (
     FOLLOWUP_TEXT_MEDIA_TYPES,
@@ -41,17 +46,22 @@ from ui.task_followup import (
 )
 from tasks.task_center import (
     DesktopActionPresentation,
+    MAX_INLINE_ARTIFACT_PREVIEW_BYTES,
     TaskActivity,
     TaskActivityKind,
     TaskCenterActionRegistry,
     TaskCenterSnapshot,
+    TaskNextAction,
+    TaskNextActionKind,
     build_task_center_snapshot,
+    task_next_actions,
 )
 
 
 _RUN_ID_ROLE = int(Qt.ItemDataRole.UserRole)
 _ACTIVITY_ROLE = _RUN_ID_ROLE + 1
 _ARTIFACT_ID_ROLE = _ACTIVITY_ROLE + 1
+_NEXT_ACTION_ROLE = _ARTIFACT_ID_ROLE + 1
 _ACTIVE_STATES = frozenset(
     {
         TaskState.RUNNING,
@@ -76,6 +86,8 @@ class TaskCenterPanel(QWidget):
         task_agent_available: bool | None = None,
         followups: TaskFollowupController | None = None,
         review_dialog_factory=None,
+        artifact_reader=read_adopted_artifact,
+        artifact_revealer=None,
         clock=time.time,
         parent: QWidget | None = None,
     ) -> None:
@@ -97,6 +109,10 @@ class TaskCenterPanel(QWidget):
             review_dialog_factory
         ):
             raise TypeError("Task Center review dialog factory is invalid")
+        if not callable(artifact_reader):
+            raise TypeError("Task Center artifact reader is invalid")
+        if artifact_revealer is not None and not callable(artifact_revealer):
+            raise TypeError("Task Center artifact revealer is invalid")
         self._store = store
         self._actions = actions
         self._followups = followups
@@ -105,6 +121,12 @@ class TaskCenterPanel(QWidget):
                 prepared,
                 owner,
             )
+        )
+        self._artifact_reader = artifact_reader
+        self._artifact_revealer = (
+            _reveal_artifact_storage
+            if artifact_revealer is None
+            else artifact_revealer
         )
         self._clock = clock
         self._available = (
@@ -171,6 +193,16 @@ class TaskCenterPanel(QWidget):
         ):
             detail_layout.addWidget(label)
 
+        detail_layout.addWidget(
+            QLabel("Live activity (ephemeral; not saved to task history)")
+        )
+        self._done_title = QLabel("")
+        self._done_title.setWordWrap(True)
+        self._live_activity = QListWidget()
+        self._live_activity.setMaximumHeight(130)
+        detail_layout.addWidget(self._done_title)
+        detail_layout.addWidget(self._live_activity)
+
         detail_layout.addWidget(QLabel("Reviewed desktop action"))
         self._desktop_action = QPlainTextEdit()
         self._desktop_action.setReadOnly(True)
@@ -207,7 +239,40 @@ class TaskCenterPanel(QWidget):
 
         detail_layout.addWidget(QLabel("Verified artifacts"))
         self._artifacts = QListWidget()
+        self._artifacts.currentItemChanged.connect(
+            self._refresh_next_actions
+        )
         detail_layout.addWidget(self._artifacts)
+        detail_layout.addWidget(
+            QLabel(
+                "Verified artifact preview "
+                "(loaded only after an explicit click)"
+            )
+        )
+        self._artifact_preview = QPlainTextEdit()
+        self._artifact_preview.setReadOnly(True)
+        self._artifact_preview.setMaximumHeight(180)
+        detail_layout.addWidget(self._artifact_preview)
+
+        detail_layout.addWidget(
+            QLabel("Next actions (inspect, then click to execute)")
+        )
+        self._next_actions = QListWidget()
+        self._next_actions.currentItemChanged.connect(
+            self._show_next_action
+        )
+        detail_layout.addWidget(self._next_actions)
+        self._next_action_details = QPlainTextEdit()
+        self._next_action_details.setReadOnly(True)
+        self._next_action_details.setMaximumHeight(120)
+        detail_layout.addWidget(self._next_action_details)
+        self._execute_next_action_button = QPushButton(
+            "Execute selected next action"
+        )
+        self._execute_next_action_button.clicked.connect(
+            self.execute_next_action
+        )
+        detail_layout.addWidget(self._execute_next_action_button)
 
         detail_layout.addWidget(QLabel("Start a linked follow-up"))
         followup_help = QLabel(
@@ -541,6 +606,222 @@ class TaskCenterPanel(QWidget):
                 selected.append(artifact_id)
         return tuple(selected)
 
+    def _selected_artifact_id(self) -> str | None:
+        item = self._artifacts.currentItem()
+        if item is None:
+            return None
+        artifact_id = item.data(_ARTIFACT_ID_ROLE)
+        return artifact_id if isinstance(artifact_id, str) else None
+
+    def _refresh_next_actions(self, *_args) -> None:
+        self._artifact_preview.clear()
+        self._next_actions.clear()
+        self._next_action_details.clear()
+        self._execute_next_action_button.setEnabled(False)
+        snapshot = self._current
+        if (
+            snapshot is None
+            or not self._available
+            or self._actions.presentation_dismissed(
+                snapshot.task.run_id
+            )
+        ):
+            return
+        artifact_id = self._selected_artifact_id()
+        artifact = next(
+            (
+                item
+                for item in snapshot.artifacts
+                if item.artifact_id == artifact_id
+            ),
+            None,
+        )
+        try:
+            actions = task_next_actions(
+                snapshot.task,
+                artifact,
+                live_presentation_available=(
+                    snapshot.live_presentation is not None
+                ),
+            )
+        except (TypeError, ValueError):
+            return
+        for action in actions:
+            item = QListWidgetItem(action.label)
+            item.setData(_NEXT_ACTION_ROLE, action)
+            self._next_actions.addItem(item)
+        if self._next_actions.count():
+            self._next_actions.setCurrentRow(0)
+
+    def _show_next_action(
+        self,
+        current: QListWidgetItem | None,
+        _previous: QListWidgetItem | None = None,
+    ) -> None:
+        action = (
+            current.data(_NEXT_ACTION_ROLE)
+            if current is not None
+            else None
+        )
+        if not isinstance(action, TaskNextAction):
+            self._next_action_details.clear()
+            self._execute_next_action_button.setEnabled(False)
+            return
+        lines = [
+            f"Command: {action.kind.value}",
+            f"Run: {action.run_id}",
+        ]
+        if action.artifact_id is not None:
+            lines.extend(
+                (
+                    f"Artifact: {action.artifact_id}",
+                    f"Expected SHA-256: {action.artifact_sha256}",
+                )
+            )
+        lines.append(
+            "No action occurs until the button below is clicked."
+        )
+        self._next_action_details.setPlainText("\n".join(lines))
+        self._execute_next_action_button.setEnabled(self._available)
+
+    def execute_next_action(self) -> None:
+        item = self._next_actions.currentItem()
+        action = (
+            item.data(_NEXT_ACTION_ROLE) if item is not None else None
+        )
+        if not isinstance(action, TaskNextAction):
+            self._status.setText("Choose a typed next action first.")
+            return
+        try:
+            task = self._store.get_task(action.run_id)
+            if task is None:
+                raise TaskStoreError("The selected task disappeared")
+            artifacts = self._store.list_artifacts(action.run_id)
+            artifact = next(
+                (
+                    candidate
+                    for candidate in artifacts
+                    if candidate.artifact_id == action.artifact_id
+                ),
+                None,
+            )
+            if action.artifact_id is not None and (
+                artifact is None
+                or artifact.sha256 != action.artifact_sha256
+            ):
+                raise TaskStoreError(
+                    "The selected verified artifact changed"
+                )
+            if self._actions.presentation_dismissed(action.run_id):
+                raise ValueError("The next-action presentation was dismissed")
+            exact_actions = task_next_actions(
+                task,
+                artifact,
+                live_presentation_available=(
+                    self._actions.live_presentation(task) is not None
+                ),
+            )
+            if action not in exact_actions:
+                raise ValueError("The selected next action is stale")
+        except (TaskStoreError, TypeError, ValueError):
+            self._status.setText(
+                "The selected next action is stale or failed validation. "
+                "Nothing was opened or changed."
+            )
+            self.refresh_selected()
+            return
+
+        if action.kind is TaskNextActionKind.OPEN_ARTIFACT:
+            assert artifact is not None
+            try:
+                content = self._artifact_reader(artifact)
+                if (
+                    not isinstance(content, bytes)
+                    or len(content) != artifact.byte_count
+                    or len(content) > MAX_INLINE_ARTIFACT_PREVIEW_BYTES
+                    or hashlib.sha256(content).hexdigest()
+                    != artifact.sha256
+                ):
+                    raise ValueError("Artifact bytes changed")
+                preview = content.decode("utf-8", errors="strict")
+            except Exception:
+                self._artifact_preview.clear()
+                self._status.setText(
+                    "The verified artifact could not be opened safely."
+                )
+                return
+            self._artifact_preview.setPlainText(preview)
+            self._status.setText(
+                "Verified artifact opened in this read-only preview."
+            )
+            return
+
+        if action.kind is TaskNextActionKind.REVEAL_ARTIFACT:
+            assert artifact is not None
+            try:
+                revealed = self._artifact_revealer(artifact) is True
+            except Exception:
+                revealed = False
+            self._status.setText(
+                (
+                    "The verified artifact storage folder was revealed."
+                    if revealed
+                    else "The verified artifact storage folder could not "
+                    "be revealed safely."
+                )
+            )
+            return
+
+        if action.kind is TaskNextActionKind.CREATE_FOLLOWUP:
+            self._followup_text.setFocus()
+            self._status.setText(
+                "Write the new instruction, choose any adopted text "
+                "artifacts, then review the separate run."
+            )
+            return
+
+        if action.kind is TaskNextActionKind.RETRY_NEW_RUN:
+            content = self._actions.display_content(action.run_id)
+            if content is None:
+                self._status.setText(
+                    "The original goal is not retained after restart. "
+                    "Write a fresh instruction before reviewing a new run."
+                )
+                self._followup_text.setFocus()
+                return
+            prefix = (
+                "Retry this task as a separate new run. Re-evaluate this "
+                "goal without reusing prior approvals, grants, pending "
+                "output, or interrupted work:\n"
+            )
+            self._followup_text.setPlainText(
+                (prefix + content.goal)[
+                    :MAX_FOLLOWUP_INSTRUCTION_CHARS
+                ]
+            )
+            self._followup_text.setFocus()
+            self._status.setText(
+                "A retry draft was prepared. Review and edit it before "
+                "starting the separate run."
+            )
+            return
+
+        if action.kind is TaskNextActionKind.DISMISS:
+            self._actions.dismiss_presentation(action.run_id)
+            self._artifact_preview.clear()
+            self._status.setText(
+                "Ephemeral activity and next-action suggestions dismissed. "
+                "Persisted task evidence was not changed."
+            )
+            self._refresh_next_actions()
+            self._done_title.clear()
+            self._live_activity.clear()
+            return
+
+        self._status.setText(
+            "The selected next-action command is unsupported."
+        )
+
     def _disarm_followup_voice(self) -> None:
         if self._followup_voice_armed:
             self._followup_voice_armed = False
@@ -616,6 +897,30 @@ class TaskCenterPanel(QWidget):
             f"{limits.max_network_requests} network requests · "
             f"{limits.max_output_bytes} output bytes"
         )
+        presentation = snapshot.live_presentation
+        self._live_activity.clear()
+        if (
+            presentation is not None
+            and presentation.done_title is not None
+        ):
+            self._done_title.setText(
+                "Reviewed done title "
+                "(shown only with matching verifier evidence): "
+                + presentation.done_title.title
+            )
+        else:
+            self._done_title.setText(
+                "No verifier-bound done title is available."
+            )
+        if presentation is not None:
+            for item in presentation.commentary:
+                self._live_activity.addItem(
+                    f"{_date_time(item.created_at)} · {item.text}"
+                )
+        if not self._live_activity.count():
+            self._live_activity.addItem(
+                "No ephemeral live commentary is available."
+            )
         self._desktop_action.setPlainText(
             _desktop_action_text(snapshot.desktop_action)
         )
@@ -657,7 +962,9 @@ class TaskCenterPanel(QWidget):
             )
 
         checked = set(self._selected_followup_artifact_ids())
+        selected_artifact_id = self._selected_artifact_id()
         self._artifacts.clear()
+        selected_artifact_row = -1
         for artifact in snapshot.artifacts:
             item = QListWidgetItem(
                 f"{artifact.name} · {artifact.media_type} · "
@@ -668,11 +975,12 @@ class TaskCenterPanel(QWidget):
                 "Evidence: "
                 f"{artifact.verification_evidence_digest}"
             )
+            if artifact.adopted:
+                item.setData(_ARTIFACT_ID_ROLE, artifact.artifact_id)
             if (
                 artifact.adopted
                 and artifact.media_type in FOLLOWUP_TEXT_MEDIA_TYPES
             ):
-                item.setData(_ARTIFACT_ID_ROLE, artifact.artifact_id)
                 item.setFlags(
                     item.flags() | Qt.ItemFlag.ItemIsUserCheckable
                 )
@@ -683,9 +991,18 @@ class TaskCenterPanel(QWidget):
                 )
             else:
                 item.setToolTip(
-                    "This artifact type cannot be copied into a follow-up."
+                    "This artifact type cannot be copied into a follow-up; "
+                    "its verified storage folder can still be revealed."
                 )
             self._artifacts.addItem(item)
+            if artifact.artifact_id == selected_artifact_id:
+                selected_artifact_row = self._artifacts.count() - 1
+        if selected_artifact_row >= 0:
+            self._artifacts.setCurrentRow(selected_artifact_row)
+        elif self._artifacts.count():
+            self._artifacts.setCurrentRow(0)
+        else:
+            self._refresh_next_actions()
         active = task.state in _ACTIVE_STATES
         self._cancel_button.setEnabled(self._available and active)
         exact_approval = (
@@ -739,6 +1056,7 @@ class TaskCenterPanel(QWidget):
             self._result,
             self._capabilities,
             self._limits,
+            self._done_title,
             self._status,
         ):
             widget.clear()
@@ -746,11 +1064,15 @@ class TaskCenterPanel(QWidget):
             self._activity,
             self._approvals,
             self._artifacts,
+            self._live_activity,
+            self._next_actions,
         ):
             widget.clear()
         self._activity_details.clear()
         self._desktop_action.clear()
         self._approval_preview.clear()
+        self._artifact_preview.clear()
+        self._next_action_details.clear()
         self._followup_text.clear()
         self._disarm_followup_voice()
         self._cancel_button.setEnabled(False)
@@ -758,6 +1080,7 @@ class TaskCenterPanel(QWidget):
         self._reject_button.setEnabled(False)
         self._followup_start_button.setEnabled(False)
         self._followup_voice_button.setEnabled(False)
+        self._execute_next_action_button.setEnabled(False)
 
     @staticmethod
     def _task_list_text(task: TaskRecord) -> str:
@@ -839,6 +1162,16 @@ def _terminal_result(task: TaskRecord) -> str:
             f"{task.result_code or 'no_result_code'}"
         )
     return "Terminal result: pending independent verification"
+
+
+def _reveal_artifact_storage(artifact) -> bool:
+    try:
+        path = locate_adopted_artifact(artifact)
+        return QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(path.parent))
+        )
+    except Exception:
+        return False
 
 
 def _duration(seconds: int) -> str:

@@ -430,6 +430,22 @@ def read_adopted_artifact(
     return content
 
 
+def locate_adopted_artifact(
+    artifact: Artifact,
+    *,
+    adoption_root: Path | None = None,
+) -> Path:
+    """Return the private storage path only after exact byte validation."""
+
+    root = adoption_root or _default_adoption_root()
+    read_adopted_artifact(artifact, adoption_root=root)
+    return (
+        root
+        / _run_directory_name(artifact.run_id)
+        / _artifact_filename(artifact.artifact_id)
+    )
+
+
 def _default_adoption_root() -> Path:
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -598,5 +614,6 @@ __all__ = [
     "ArtifactAdoptionError",
     "ArtifactAdoptionManager",
     "PendingArtifact",
+    "locate_adopted_artifact",
     "read_adopted_artifact",
 ]

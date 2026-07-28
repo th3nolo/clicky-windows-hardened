@@ -85,6 +85,8 @@ jobs:
           tests.test_stt_vocabulary_contract
           tests.test_style_profiles
           tests.test_task_center
+          tests.test_task_activity_wiring
+          tests.test_task_live_activity
           tests.test_task_followup_artifact_read
           tests.test_task_followup_context
           tests.test_task_followup_store

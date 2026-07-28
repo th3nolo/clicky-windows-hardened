@@ -42,6 +42,7 @@ from tasks.store import TaskStore
 from tasks.task_center import (
     ActiveTaskHandle,
     TaskCenterActionRegistry,
+    TaskDoneTitleKind,
     TaskDisplayContent,
 )
 
@@ -274,6 +275,10 @@ class TaskRegionHandoffController(QObject):
                     ),
                 )
             )
+            self._actions.publish_commentary(
+                run_id,
+                "New screen-region run created after explicit review.",
+            )
             registered = True
             active = _ActiveRegionTask(
                 run=run,
@@ -371,6 +376,10 @@ class TaskRegionHandoffController(QObject):
     async def _execute(self, active: _ActiveRegionTask) -> None:
         run_id = active.run.run_id
         try:
+            self._actions.publish_commentary(
+                run_id,
+                "Using the reviewed region snapshot in the isolated run.",
+            )
             remaining = active.context.expires_at - float(self._clock())
             if not math.isfinite(remaining) or remaining <= 0:
                 raise TaskRegionContextError(
@@ -382,6 +391,10 @@ class TaskRegionHandoffController(QObject):
                     float(REGION_TASK_RUNTIME_SECONDS),
                     remaining,
                 ),
+            )
+            self._actions.publish_commentary(
+                run_id,
+                "Response received; verifying bounded final delivery.",
             )
             verifier = verify_region_task_output(active.run, output)
         except asyncio.CancelledError:
@@ -403,7 +416,16 @@ class TaskRegionHandoffController(QObject):
                 self._store.record_tool_result(verifier)
                 active.run.complete(verifier)
                 self._store.sync_run(active.run)
+                record = self._store.get_task(run_id)
+                if record is None:
+                    raise TaskRegionLaunchError(
+                        "Completed region task metadata disappeared"
+                    )
                 self._actions.publish_result(run_id, output.text)
+                self._actions.publish_done_title(
+                    record,
+                    TaskDoneTitleKind.SCREEN_REGION_RESULT,
+                )
                 self._actions.finish(run_id)
                 self._active.pop(run_id, None)
             except Exception:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -21,6 +22,12 @@ MAX_DISPLAY_GOAL_CHARS = 8_192
 MAX_DISPLAY_RESULT_CHARS = 2_000
 MAX_DISPLAY_OUTPUT_CHARS = 16_384
 MAX_ACTION_LABEL_CHARS = 512
+MAX_LIVE_COMMENTARY_ITEMS = 6
+MAX_LIVE_COMMENTARY_CHARS = 240
+MAX_DONE_TITLE_CHARS = 80
+MAX_NEXT_ACTION_LABEL_CHARS = 160
+MAX_SESSION_PRESENTATIONS = 128
+MAX_INLINE_ARTIFACT_PREVIEW_BYTES = 256 * 1024
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TERMINAL_STATES = frozenset(
@@ -42,6 +49,32 @@ class TaskActivityKind(str, Enum):
     VERIFIER_RESULT = "verifier_result"
     ARTIFACT = "artifact"
     TERMINAL_OUTCOME = "terminal_outcome"
+
+
+class TaskNextActionKind(str, Enum):
+    """Host-defined commands; model text never becomes executable UI."""
+
+    OPEN_ARTIFACT = "open_verified_artifact"
+    REVEAL_ARTIFACT = "reveal_verified_artifact"
+    CREATE_FOLLOWUP = "create_followup"
+    RETRY_NEW_RUN = "retry_as_new_run"
+    DISMISS = "dismiss"
+
+
+class TaskDoneTitleKind(str, Enum):
+    """Small source-reviewed title vocabulary for implemented run types."""
+
+    LINKED_FOLLOWUP_RESULT = "linked_followup_result"
+    SCREEN_REGION_RESULT = "screen_region_result"
+
+    @property
+    def label(self) -> str:
+        return {
+            TaskDoneTitleKind.LINKED_FOLLOWUP_RESULT: (
+                "Linked follow-up result"
+            ),
+            TaskDoneTitleKind.SCREEN_REGION_RESULT: "Screen-region result",
+        }[self]
 
 
 class TaskActionStatus(str, Enum):
@@ -203,6 +236,133 @@ class TaskDisplayContent:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskLiveCommentary:
+    """One bounded, process-memory-only status line."""
+
+    sequence: int
+    created_at: float
+    text: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.sequence) is not int or self.sequence < 1:
+            raise ValueError("Task live commentary sequence is invalid")
+        _timestamp(self.created_at)
+        _bounded_text(
+            self.text,
+            MAX_LIVE_COMMENTARY_CHARS,
+            "Task live commentary",
+            allow_newlines=False,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDoneTitle:
+    """One reviewed label bound to persisted completion evidence."""
+
+    run_id: str
+    kind: TaskDoneTitleKind
+    verifier_result_id: str
+    verifier_evidence_digest: str
+
+    def __post_init__(self) -> None:
+        _run_id(self.run_id)
+        if not isinstance(self.kind, TaskDoneTitleKind):
+            raise TypeError("Task done-title kind is invalid")
+        _bounded_text(
+            self.kind.label,
+            MAX_DONE_TITLE_CHARS,
+            "Task done title",
+            allow_newlines=False,
+        )
+        _bounded_token(
+            self.verifier_result_id,
+            128,
+            "Task done-title verifier result ID",
+        )
+        _digest(
+            self.verifier_evidence_digest,
+            "Task done-title verifier evidence",
+        )
+
+    @property
+    def title(self) -> str:
+        return self.kind.label
+
+
+@dataclass(frozen=True, slots=True)
+class TaskLivePresentation:
+    """Ephemeral status content that TaskStore never receives."""
+
+    commentary: tuple[TaskLiveCommentary, ...] = ()
+    done_title: TaskDoneTitle | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.commentary, tuple)
+            or len(self.commentary) > MAX_LIVE_COMMENTARY_ITEMS
+            or any(
+                not isinstance(item, TaskLiveCommentary)
+                for item in self.commentary
+            )
+        ):
+            raise TypeError("Task live commentary is invalid")
+        if (
+            self.done_title is not None
+            and not isinstance(self.done_title, TaskDoneTitle)
+        ):
+            raise TypeError("Task done title is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class TaskNextAction:
+    """One inspectable UI command derived from trusted task state."""
+
+    action_id: str
+    run_id: str
+    kind: TaskNextActionKind
+    label: str = field(repr=False)
+    artifact_id: str | None = None
+    artifact_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.action_id,
+            320,
+            "Task next-action ID",
+        )
+        _run_id(self.run_id)
+        if not isinstance(self.kind, TaskNextActionKind):
+            raise TypeError("Task next-action kind is invalid")
+        _bounded_text(
+            self.label,
+            MAX_NEXT_ACTION_LABEL_CHARS,
+            "Task next-action label",
+            allow_newlines=False,
+        )
+        artifact_action = self.kind in {
+            TaskNextActionKind.OPEN_ARTIFACT,
+            TaskNextActionKind.REVEAL_ARTIFACT,
+        }
+        if artifact_action:
+            _bounded_token(
+                self.artifact_id,
+                128,
+                "Task next-action artifact ID",
+            )
+            _digest(
+                self.artifact_sha256,
+                "Task next-action artifact digest",
+            )
+        elif (
+            self.artifact_id is not None
+            or self.artifact_sha256 is not None
+        ):
+            raise ValueError(
+                "Non-artifact next actions cannot name an artifact"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveTaskHandle:
     """Host-owned callbacks for one active run; contains no model authority."""
 
@@ -283,6 +443,10 @@ class TaskCenterSnapshot:
     approvals: tuple[ApprovalRecord, ...]
     artifacts: tuple[Artifact, ...]
     desktop_action: DesktopActionPresentation | None = None
+    live_presentation: TaskLivePresentation | None = field(
+        default=None,
+        repr=False,
+    )
     active_approval: ApprovalPayload | None = field(default=None, repr=False)
     controllable: bool = False
 
@@ -310,6 +474,33 @@ class TaskCenterSnapshot:
             )
         ):
             raise ValueError("Task Center desktop action does not match")
+        if (
+            self.live_presentation is not None
+            and not isinstance(
+                self.live_presentation,
+                TaskLivePresentation,
+            )
+        ):
+            raise TypeError("Task Center live presentation is invalid")
+        if (
+            self.live_presentation is not None
+            and self.live_presentation.done_title is not None
+            and (
+                self.live_presentation.done_title.run_id
+                != self.task.run_id
+                or self.task.state is not TaskState.COMPLETED
+                or self.live_presentation.done_title.verifier_result_id
+                != self.task.verifier_result_id
+                or (
+                    self.live_presentation.done_title
+                    .verifier_evidence_digest
+                    != self.task.verifier_evidence_digest
+                )
+            )
+        ):
+            raise ValueError(
+                "Task done title does not match completion evidence"
+            )
         for values, expected, label in (
             (self.activities, TaskActivity, "activities"),
             (self.approvals, ApprovalRecord, "approvals"),
@@ -336,13 +527,20 @@ class TaskCenterSnapshot:
 class TaskCenterActionRegistry:
     """Thread-safe live actions; restarted records intentionally have none."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
+        if not callable(clock):
+            raise TypeError("Task Center clock is invalid")
         self._lock = threading.RLock()
+        self._clock = clock
         self._handles: dict[str, ActiveTaskHandle] = {}
         self._contents: dict[str, TaskDisplayContent] = {}
         self._desktop_actions: dict[
             str, DesktopActionPresentation
         ] = {}
+        self._commentary: dict[str, tuple[TaskLiveCommentary, ...]] = {}
+        self._commentary_sequence: dict[str, int] = {}
+        self._done_titles: dict[str, TaskDoneTitle] = {}
+        self._dismissed_presentations: dict[str, None] = {}
 
     def register(self, handle: ActiveTaskHandle) -> None:
         if not isinstance(handle, ActiveTaskHandle):
@@ -353,8 +551,10 @@ class TaskCenterActionRegistry:
                 raise ValueError("Task Center handle is already registered")
             if len(self._handles) >= MAX_ACTIVE_TASKS:
                 raise ValueError("Task Center active-task limit reached")
+            self._ensure_presentation_capacity_locked()
             self._handles[run_id] = handle
             self._contents[run_id] = handle.content
+            self._dismissed_presentations.pop(run_id, None)
 
     def replace(self, handle: ActiveTaskHandle) -> None:
         if not isinstance(handle, ActiveTaskHandle):
@@ -372,9 +572,7 @@ class TaskCenterActionRegistry:
     def unregister(self, run_id: str) -> None:
         run_id = _run_id(run_id)
         with self._lock:
-            self._handles.pop(run_id, None)
-            self._contents.pop(run_id, None)
-            self._desktop_actions.pop(run_id, None)
+            self._drop_presentation_locked(run_id)
 
     def finish(self, run_id: str) -> None:
         """Remove live authority while retaining in-process display content."""
@@ -411,6 +609,119 @@ class TaskCenterActionRegistry:
                     reject_callback=handle.reject_callback,
                     approval=handle.approval,
                 )
+
+    def publish_commentary(self, run_id: str, text: str) -> bool:
+        """Publish bounded process-memory status without creating evidence."""
+
+        run_id = _run_id(run_id)
+        _bounded_text(
+            text,
+            MAX_LIVE_COMMENTARY_CHARS,
+            "Task live commentary",
+            allow_newlines=False,
+        )
+        with self._lock:
+            if run_id not in self._contents:
+                raise ValueError("Task Center handle is not registered")
+            if run_id in self._dismissed_presentations:
+                return False
+            sequence = self._commentary_sequence.get(run_id, 0) + 1
+            item = TaskLiveCommentary(
+                sequence=sequence,
+                created_at=_timestamp(self._clock()),
+                text=text,
+            )
+            existing = self._commentary.get(run_id, ())
+            self._commentary[run_id] = tuple(
+                (*existing, item)[-MAX_LIVE_COMMENTARY_ITEMS:]
+            )
+            self._commentary_sequence[run_id] = sequence
+            return True
+
+    def publish_done_title(
+        self,
+        task: TaskRecord,
+        kind: TaskDoneTitleKind,
+    ) -> bool:
+        """Bind one source-reviewed title to exact stored completion evidence."""
+
+        if not isinstance(task, TaskRecord):
+            raise TypeError("Task done title requires a TaskRecord")
+        if (
+            task.state is not TaskState.COMPLETED
+            or task.verifier_result_id is None
+            or task.verifier_evidence_digest is None
+        ):
+            raise ValueError(
+                "Task done title requires persisted completion evidence"
+            )
+        presentation = TaskDoneTitle(
+            run_id=task.run_id,
+            kind=kind,
+            verifier_result_id=task.verifier_result_id,
+            verifier_evidence_digest=task.verifier_evidence_digest,
+        )
+        with self._lock:
+            if task.run_id not in self._contents:
+                raise ValueError("Task Center handle is not registered")
+            if task.run_id in self._dismissed_presentations:
+                return False
+            if task.run_id in self._done_titles:
+                raise ValueError("Task done title was already published")
+            self._done_titles[task.run_id] = presentation
+            return True
+
+    def live_presentation(
+        self,
+        task: TaskRecord,
+    ) -> TaskLivePresentation | None:
+        if not isinstance(task, TaskRecord):
+            raise TypeError("Task live presentation requires a TaskRecord")
+        with self._lock:
+            if task.run_id in self._dismissed_presentations:
+                return None
+            title = self._done_titles.get(task.run_id)
+            if (
+                title is not None
+                and (
+                    task.state is not TaskState.COMPLETED
+                    or title.verifier_result_id
+                    != task.verifier_result_id
+                    or title.verifier_evidence_digest
+                    != task.verifier_evidence_digest
+                )
+            ):
+                title = None
+            commentary = self._commentary.get(task.run_id, ())
+            if not commentary and title is None:
+                return None
+            return TaskLivePresentation(
+                commentary=commentary,
+                done_title=title,
+            )
+
+    def dismiss_presentation(self, run_id: str) -> bool:
+        """Dismiss only ephemeral UI content; persisted task evidence remains."""
+
+        run_id = _run_id(run_id)
+        with self._lock:
+            changed = run_id not in self._dismissed_presentations
+            if (
+                changed
+                and len(self._dismissed_presentations)
+                >= MAX_SESSION_PRESENTATIONS
+            ):
+                oldest = next(iter(self._dismissed_presentations))
+                self._dismissed_presentations.pop(oldest, None)
+            self._dismissed_presentations[run_id] = None
+            self._commentary.pop(run_id, None)
+            self._commentary_sequence.pop(run_id, None)
+            self._done_titles.pop(run_id, None)
+            return changed
+
+    def presentation_dismissed(self, run_id: str) -> bool:
+        with self._lock:
+            return _run_id(run_id) in self._dismissed_presentations
 
     def display_content(self, run_id: str) -> TaskDisplayContent | None:
         with self._lock:
@@ -498,6 +809,24 @@ class TaskCenterActionRegistry:
             self._desktop_actions[run_id] = presentation
             if finish:
                 self._handles.pop(run_id, None)
+
+    def _ensure_presentation_capacity_locked(self) -> None:
+        if len(self._contents) < MAX_SESSION_PRESENTATIONS:
+            return
+        for run_id in tuple(self._contents):
+            if run_id not in self._handles:
+                self._drop_presentation_locked(run_id)
+                return
+        raise ValueError("Task Center session presentation limit reached")
+
+    def _drop_presentation_locked(self, run_id: str) -> None:
+        self._handles.pop(run_id, None)
+        self._contents.pop(run_id, None)
+        self._desktop_actions.pop(run_id, None)
+        self._commentary.pop(run_id, None)
+        self._commentary_sequence.pop(run_id, None)
+        self._done_titles.pop(run_id, None)
+        self._dismissed_presentations.pop(run_id, None)
 
     def approval_payload(self, run_id: str) -> ApprovalPayload | None:
         with self._lock:
@@ -609,9 +938,133 @@ def build_task_center_snapshot(
         approvals=approvals,
         artifacts=artifacts,
         desktop_action=actions.desktop_action(task.run_id),
+        live_presentation=actions.live_presentation(task),
         active_approval=active_approval,
         controllable=actions.controllable(task.run_id),
     )
+
+
+def task_next_actions(
+    task: TaskRecord,
+    selected_artifact: Artifact | None,
+    *,
+    live_presentation_available: bool,
+) -> tuple[TaskNextAction, ...]:
+    """Derive a small typed command set from host-verified state only."""
+
+    if not isinstance(task, TaskRecord):
+        raise TypeError("Task next actions require a TaskRecord")
+    if type(live_presentation_available) is not bool:
+        raise TypeError(
+            "Task next-action presentation state must be explicit"
+        )
+    if selected_artifact is not None and (
+        not isinstance(selected_artifact, Artifact)
+        or not selected_artifact.adopted
+        or selected_artifact.run_id != task.run_id
+    ):
+        raise ValueError(
+            "Task next-action artifact does not match verified task state"
+        )
+    actions: list[TaskNextAction] = []
+    terminal = task.state in _TERMINAL_STATES and not task.interrupted
+    if terminal and selected_artifact is not None:
+        artifact_label = _short_action_name(selected_artifact.name)
+        if (
+            selected_artifact.media_type
+            in {
+                "application/json",
+                "text/csv",
+                "text/markdown",
+                "text/plain",
+            }
+            and selected_artifact.byte_count
+            <= MAX_INLINE_ARTIFACT_PREVIEW_BYTES
+        ):
+            actions.append(
+                _artifact_next_action(
+                    task,
+                    selected_artifact,
+                    TaskNextActionKind.OPEN_ARTIFACT,
+                    f"Preview verified {artifact_label} in Clicky",
+                )
+            )
+        actions.append(
+            _artifact_next_action(
+                task,
+                selected_artifact,
+                TaskNextActionKind.REVEAL_ARTIFACT,
+                (
+                    "Reveal verified storage folder for "
+                    f"{artifact_label}"
+                ),
+            )
+        )
+    if terminal:
+        actions.append(
+            TaskNextAction(
+                action_id=(
+                    f"{TaskNextActionKind.CREATE_FOLLOWUP.value}:"
+                    f"{task.run_id}"
+                ),
+                run_id=task.run_id,
+                kind=TaskNextActionKind.CREATE_FOLLOWUP,
+                label="Write a linked follow-up",
+            )
+        )
+    if (
+        terminal
+        and task.state
+        in {
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+            TaskState.EXPIRED,
+        }
+    ):
+        actions.append(
+            TaskNextAction(
+                action_id=(
+                    f"{TaskNextActionKind.RETRY_NEW_RUN.value}:"
+                    f"{task.run_id}"
+                ),
+                run_id=task.run_id,
+                kind=TaskNextActionKind.RETRY_NEW_RUN,
+                label="Draft a retry as a separate new run",
+            )
+        )
+    if live_presentation_available or terminal:
+        actions.append(
+            TaskNextAction(
+                action_id=(
+                    f"{TaskNextActionKind.DISMISS.value}:{task.run_id}"
+                ),
+                run_id=task.run_id,
+                kind=TaskNextActionKind.DISMISS,
+                label="Dismiss these ephemeral suggestions",
+            )
+        )
+    return tuple(actions)
+
+
+def _artifact_next_action(
+    task: TaskRecord,
+    artifact: Artifact,
+    kind: TaskNextActionKind,
+    label: str,
+) -> TaskNextAction:
+    return TaskNextAction(
+        action_id=f"{kind.value}:{task.run_id}:{artifact.artifact_id}",
+        run_id=task.run_id,
+        kind=kind,
+        label=label,
+        artifact_id=artifact.artifact_id,
+        artifact_sha256=artifact.sha256,
+    )
+
+
+def _short_action_name(name: str) -> str:
+    maximum = 96
+    return name if len(name) <= maximum else name[: maximum - 1] + "…"
 
 
 def task_activities(
@@ -848,7 +1301,14 @@ __all__ = [
     "TaskActivityKind",
     "TaskCenterActionRegistry",
     "TaskCenterSnapshot",
+    "TaskDoneTitle",
+    "TaskDoneTitleKind",
     "TaskDisplayContent",
+    "TaskLiveCommentary",
+    "TaskLivePresentation",
+    "TaskNextAction",
+    "TaskNextActionKind",
     "build_task_center_snapshot",
     "task_activities",
+    "task_next_actions",
 ]
