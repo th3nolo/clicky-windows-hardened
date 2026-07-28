@@ -216,6 +216,7 @@ def main():
         ] = compose_region.route
 
     task_region = None
+    task_followups = None
     if (
         build_feature_available(ActionCapability.TASK_AGENT)
         and task_store is not None
@@ -248,6 +249,31 @@ def main():
             tray.show_notification(
                 "Region tasks unavailable",
                 "New Task Agent runs from screen regions remain disabled.",
+            )
+        try:
+            from tasks.followup_context import (
+                FollowupProviderSelection,
+            )
+            from ui.task_followup import TaskFollowupController
+
+            task_followups = TaskFollowupController(
+                task_store,
+                task_actions,
+                provider_selection=lambda: (
+                    FollowupProviderSelection(
+                        cfg.llm_provider(),
+                        manager.current_response_model or "",
+                    )
+                ),
+                submit=manager.submit_background_task,
+                config_provider=lambda: cfg,
+            )
+            _task_followup_keepalive[0] = task_followups
+        except Exception:
+            task_followups = None
+            tray.show_notification(
+                "Task follow-ups unavailable",
+                "Linked new runs from Task Center remain disabled.",
             )
 
     handoff_router = HandoffRouter(
@@ -314,6 +340,31 @@ def main():
         task_region.cancelled.connect(
             lambda run_id: tray.show_notification(
                 "Background task cancelled",
+                f"Run: {run_id}. Late output will be discarded.",
+            )
+        )
+    if task_followups is not None:
+        task_followups.started.connect(
+            lambda run_id: tray.show_notification(
+                "Follow-up task started",
+                f"New linked run: {run_id}.",
+            )
+        )
+        task_followups.completed.connect(
+            lambda run_id: tray.show_notification(
+                "Follow-up task completed",
+                f"Verified bounded result available for {run_id}.",
+            )
+        )
+        task_followups.failed.connect(
+            lambda run_id, code: tray.show_notification(
+                "Follow-up task failed",
+                f"Run: {run_id}. Result: {code}.",
+            )
+        )
+        task_followups.cancelled.connect(
+            lambda run_id: tray.show_notification(
+                "Follow-up task cancelled",
                 f"Run: {run_id}. Late output will be discarded.",
             )
         )
@@ -384,6 +435,7 @@ def main():
                         cfg,
                         ActionCapability.TASK_AGENT,
                     ),
+                    followups=task_followups,
                 )
                 _task_center_keepalive[0] = task_center_panel
 
@@ -408,6 +460,35 @@ def main():
                     )
                     task_region.cancelled.connect(
                         lambda _run_id: task_center_panel.refresh()
+                    )
+                if task_followups is not None:
+                    task_followups.started.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+                    task_followups.completed.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+                    task_followups.failed.connect(
+                        lambda _run_id, _code: (
+                            task_center_panel.refresh()
+                        )
+                    )
+                    task_followups.cancelled.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+
+                    def _set_followup_voice_capture(enabled: bool):
+                        accepted = (
+                            manager.set_task_followup_voice_capture(enabled)
+                        )
+                        if enabled and not accepted:
+                            task_center_panel.receive_followup_transcript("")
+
+                    task_center_panel.followup_voice_requested.connect(
+                        _set_followup_voice_capture
+                    )
+                    manager.sig_task_followup_transcript.connect(
+                        task_center_panel.receive_followup_transcript
                     )
             except Exception:
                 tray.show_notification(
@@ -664,6 +745,8 @@ def main():
         region_handoff.cancel()
         if task_region is not None:
             task_region.cancel_all()
+        if task_followups is not None:
+            task_followups.cancel_all()
         manager.stop()
 
     tray.on_stop.connect(_stop_all)
@@ -999,6 +1082,7 @@ _task_center_keepalive: list = [None]
 _connected_accounts_keepalive: list = [None]
 _region_handoff_keepalive: list = [None]
 _region_task_keepalive: list = [None]
+_task_followup_keepalive: list = [None]
 _microphone_test_keepalive: list = [None]
 
 

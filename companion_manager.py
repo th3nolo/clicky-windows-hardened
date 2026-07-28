@@ -43,6 +43,8 @@ from feature_gates import (
     DEFAULT_BUILD_FEATURE_FLAGS,
     ActionCapability,
     BuildFeatureFlag,
+    build_feature_available,
+    user_permission_allowed,
 )
 from privacy_controls import (
     cloud_stt_allowed,
@@ -315,6 +317,7 @@ class CompanionManager(QObject):
     sig_microphone_test_stopped = pyqtSignal(str, str)     # opaque id, reason
     sig_walkthrough_progress = pyqtSignal(object)          # WalkthroughProgress
     sig_walkthrough_ended = pyqtSignal(str)                # content-free reason
+    sig_task_followup_transcript = pyqtSignal(str)
 
     def __init__(
         self,
@@ -328,6 +331,7 @@ class CompanionManager(QObject):
         walkthrough_capture=None,
     ):
         super().__init__()
+        self._action_build_flags = action_build_flags
         self._state: AppState = AppState.IDLE
         self._history: List[Message] = []
         self._current_model: Optional[str] = None
@@ -335,6 +339,7 @@ class CompanionManager(QObject):
         self._turns = TurnCoordinator()
         self._input_lock = threading.RLock()
         self._pressed_session: TurnSession | None = None
+        self._task_followup_voice_armed = False
         self._dictation_pressed: DictationSession | None = None
         self._microphone_test_id: str | None = None
         walkthrough_targets = (
@@ -873,6 +878,8 @@ class CompanionManager(QObject):
     def shutdown(self):
         self.stop_microphone_test(reason="shutdown")
         self._walkthrough.cancel("shutdown")
+        if self._consume_task_followup_voice_capture():
+            self.sig_task_followup_transcript.emit("")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None
@@ -1517,7 +1524,10 @@ class CompanionManager(QObject):
             )
             return False
         try:
-            streaming = self._new_streaming_stt(session)
+            streaming = self._new_streaming_stt(
+                session,
+                publish_partial=not self._task_followup_voice_armed,
+            )
         except Exception as exc:
             self._emit_turn_signal(session, self.sig_error, str(exc))
             return False
@@ -1612,7 +1622,20 @@ class CompanionManager(QObject):
             _log.info("voice transcription completed (provider=%s)",
                       used_stt_provider)
             if not transcript.strip():
+                if self._consume_task_followup_voice_capture():
+                    self.sig_task_followup_transcript.emit("")
                 return
+            # Task Center voice is draft input only. It short-circuits before
+            # Tutor transcript UI, commands, screen capture, skills, history,
+            # or any response model.
+            if self._consume_task_followup_voice_capture():
+                if is_stop(transcript):
+                    self.sig_task_followup_transcript.emit("")
+                    self.stop()
+                else:
+                    self.sig_task_followup_transcript.emit(transcript)
+                return
+
             self._emit_turn_signal(
                 session,
                 self.sig_transcript_final,
@@ -2204,6 +2227,8 @@ class CompanionManager(QObject):
             self._emit_turn_signal(session, self.sig_error, str(e))
 
         finally:
+            if self._consume_task_followup_voice_capture():
+                self.sig_task_followup_transcript.emit("")
             for task in side_tasks:
                 if not task.done():
                     task.cancel()
@@ -2973,6 +2998,14 @@ class CompanionManager(QObject):
         """Apply persisted choices immediately without restarting Clicky."""
         if not microphone_allowed(cfg):
             self.stop_microphone_test(reason="permission_revoked")
+        if (
+            not microphone_allowed(cfg)
+            or not user_permission_allowed(
+                cfg,
+                ActionCapability.TASK_AGENT,
+            )
+        ):
+            self.set_task_followup_voice_capture(False)
         if not screen_capture_allowed(cfg):
             self._walkthrough.cancel("permission_revoked")
         with self._input_lock:
@@ -3004,6 +3037,44 @@ class CompanionManager(QObject):
             )
             return
         self._listener.set_wake_word_enabled(enabled)
+
+    def set_task_followup_voice_capture(self, enabled: bool) -> bool:
+        """Arm normal STT for one draft-only Task Center transcript."""
+
+        if type(enabled) is not bool:
+            return False
+        with self._input_lock:
+            if not enabled:
+                self._task_followup_voice_armed = False
+                return True
+            if (
+                not microphone_allowed(cfg)
+                or not build_feature_available(
+                    ActionCapability.TASK_AGENT,
+                    self._action_build_flags,
+                )
+                or not user_permission_allowed(
+                    cfg,
+                    ActionCapability.TASK_AGENT,
+                )
+                or self._turns.active is not None
+                or self._dictation.active is not None
+                or self._microphone_test_id is not None
+            ):
+                self._task_followup_voice_armed = False
+                self.sig_error.emit(
+                    "Spoken follow-up capture requires Task Agent and "
+                    "microphone permission with no other active voice task."
+                )
+                return False
+            self._task_followup_voice_armed = True
+            return True
+
+    def _consume_task_followup_voice_capture(self) -> bool:
+        with self._input_lock:
+            armed = self._task_followup_voice_armed
+            self._task_followup_voice_armed = False
+            return armed
 
     def set_slow_mode(self, enabled: bool):
         self._slow_mode = enabled
@@ -3202,6 +3273,8 @@ class CompanionManager(QObject):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
         self.stop_microphone_test(reason="cancelled")
         self._walkthrough.cancel("cancelled")
+        if self._consume_task_followup_voice_capture():
+            self.sig_task_followup_transcript.emit("")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None

@@ -30,10 +30,15 @@ MAX_MEDIA_TYPE_CHARS = 127
 MAX_RESULT_CODE_CHARS = 96
 MAX_PROVIDER_REQUEST_ID_CHARS = 256
 MAX_PREVIEW_DIGESTS = 32
+MAX_FOLLOWUP_ARTIFACTS = 8
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_RUNTIME_SECONDS = 30 * 60
 MAX_TOOL_CALLS = 64
 MAX_NETWORK_REQUESTS = 32
+TASK_FOLLOWUP_SKILL_ID = "clicky.task-followup"
+TASK_FOLLOWUP_SKILL_VERSION = "1.0.0"
+TASK_FOLLOWUP_VERIFIER_STEP_ID = "verify-followup-delivery"
+TASK_FOLLOWUP_VERIFIER_ID = "followup-text-delivery-v1"
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
@@ -350,6 +355,105 @@ class Artifact:
             self.verification_result_id is not None
             and self.verification_evidence_digest is not None
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FollowupArtifactReference:
+    """Immutable evidence reference to one adopted parent-run artifact."""
+
+    artifact_id: str
+    source_run_id: str
+    sha256: str
+    byte_count: int
+    verification_result_id: str
+    verification_evidence_digest: str
+
+    def __post_init__(self) -> None:
+        _bounded_id(self.artifact_id, label="Follow-up artifact ID")
+        _bounded_id(
+            self.source_run_id,
+            label="Follow-up artifact source run ID",
+        )
+        _sha256(self.sha256, label="Follow-up artifact digest")
+        if (
+            type(self.byte_count) is not int
+            or not 0 <= self.byte_count <= MAX_ARTIFACT_BYTES
+        ):
+            raise ValueError("Follow-up artifact size is invalid")
+        _bounded_id(
+            self.verification_result_id,
+            label="Follow-up artifact verifier result ID",
+        )
+        _sha256(
+            self.verification_evidence_digest,
+            label="Follow-up artifact evidence digest",
+        )
+
+    @classmethod
+    def from_artifact(
+        cls,
+        artifact: Artifact,
+    ) -> FollowupArtifactReference:
+        if not isinstance(artifact, Artifact) or not artifact.adopted:
+            raise ValueError(
+                "Follow-up source must be an adopted artifact"
+            )
+        assert artifact.verification_result_id is not None
+        assert artifact.verification_evidence_digest is not None
+        return cls(
+            artifact_id=artifact.artifact_id,
+            source_run_id=artifact.run_id,
+            sha256=artifact.sha256,
+            byte_count=artifact.byte_count,
+            verification_result_id=artifact.verification_result_id,
+            verification_evidence_digest=(
+                artifact.verification_evidence_digest
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFollowupLink:
+    """Content-free immutable link from one child run to one parent."""
+
+    child_run_id: str
+    parent_run_id: str
+    parent_updated_at: float
+    request_digest: str
+    review_digest: str
+    selected_artifacts: tuple[FollowupArtifactReference, ...] = ()
+
+    def __post_init__(self) -> None:
+        _bounded_id(self.child_run_id, label="Follow-up child run ID")
+        _bounded_id(self.parent_run_id, label="Follow-up parent run ID")
+        if self.child_run_id == self.parent_run_id:
+            raise ValueError("A follow-up cannot be its own parent")
+        if (
+            type(self.parent_updated_at) not in (int, float)
+            or not math.isfinite(float(self.parent_updated_at))
+            or self.parent_updated_at < 0
+        ):
+            raise ValueError("Follow-up parent timestamp is invalid")
+        _sha256(self.request_digest, label="Follow-up request digest")
+        _sha256(self.review_digest, label="Follow-up review digest")
+        if (
+            not isinstance(self.selected_artifacts, tuple)
+            or len(self.selected_artifacts) > MAX_FOLLOWUP_ARTIFACTS
+            or any(
+                not isinstance(item, FollowupArtifactReference)
+                or item.source_run_id != self.parent_run_id
+                for item in self.selected_artifacts
+            )
+        ):
+            raise TypeError(
+                "Follow-up artifact references are invalid"
+            )
+        if len(
+            {item.artifact_id for item in self.selected_artifacts}
+        ) != len(self.selected_artifacts):
+            raise ValueError(
+                "Follow-up artifact references must be unique"
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -353,6 +353,83 @@ class ArtifactAdoptionManager:
         return content
 
 
+def read_adopted_artifact(
+    artifact: Artifact,
+    *,
+    adoption_root: Path | None = None,
+) -> bytes:
+    """Read one adopted artifact by immutable metadata and exact digest."""
+
+    if not isinstance(artifact, Artifact) or not artifact.adopted:
+        raise ArtifactAdoptionError(
+            "Only adopted artifact metadata can be read"
+        )
+    root = adoption_root or _default_adoption_root()
+    if not isinstance(root, Path) or not root.is_absolute():
+        raise ValueError("Artifact adoption root must be absolute")
+    _reject_linked_existing_ancestors(root)
+    run_directory = root / _run_directory_name(artifact.run_id)
+    path = run_directory / _artifact_filename(artifact.artifact_id)
+    if (
+        not root.exists()
+        or not root.is_dir()
+        or _is_link_or_reparse(root)
+        or not run_directory.exists()
+        or not run_directory.is_dir()
+        or _is_link_or_reparse(run_directory)
+        or _is_link_or_reparse(path)
+    ):
+        raise ArtifactAdoptionError(
+            "Adopted artifact storage identity changed"
+        )
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size != artifact.byte_count
+        ):
+            raise OSError("artifact identity changed")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                    or opened.st_size != artifact.byte_count
+                    or opened.st_dev != metadata.st_dev
+                    or (
+                        opened.st_ino
+                        and metadata.st_ino
+                        and opened.st_ino != metadata.st_ino
+                    )
+                ):
+                    raise OSError("artifact identity changed during open")
+                content = stream.read(artifact.byte_count + 1)
+        except Exception:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        if (
+            len(content) != artifact.byte_count
+            or hashlib.sha256(content).hexdigest() != artifact.sha256
+        ):
+            raise OSError("artifact integrity changed")
+    except Exception as exc:
+        raise ArtifactAdoptionError(
+            "Artifact bytes failed integrity validation"
+        ) from exc
+    return content
+
+
 def _default_adoption_root() -> Path:
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -521,4 +598,5 @@ __all__ = [
     "ArtifactAdoptionError",
     "ArtifactAdoptionManager",
     "PendingArtifact",
+    "read_adopted_artifact",
 ]
