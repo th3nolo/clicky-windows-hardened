@@ -762,6 +762,116 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
         ):
             compile_declarative_plan(too_small, too_small_run)
 
+    def test_slides_export_compiles_only_with_exact_source_and_six_calls(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_WRITE.value,
+            "capability": CapabilityId.SLIDES_PRESENTATION_WRITE.value,
+            "depends_on": ["read_source"],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.slides-one",
+                },
+                {
+                    "argument_id": "source_artifact_id",
+                    "source": "step_output",
+                    "reference": "source_artifact",
+                    "value": None,
+                },
+                {
+                    "argument_id": "source_sha256",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "a" * 64,
+                },
+                {
+                    "argument_id": "idempotency_key",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "run.slides-export-1",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_SLIDES.value,
+            "approval_id": "approve_slides_export",
+        }
+        payload["steps"].insert(
+            0,
+            {
+                "step_id": "read_source",
+                "tool": DeclarativeTool.ARTIFACT_READ.value,
+                "capability": CapabilityId.LOCAL_ARTIFACT_READ.value,
+                "depends_on": [],
+                "arguments": [
+                    {
+                        "argument_id": "artifact_id",
+                        "source": "literal",
+                        "reference": None,
+                        "value": "presentation-spec",
+                    }
+                ],
+                "output_id": "source_artifact",
+                "connector": None,
+                "approval_id": None,
+            },
+        )
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.LOCAL_ARTIFACT_READ.value,
+            CapabilityId.SLIDES_PRESENTATION_WRITE.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_SLIDES.value,
+                "capabilities": [
+                    CapabilityId.SLIDES_PRESENTATION_WRITE.value
+                ],
+                "oauth_scopes": [
+                    OAuthScopeId.SLIDES_PRESENTATIONS_WRITE.value
+                ],
+            }
+        ]
+        payload["approvals"].append(
+            {
+                "approval_id": "approve_slides_export",
+                "capability": (
+                    CapabilityId.SLIDES_PRESENTATION_WRITE.value
+                ),
+                "reason": "Review the exact presentation export target.",
+                "preview_references": ["input.query"],
+            }
+        )
+        payload["limits"]["max_network_requests"] = 6
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "export verified deck"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[1].capability,
+            CapabilityId.SLIDES_PRESENTATION_WRITE,
+        )
+        self.assertEqual(
+            plan.declared_steps[1].connector,
+            ConnectorId.GOOGLE_SLIDES,
+        )
+        payload["limits"]["max_network_requests"] = 5
+        too_small = parsed_definition(payload)
+        too_small_run = make_run(
+            too_small,
+            {"query": "export verified deck"},
+        )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "network limit",
+        ):
+            compile_declarative_plan(too_small, too_small_run)
+
     def test_notion_selected_page_reserves_exact_recursive_read_budget(self):
         payload = definition_payload()
         payload["steps"][0] = {

@@ -27,6 +27,7 @@ from capability_registry import CapabilityId, ConnectorId
 from declarative_tools import DeclarativeTool
 from notion_contracts import MAX_NOTION_PROVIDER_REQUESTS
 from sheets_contracts import MAX_SHEETS_PROVIDER_REQUESTS
+from slides_contracts import MAX_SLIDES_PROVIDER_REQUESTS
 from skills.schema import (
     BindingSource,
     DeclarativeSkillDefinition,
@@ -65,6 +66,7 @@ from tasks.tool_broker import (
     NotionSelectedPageArguments,
     ResearchCsvRenderArguments,
     SheetsExportArguments,
+    SlidesExportArguments,
     TaskToolBroker,
     VerifyOutputArguments,
     WebFetchAdapter,
@@ -311,6 +313,19 @@ def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
             }
         )
     if (
+        step.tool is DeclarativeTool.CONNECTOR_WRITE
+        and step.connector is ConnectorId.GOOGLE_SLIDES
+        and step.capability is CapabilityId.SLIDES_PRESENTATION_WRITE
+    ):
+        return frozenset(
+            {
+                "authorization_id",
+                "idempotency_key",
+                "source_artifact_id",
+                "source_sha256",
+            }
+        )
+    if (
         step.tool is DeclarativeTool.CONNECTOR_READ
         and step.connector is ConnectorId.NOTION
         and step.capability is CapabilityId.NOTION_PAGE_READ
@@ -387,6 +402,9 @@ def compile_declarative_plan(
         ConnectorId.GOOGLE_SHEETS: frozenset(
             {CapabilityId.SHEETS_VALUES_WRITE}
         ),
+        ConnectorId.GOOGLE_SLIDES: frozenset(
+            {CapabilityId.SLIDES_PRESENTATION_WRITE}
+        ),
     }
     for requirement in definition.connectors:
         allowed = available_connector_capabilities.get(
@@ -412,6 +430,12 @@ def compile_declarative_plan(
         if (
             step.tool is DeclarativeTool.CONNECTOR_WRITE
             and step.capability is CapabilityId.SHEETS_VALUES_WRITE
+        )
+        else MAX_SLIDES_PROVIDER_REQUESTS
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_WRITE
+            and step.capability
+            is CapabilityId.SLIDES_PRESENTATION_WRITE
         )
         else int(
             step.tool
@@ -507,12 +531,19 @@ def compile_declarative_plan(
                     ConnectorId.GOOGLE_SHEETS,
                     CapabilityId.SHEETS_VALUES_WRITE,
                 ),
+                (
+                    ConnectorId.GOOGLE_SLIDES,
+                    CapabilityId.SLIDES_PRESENTATION_WRITE,
+                ),
             }
         ):
             raise DeclarativeRunnerPlanningError(
                 "Connector write operation is unavailable"
             )
-        if step.capability is CapabilityId.SHEETS_VALUES_WRITE:
+        if step.capability in {
+            CapabilityId.SHEETS_VALUES_WRITE,
+            CapabilityId.SLIDES_PRESENTATION_WRITE,
+        }:
             source_binding = next(
                 item
                 for item in step.arguments
@@ -535,7 +566,7 @@ def compile_declarative_plan(
                 or source_step.step_id not in step.depends_on
             ):
                 raise DeclarativeRunnerPlanningError(
-                    "Google Sheets export requires a declared local "
+                    "Connector export requires a declared local "
                     "artifact read dependency"
                 )
         declared.append(
@@ -809,6 +840,7 @@ class DeclarativeSkillRunner:
                         ArtifactWriteArguments,
                         GmailDraftArguments,
                         SheetsExportArguments,
+                        SlidesExportArguments,
                     ),
                 )
             ):
@@ -971,6 +1003,31 @@ class DeclarativeSkillRunner:
                     idempotency_key=_text_value(
                         values["idempotency_key"],
                         "Google Sheets idempotency key",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
+            if (
+                step.capability
+                is CapabilityId.SLIDES_PRESENTATION_WRITE
+            ):
+                return SlidesExportArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Google Slides account authorization ID",
+                    ),
+                    source_artifact_id=_artifact_id_value(
+                        values["source_artifact_id"]
+                    ),
+                    source_sha256=_text_value(
+                        values["source_sha256"],
+                        "Google Slides source digest",
+                    ),
+                    idempotency_key=_text_value(
+                        values["idempotency_key"],
+                        "Google Slides idempotency key",
                     ),
                     maximum_response_bytes=min(
                         self._definition.limits.max_output_bytes,
