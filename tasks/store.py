@@ -21,6 +21,7 @@ from tasks.models import (
     TaskLimits,
     TaskRun,
     TaskState,
+    ToolCall,
     ToolResult,
 )
 
@@ -401,6 +402,76 @@ class TaskStore:
         return self._record_current_state_event(
             result.run_id,
             event_type="tool_result",
+            metadata=metadata,
+            allowed_states=frozenset({TaskState.RUNNING}),
+        )
+
+    def record_tool_call(self, call: ToolCall) -> TaskEvent:
+        """Record the exact requested operation without its arguments."""
+
+        if not isinstance(call, ToolCall):
+            raise TypeError("Task store requires a ToolCall")
+        task = self.get_task(call.run_id)
+        if task is None or not task.grant.allows(call.capability):
+            raise ValueError(
+                "Tool call capability is not in the persisted task grant"
+            )
+        metadata = {
+            "action_digest": call.action_digest,
+            "arguments_digest": call.arguments_digest,
+            "call_id": call.call_id,
+            "capability": call.capability.value,
+            "step_id": call.step_id,
+            "tool_name": call.tool_name,
+        }
+        return self._record_current_state_event(
+            call.run_id,
+            event_type="tool_call",
+            metadata=metadata,
+            allowed_states=frozenset(
+                {
+                    TaskState.RUNNING,
+                    TaskState.WAITING_FOR_APPROVAL,
+                }
+            ),
+        )
+
+    def record_model_output(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> TaskEvent:
+        """Record content-free evidence for inert model output."""
+
+        if not isinstance(call, ToolCall) or not isinstance(
+            result,
+            ToolResult,
+        ):
+            raise TypeError(
+                "Model output evidence requires a ToolCall and ToolResult"
+            )
+        if (
+            call.tool_name != "model.generate"
+            or call.run_id != result.run_id
+            or call.call_id != result.call_id
+            or call.step_id != result.step_id
+            or result.verifier_id is not None
+        ):
+            raise ValueError(
+                "Model output evidence does not match its model tool call"
+            )
+        metadata = {
+            "call_id": result.call_id,
+            "error_code": result.error_code,
+            "output_bytes": result.output_bytes,
+            "output_digest": result.output_digest,
+            "result_id": result.result_id,
+            "status": result.status.value,
+            "step_id": result.step_id,
+        }
+        return self._record_current_state_event(
+            result.run_id,
+            event_type="model_output",
             metadata=metadata,
             allowed_states=frozenset({TaskState.RUNNING}),
         )

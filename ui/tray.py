@@ -58,6 +58,7 @@ class TrayManager(QObject):
     on_privacy_permissions = pyqtSignal()
     on_manage_style_profiles = pyqtSignal()
     on_manage_skills = pyqtSignal()
+    on_open_task_center = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
@@ -187,6 +188,8 @@ class TrayManager(QObject):
                 self.on_manage_style_profiles
             )
         if build_feature_available(ActionCapability.TASK_AGENT):
+            task_center_action = menu.addAction("Task Center…")
+            task_center_action.triggered.connect(self.on_open_task_center)
             skills_action = menu.addAction("Skills…")
             skills_action.triggered.connect(self.on_manage_skills)
 

@@ -52,6 +52,7 @@ jobs:
           tests.test_security_hardening
           tests.test_stt_vocabulary_contract
           tests.test_style_profiles
+          tests.test_task_center
           tests.test_task_models
           tests.test_task_store
           tests.test_task_tool_broker
