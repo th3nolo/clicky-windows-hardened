@@ -40,6 +40,7 @@ from tasks.tool_broker import (
     ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
     ResearchPdfRenderArguments,
+    ResearchXlsxRenderArguments,
     TaskToolBroker,
     TaskToolBrokerLimitError,
     TaskToolBrokerValidationError,
@@ -1190,6 +1191,117 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             broker_arguments_digest(render_arguments),
         )
 
+    async def test_research_xlsx_is_adopted_only_after_table_verification(
+        self,
+    ):
+        from research.csv_artifact import (
+            ResearchCsvSchema,
+            render_research_csv,
+        )
+        from research.xlsx_artifact import (
+            XLSX_MEDIA_TYPE,
+            inspect_research_xlsx,
+        )
+        from tests.test_research_csv import batch, record
+
+        schema = ResearchCsvSchema(("audience",))
+        source = render_research_csv(
+            batch(record("one")),
+            schema,
+            requested_rows=1,
+        )
+        render_step = declared_step(
+            "render",
+            DeclarativeTool.RESEARCH_XLSX_RENDER,
+        )
+        write_step = declared_step(
+            "write",
+            DeclarativeTool.ARTIFACT_WRITE,
+            depends_on=("render",),
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("write",),
+        )
+        broker, run, _ = self.create_broker(
+            (render_step, write_step, verify_step),
+            run_id="task-broker-xlsx-adoption",
+            max_output_bytes=2 * 1024 * 1024,
+        )
+        render_arguments = ResearchXlsxRenderArguments(
+            csv_content=source.content,
+            requested_rows=1,
+            field_ids=schema.requested_field_ids,
+            source_csv_sha256=source.sha256,
+            schema_digest=schema.schema_digest,
+            maximum_output_bytes=1024 * 1024,
+        )
+        rendered = await broker.execute(
+            call_for(
+                render_step,
+                render_arguments,
+                run_id=run.run_id,
+            ),
+            render_arguments,
+        )
+        self.assertIsNotNone(rendered.content)
+        content = rendered.content
+        assert content is not None
+        inspection = inspect_research_xlsx(
+            content,
+            schema,
+            requested_rows=1,
+            maximum_bytes=1024 * 1024,
+        )
+        self.assertTrue(inspection.structurally_valid)
+
+        write_arguments = ArtifactWriteArguments(
+            artifact_id="research-xlsx",
+            name="research.xlsx",
+            media_type=XLSX_MEDIA_TYPE,
+            content=content,
+        )
+        write_call = call_for(
+            write_step,
+            write_arguments,
+            run_id=run.run_id,
+        )
+        payload = broker.approval_payload(
+            write_call,
+            write_arguments,
+            approval_id="approve-xlsx",
+            reason="Write the reviewed workbook.",
+            expires_at=60.0,
+        )
+        self.assertEqual(payload.preview.media_type, XLSX_MEDIA_TYPE)
+        self.assertIn("Creator one", payload.preview.excerpt)
+        self.approve(run, write_call)
+        await broker.execute(write_call, write_arguments)
+
+        verify_arguments = VerifyOutputArguments(
+            verifier_id=VERIFIER_ID,
+            artifact_id="research-xlsx",
+            expected_sha256=inspection.content_sha256,
+            expected_media_type=XLSX_MEDIA_TYPE,
+            maximum_bytes=1024 * 1024,
+            research_xlsx_field_ids=schema.requested_field_ids,
+            research_xlsx_requested_rows=1,
+            research_xlsx_source_csv_sha256=source.sha256,
+            research_xlsx_schema_digest=schema.schema_digest,
+            research_xlsx_table_digest=inspection.table_digest,
+        )
+        verified = await broker.execute(
+            call_for(
+                verify_step,
+                verify_arguments,
+                run_id=run.run_id,
+            ),
+            verify_arguments,
+        )
+        self.assertTrue(verified.result.is_successful_verification)
+        self.assertIsNotNone(verified.artifact)
+
     async def test_artifact_tampering_returns_bounded_typed_failure(self):
         write_step = declared_step(
             "write",
@@ -1429,6 +1541,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
                 DeclarativeTool.RESEARCH_MARKDOWN_RENDER,
                 DeclarativeTool.RESEARCH_DOCX_RENDER,
                 DeclarativeTool.RESEARCH_PDF_RENDER,
+                DeclarativeTool.RESEARCH_XLSX_RENDER,
                 DeclarativeTool.NOTION_DRAFT_RENDER,
                 DeclarativeTool.ARTIFACT_READ,
                 DeclarativeTool.ARTIFACT_WRITE,

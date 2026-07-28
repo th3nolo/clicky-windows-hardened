@@ -72,6 +72,7 @@ from tasks.tool_broker import (
     ResearchDocxRenderArguments,
     ResearchMarkdownRenderArguments,
     ResearchPdfRenderArguments,
+    ResearchXlsxRenderArguments,
     SheetsExportArguments,
     SlidesExportArguments,
     TaskToolBroker,
@@ -135,6 +136,9 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
         DeclarativeTool.RESEARCH_PDF_RENDER: frozenset(
             {"report_content"}
         ),
+        DeclarativeTool.RESEARCH_XLSX_RENDER: frozenset(
+            {"csv_content"}
+        ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {
                 "blocks_json",
@@ -196,6 +200,9 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.RESEARCH_PDF_RENDER: frozenset(
             {"report_content"}
+        ),
+        DeclarativeTool.RESEARCH_XLSX_RENDER: frozenset(
+            {"csv_content"}
         ),
         DeclarativeTool.NOTION_DRAFT_RENDER: frozenset(
             {"blocks_json", "title"}
@@ -346,6 +353,16 @@ class _ResearchPdfMetadata:
     document_digest: str
     source_digest: str
     page_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ResearchXlsxMetadata:
+    content_sha256: str
+    field_ids: tuple[str, ...]
+    requested_rows: int
+    source_csv_sha256: str
+    schema_digest: str
+    table_digest: str
 
 
 def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
@@ -748,6 +765,7 @@ class DeclarativeSkillRunner:
         self._research_markdown: _ResearchMarkdownMetadata | None = None
         self._research_docx: _ResearchDocxMetadata | None = None
         self._research_pdf: _ResearchPdfMetadata | None = None
+        self._research_xlsx: _ResearchXlsxMetadata | None = None
         self._next_step = 0
         self._prepared: _PreparedStep | None = None
 
@@ -1226,11 +1244,12 @@ class DeclarativeSkillRunner:
             )
         if step.tool is DeclarativeTool.RESEARCH_CSV_RENDER:
             from research.csv_artifact import ResearchCsvSchema
+            from research.xlsx_artifact import XLSX_MEDIA_TYPE
 
             output = self._definition.output
             if (
                 output.output_type is not SkillOutputType.TABLE
-                or output.media_type != "text/csv"
+                or output.media_type not in {"text/csv", XLSX_MEDIA_TYPE}
             ):
                 raise DeclarativeRunnerPlanningError(
                     "Research CSV rendering requires a declared CSV table"
@@ -1363,6 +1382,38 @@ class DeclarativeSkillRunner:
                 field_ids=self._research_markdown.field_ids,
                 report_sha256=report_sha256,
                 source_digest=self._research_markdown.source_digest,
+                maximum_output_bytes=(
+                    self._definition.limits.max_output_bytes
+                ),
+            )
+        if step.tool is DeclarativeTool.RESEARCH_XLSX_RENDER:
+            from research.xlsx_artifact import XLSX_MEDIA_TYPE
+
+            output = self._definition.output
+            if (
+                output.output_type is not SkillOutputType.TABLE
+                or output.media_type != XLSX_MEDIA_TYPE
+                or self._research_csv is None
+            ):
+                raise DeclarativeRunnerPlanningError(
+                    "Research XLSX rendering requires one validated "
+                    "CSV table and a declared XLSX table"
+                )
+            csv_content = _content_value(values["csv_content"])
+            csv_sha256 = hashlib.sha256(csv_content).hexdigest()
+            if csv_sha256 != self._research_csv.content_sha256:
+                raise DeclarativeRunnerOutputError(
+                    "Research XLSX source does not match the validated CSV"
+                )
+            from research.csv_artifact import ResearchCsvSchema
+
+            schema = ResearchCsvSchema(self._research_csv.field_ids)
+            return ResearchXlsxRenderArguments(
+                csv_content=csv_content,
+                requested_rows=self._research_csv.requested_rows,
+                field_ids=self._research_csv.field_ids,
+                source_csv_sha256=csv_sha256,
+                schema_digest=schema.schema_digest,
                 maximum_output_bytes=(
                     self._definition.limits.max_output_bytes
                 ),
@@ -1545,6 +1596,42 @@ class DeclarativeSkillRunner:
                     research_pdf_page_count = (
                         self._research_pdf.page_count
                     )
+            research_xlsx_field_ids: tuple[str, ...] = ()
+            research_xlsx_requested_rows = None
+            research_xlsx_source_csv_sha256 = None
+            research_xlsx_schema_digest = None
+            research_xlsx_table_digest = None
+            if self._research_xlsx is not None:
+                from research.xlsx_artifact import XLSX_MEDIA_TYPE
+
+                if artifact_value.media_type == XLSX_MEDIA_TYPE:
+                    if (
+                        actual_sha256
+                        != self._research_xlsx.content_sha256
+                        or (
+                            expected_sha256 is not None
+                            and expected_sha256 != actual_sha256
+                        )
+                    ):
+                        raise DeclarativeRunnerOutputError(
+                            "Research XLSX verifier digest does not match render"
+                        )
+                    expected_sha256 = actual_sha256
+                    research_xlsx_field_ids = (
+                        self._research_xlsx.field_ids
+                    )
+                    research_xlsx_requested_rows = (
+                        self._research_xlsx.requested_rows
+                    )
+                    research_xlsx_source_csv_sha256 = (
+                        self._research_xlsx.source_csv_sha256
+                    )
+                    research_xlsx_schema_digest = (
+                        self._research_xlsx.schema_digest
+                    )
+                    research_xlsx_table_digest = (
+                        self._research_xlsx.table_digest
+                    )
             return VerifyOutputArguments(
                 verifier_id=self._run.spec.verifier_id,
                 artifact_id=artifact_id,
@@ -1613,6 +1700,19 @@ class DeclarativeSkillRunner:
                     research_pdf_source_digest
                 ),
                 research_pdf_page_count=research_pdf_page_count,
+                research_xlsx_field_ids=research_xlsx_field_ids,
+                research_xlsx_requested_rows=(
+                    research_xlsx_requested_rows
+                ),
+                research_xlsx_source_csv_sha256=(
+                    research_xlsx_source_csv_sha256
+                ),
+                research_xlsx_schema_digest=(
+                    research_xlsx_schema_digest
+                ),
+                research_xlsx_table_digest=(
+                    research_xlsx_table_digest
+                ),
             )
         raise DeclarativeRunnerPlanningError(
             "Step tool is unavailable at call time"
@@ -1851,6 +1951,47 @@ class DeclarativeSkillRunner:
                 source_digest=model.source_digest,
                 page_count=inspection.page_count,
             )
+        if isinstance(prepared.arguments, ResearchXlsxRenderArguments):
+            if execution.content is None:
+                raise DeclarativeRunnerOutputError(
+                    "Research XLSX render returned no content"
+                )
+            from research.csv_artifact import ResearchCsvSchema
+            from research.xlsx_artifact import inspect_research_xlsx
+
+            content = execution.content
+            if (
+                execution.result.output_digest
+                != hashlib.sha256(content).hexdigest()
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research XLSX render digest does not match its content"
+                )
+            schema = ResearchCsvSchema(prepared.arguments.field_ids)
+            inspection = inspect_research_xlsx(
+                content,
+                schema,
+                requested_rows=prepared.arguments.requested_rows,
+                maximum_bytes=prepared.arguments.maximum_output_bytes,
+            )
+            if (
+                not inspection.structurally_valid
+                or inspection.source_csv_sha256
+                != prepared.arguments.source_csv_sha256
+                or inspection.schema_digest
+                != prepared.arguments.schema_digest
+            ):
+                raise DeclarativeRunnerOutputError(
+                    "Research XLSX render does not match the validated table"
+                )
+            self._research_xlsx = _ResearchXlsxMetadata(
+                content_sha256=execution.result.output_digest,
+                field_ids=prepared.arguments.field_ids,
+                requested_rows=prepared.arguments.requested_rows,
+                source_csv_sha256=inspection.source_csv_sha256,
+                schema_digest=inspection.schema_digest,
+                table_digest=inspection.table_digest,
+            )
         if execution.pending_artifact is not None:
             arguments = prepared.arguments
             if not isinstance(arguments, ArtifactWriteArguments):
@@ -1942,6 +2083,7 @@ class DeclarativeSkillRunner:
             )
         from research.docx_artifact import DOCX_MEDIA_TYPE
         from research.pdf_artifact import PDF_MEDIA_TYPE
+        from research.xlsx_artifact import XLSX_MEDIA_TYPE
 
         if (
             output.output_type is SkillOutputType.ARTIFACT
@@ -1967,6 +2109,19 @@ class DeclarativeSkillRunner:
             except (TypeError, ValueError) as exc:
                 raise DeclarativeRunnerOutputError(
                     "Declarative PDF output is not an inert document"
+                ) from exc
+            return
+        if (
+            output.output_type is SkillOutputType.TABLE
+            and media_type == XLSX_MEDIA_TYPE
+        ):
+            from research.xlsx_artifact import validate_safe_xlsx_package
+
+            try:
+                validate_safe_xlsx_package(content)
+            except (TypeError, ValueError) as exc:
+                raise DeclarativeRunnerOutputError(
+                    "Declarative XLSX output is not an inert workbook"
                 ) from exc
             return
         try:
