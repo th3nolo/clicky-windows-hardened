@@ -57,6 +57,7 @@ class TrayManager(QObject):
     on_open_startup_settings = pyqtSignal()
     on_privacy_permissions = pyqtSignal()
     on_manage_style_profiles = pyqtSignal()
+    on_manage_skills = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
@@ -185,6 +186,9 @@ class TrayManager(QObject):
             style_action.triggered.connect(
                 self.on_manage_style_profiles
             )
+        if build_feature_available(ActionCapability.TASK_AGENT):
+            skills_action = menu.addAction("Skills…")
+            skills_action.triggered.connect(self.on_manage_skills)
 
         # ── Tutor toggles ──
         menu.addSeparator()

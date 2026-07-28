@@ -11,8 +11,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import stat
+import tempfile
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -36,6 +39,8 @@ from skills.schema import (
 BUNDLED_DECLARATIVE_MANIFEST_VERSION = 1
 MAX_DECLARATIVE_MANIFEST_BYTES = 64 * 1024
 MAX_CATALOG_ENTRIES = 256
+SKILL_ENABLEMENT_VERSION = 1
+MAX_SKILL_ENABLEMENT_BYTES = 64 * 1024
 DEVELOPER_PYTHON_WARNING = (
     "Developer Skill: executes arbitrary Python with the application's "
     "authority. A matching SHA-256 proves file identity, not code safety."
@@ -235,6 +240,343 @@ class SkillRegistrySnapshot:
         if not isinstance(skill_id, str):
             return None
         return self.registered_definitions.get(skill_id)
+
+
+def permission_review_digest(entry: SkillCatalogEntry) -> str:
+    """Fingerprint exactly what the user must inspect before enablement."""
+
+    if (
+        not isinstance(entry, SkillCatalogEntry)
+        or entry.kind is not SkillKind.DECLARATIVE
+        or entry.definition is None
+    ):
+        raise TypeError(
+            "Permission review requires a Declarative Skill entry"
+        )
+    definition = entry.definition
+    review = {
+        "skill_id": entry.skill_id,
+        "version": entry.version,
+        "origin": entry.origin.value,
+        "publisher_id": entry.publisher_id,
+        "source_digest": entry.source_digest,
+        "package_digest": entry.package_digest,
+        "capabilities": sorted(
+            capability.value for capability in entry.capabilities
+        ),
+        "connectors": [
+            {
+                "connector": requirement.connector.value,
+                "capabilities": sorted(
+                    capability.value
+                    for capability in requirement.capabilities
+                ),
+                "oauth_scopes": sorted(
+                    scope.value
+                    for scope in requirement.oauth_scopes
+                ),
+            }
+            for requirement in sorted(
+                definition.connectors,
+                key=lambda item: item.connector.value,
+            )
+        ],
+        "approvals": [
+            {
+                "approval_id": approval.approval_id,
+                "capability": approval.capability.value,
+                "reason": approval.reason,
+                "preview_references": list(
+                    approval.preview_references
+                ),
+            }
+            for approval in definition.approvals
+        ],
+        "limits": definition.limits.model_dump(mode="json"),
+        "invocation": definition.invocation.model_dump(mode="json"),
+    }
+    canonical = json.dumps(
+        review,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _default_enablement_path() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return base / "Clicky" / "skill_enablement.json"
+
+
+class SkillEnablementStore:
+    """Fail-closed, digest-bound opt-in state for consumer skills."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        if path is not None and not isinstance(path, Path):
+            raise TypeError("Skill enablement path must be a Path")
+        self._path = path or _default_enablement_path()
+        self._lock = threading.RLock()
+        self._session_disabled: set[str] = set()
+        self._enabled = self._load()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _load(self) -> dict[str, str]:
+        try:
+            details = self._path.lstat()
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            return {}
+        reparse_flag = getattr(
+            stat,
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            0x400,
+        )
+        attributes = getattr(details, "st_file_attributes", 0)
+        if (
+            self._path.is_symlink()
+            or bool(attributes & reparse_flag)
+            or not stat.S_ISREG(details.st_mode)
+            or not 1 <= details.st_size <= MAX_SKILL_ENABLEMENT_BYTES
+        ):
+            return {}
+        try:
+            payload = json.loads(
+                self._path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"enabled", "version"}
+            or payload.get("version") != SKILL_ENABLEMENT_VERSION
+            or not isinstance(payload.get("enabled"), dict)
+            or len(payload["enabled"]) > MAX_CATALOG_ENTRIES
+        ):
+            return {}
+        enabled: dict[str, str] = {}
+        for skill_id, review_digest in payload["enabled"].items():
+            if (
+                not isinstance(skill_id, str)
+                or not skill_id
+                or len(skill_id) > 256
+                or not skill_id.isprintable()
+                or not isinstance(review_digest, str)
+                or _SHA256_RE.fullmatch(review_digest) is None
+            ):
+                return {}
+            enabled[skill_id] = review_digest
+        return enabled
+
+    def _save(self, enabled: Mapping[str, str]) -> None:
+        parent = self._path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            parent_details = parent.lstat()
+            target_details = (
+                self._path.lstat()
+                if os.path.lexists(self._path)
+                else None
+            )
+        except OSError as error:
+            raise SkillRegistryError(
+                "Skill enablement storage is unavailable"
+            ) from error
+        reparse_flag = getattr(
+            stat,
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            0x400,
+        )
+        if (
+            parent.is_symlink()
+            or bool(
+                getattr(
+                    parent_details,
+                    "st_file_attributes",
+                    0,
+                )
+                & reparse_flag
+            )
+            or not stat.S_ISDIR(parent_details.st_mode)
+            or (
+                target_details is not None
+                and (
+                    self._path.is_symlink()
+                    or bool(
+                        getattr(
+                            target_details,
+                            "st_file_attributes",
+                            0,
+                        )
+                        & reparse_flag
+                    )
+                    or not stat.S_ISREG(target_details.st_mode)
+                )
+            )
+        ):
+            raise SkillRegistryError(
+                "Skill enablement storage must be a local regular file"
+            )
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="skill_enablement.",
+            suffix=".tmp",
+            dir=parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            payload = {
+                "enabled": dict(sorted(enabled.items())),
+                "version": SKILL_ENABLEMENT_VERSION,
+            }
+            with os.fdopen(
+                descriptor,
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ) as handle:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if temporary.stat().st_size > MAX_SKILL_ENABLEMENT_BYTES:
+                raise SkillRegistryError(
+                    "Skill enablement state exceeds its limit"
+                )
+            os.replace(temporary, self._path)
+        except OSError as error:
+            raise SkillRegistryError(
+                "Could not persist Skill enablement state"
+            ) from error
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def is_enabled(self, entry: SkillCatalogEntry) -> bool:
+        if (
+            not isinstance(entry, SkillCatalogEntry)
+            or entry.kind is not SkillKind.DECLARATIVE
+            or entry.status is not SkillRegistrationStatus.AVAILABLE
+            or entry.definition is None
+        ):
+            return False
+        with self._lock:
+            if entry.skill_id in self._session_disabled:
+                return False
+            stored = self._enabled.get(entry.skill_id)
+            expected = permission_review_digest(entry)
+            return (
+                isinstance(stored, str)
+                and hmac.compare_digest(stored, expected)
+            )
+
+    def enable(
+        self,
+        entry: SkillCatalogEntry,
+        *,
+        reviewed_permission_digest: str,
+    ) -> None:
+        if (
+            not isinstance(entry, SkillCatalogEntry)
+            or entry.kind is not SkillKind.DECLARATIVE
+            or entry.status is not SkillRegistrationStatus.AVAILABLE
+            or entry.definition is None
+        ):
+            raise SkillRegistryError(
+                "Only available Declarative Skills can be enabled"
+            )
+        expected = permission_review_digest(entry)
+        if (
+            not isinstance(reviewed_permission_digest, str)
+            or not hmac.compare_digest(
+                reviewed_permission_digest,
+                expected,
+            )
+        ):
+            raise SkillRegistryError(
+                "Current permissions must be reviewed before enablement"
+            )
+        with self._lock:
+            candidate = dict(self._enabled)
+            candidate[entry.skill_id] = expected
+            self._save(candidate)
+            self._enabled = candidate
+            self._session_disabled.discard(entry.skill_id)
+
+    def disable(self, skill_id: str) -> bool:
+        if (
+            not isinstance(skill_id, str)
+            or not skill_id
+            or len(skill_id) > 256
+            or not skill_id.isprintable()
+        ):
+            raise ValueError("Skill ID is invalid")
+        with self._lock:
+            self._session_disabled.add(skill_id)
+            candidate = dict(self._enabled)
+            existed = candidate.pop(skill_id, None) is not None
+            if existed:
+                self._save(candidate)
+                self._enabled = candidate
+            return existed
+
+
+def declarative_skill_invocation_allowed(
+    snapshot: SkillRegistrySnapshot,
+    enablement: SkillEnablementStore,
+    skill_id: str,
+    *,
+    explicit_selection: bool,
+    utterance: str = "",
+) -> bool:
+    """Allow explicit selection or one declared exact phrase—never fuzzy."""
+
+    if (
+        not isinstance(snapshot, SkillRegistrySnapshot)
+        or not isinstance(enablement, SkillEnablementStore)
+        or type(explicit_selection) is not bool
+    ):
+        return False
+    definition = snapshot.resolve(skill_id)
+    if definition is None:
+        return False
+    entry = next(
+        (
+            candidate
+            for candidate in snapshot.catalog_entries
+            if candidate.kind is SkillKind.DECLARATIVE
+            and candidate.skill_id == skill_id
+        ),
+        None,
+    )
+    if entry is None or not enablement.is_enabled(entry):
+        return False
+    if explicit_selection:
+        return True
+    if (
+        definition.invocation.mode.value != "deterministic_phrases"
+        or not isinstance(utterance, str)
+        or not utterance
+        or len(utterance) > 4_096
+    ):
+        return False
+    normalized = " ".join(utterance.casefold().split())
+    exact_phrases = {
+        " ".join(phrase.casefold().split())
+        for phrase in definition.invocation.phrases
+    }
+    return normalized in exact_phrases
 
 
 def _duplicate_rejecting_object(
@@ -602,6 +944,7 @@ __all__ = [
     "ExternalSkillSupport",
     "SkillCatalogEntry",
     "SkillDefinitionIntegrityError",
+    "SkillEnablementStore",
     "SkillKind",
     "SkillManifestIntegrityError",
     "SkillOrigin",
@@ -610,5 +953,7 @@ __all__ = [
     "SkillRegistrySnapshot",
     "catalog_developer_python_skills",
     "combined_skill_catalog",
+    "declarative_skill_invocation_allowed",
     "load_bundled_declarative_skills",
+    "permission_review_digest",
 ]

@@ -15,6 +15,7 @@ from audio.secure_temp import initialize_secure_audio_temp
 from feature_gates import (
     ActionCapability,
     build_feature_available,
+    user_permission_allowed,
     validate_action_capability_startup,
 )
 from privacy_controls import microphone_allowed
@@ -156,6 +157,34 @@ def main():
             style_profiles_panel.activateWindow()
 
         tray.on_manage_style_profiles.connect(_show_style_profiles)
+
+    skills_catalog_panel = None
+    if build_feature_available(ActionCapability.TASK_AGENT):
+        import skills as skills_package
+        from skills.registry import (
+            SkillEnablementStore,
+            load_bundled_declarative_skills,
+        )
+        from ui.skills_catalog import SkillsCatalogPanel
+
+        skills_catalog_panel = SkillsCatalogPanel(
+            load_bundled_declarative_skills(),
+            SkillEnablementStore(),
+            developer_skills=skills_package.list_skills(),
+            task_agent_available=user_permission_allowed(
+                cfg,
+                ActionCapability.TASK_AGENT,
+            ),
+        )
+        _skills_catalog_keepalive[0] = skills_catalog_panel
+
+        def _show_skills_catalog():
+            skills_catalog_panel.refresh()
+            skills_catalog_panel.show()
+            skills_catalog_panel.raise_()
+            skills_catalog_panel.activateWindow()
+
+        tray.on_manage_skills.connect(_show_skills_catalog)
 
     # ── Wire signals ──────────────────────────────────────────────────────────
 
@@ -593,6 +622,7 @@ def main():
 # Qt is running (PyQt will GC it otherwise and the dialog will vanish).
 _setup_keepalive: list = [None]
 _style_profiles_keepalive: list = [None]
+_skills_catalog_keepalive: list = [None]
 
 
 if __name__ == "__main__":

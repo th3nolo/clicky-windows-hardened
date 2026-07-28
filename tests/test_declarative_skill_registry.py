@@ -9,6 +9,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import skills
 from capability_registry import CapabilityId
@@ -16,13 +17,16 @@ from skills.registry import (
     DEVELOPER_PYTHON_WARNING,
     SIGNED_EXTERNAL_SKILL_SUPPORT,
     SkillDefinitionIntegrityError,
+    SkillEnablementStore,
     SkillKind,
     SkillManifestIntegrityError,
     SkillOrigin,
     SkillRegistrationStatus,
     catalog_developer_python_skills,
     combined_skill_catalog,
+    declarative_skill_invocation_allowed,
     load_bundled_declarative_skills,
+    permission_review_digest,
 )
 from skills.schema import (
     declarative_skill_source_digest,
@@ -37,6 +41,8 @@ def _definition(
     *,
     skill_id: str = "clicky.test_summary",
     minimum_clicky_version: str = "1.2.0",
+    invocation_mode: str = "explicit",
+    invocation_phrases: list[str] | None = None,
 ) -> dict:
     candidate = {
         "schema_version": 1,
@@ -45,8 +51,8 @@ def _definition(
         "name": "Bounded summary",
         "description": "Create one bounded, verified text result.",
         "invocation": {
-            "mode": "explicit",
-            "phrases": [],
+            "mode": invocation_mode,
+            "phrases": invocation_phrases or [],
         },
         "inputs": [
             {
@@ -394,6 +400,201 @@ class DeclarativeSkillRegistryTests(unittest.TestCase):
                 called_names
             )
         )
+
+    def test_enablement_requires_the_exact_reviewed_permission_fingerprint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, anchor = _write_bundle(
+                root / "bundle",
+                {"summary.skill.json": _definition()},
+            )
+            snapshot = load_bundled_declarative_skills(
+                directory=directory,
+                embedded_digests=anchor,
+            )
+            entry = snapshot.catalog_entries[0]
+            state_path = root / "state" / "skills.json"
+            store = SkillEnablementStore(state_path)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "must be reviewed",
+            ):
+                store.enable(
+                    entry,
+                    reviewed_permission_digest="f" * 64,
+                )
+            self.assertFalse(store.is_enabled(entry))
+
+            review = permission_review_digest(entry)
+            store.enable(
+                entry,
+                reviewed_permission_digest=review,
+            )
+            self.assertTrue(store.is_enabled(entry))
+            restored = SkillEnablementStore(state_path)
+            self.assertTrue(restored.is_enabled(entry))
+
+            changed = _definition()
+            changed["description"] = "A changed reviewed definition."
+            provisional = parse_declarative_skill_definition(
+                json.dumps(changed).encode("utf-8")
+            )
+            changed["source_digest"] = (
+                declarative_skill_source_digest(provisional)
+            )
+            changed_directory, changed_anchor = _write_bundle(
+                root / "changed",
+                {"summary.skill.json": changed},
+            )
+            changed_snapshot = load_bundled_declarative_skills(
+                directory=changed_directory,
+                embedded_digests=changed_anchor,
+            )
+            self.assertFalse(
+                restored.is_enabled(
+                    changed_snapshot.catalog_entries[0]
+                )
+            )
+
+    def test_disable_immediately_blocks_explicit_and_exact_phrase_invocation(self):
+        definition = _definition(
+            invocation_mode="deterministic_phrases",
+            invocation_phrases=["run safe summary"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, anchor = _write_bundle(
+                root / "bundle",
+                {"summary.skill.json": definition},
+            )
+            snapshot = load_bundled_declarative_skills(
+                directory=directory,
+                embedded_digests=anchor,
+            )
+            entry = snapshot.catalog_entries[0]
+            state_path = root / "skills.json"
+            store = SkillEnablementStore(state_path)
+            store.enable(
+                entry,
+                reviewed_permission_digest=permission_review_digest(
+                    entry
+                ),
+            )
+
+            self.assertTrue(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=False,
+                    utterance="  RUN   safe SUMMARY ",
+                )
+            )
+            self.assertFalse(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=False,
+                    utterance="please run safe summary now",
+                )
+            )
+            self.assertTrue(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=True,
+                )
+            )
+
+            self.assertTrue(store.disable(entry.skill_id))
+            self.assertFalse(store.is_enabled(entry))
+            self.assertFalse(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=True,
+                )
+            )
+            self.assertFalse(
+                SkillEnablementStore(state_path).is_enabled(entry)
+            )
+
+    def test_explicit_only_skill_never_uses_an_utterance_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, anchor = _write_bundle(
+                root / "bundle",
+                {"summary.skill.json": _definition()},
+            )
+            snapshot = load_bundled_declarative_skills(
+                directory=directory,
+                embedded_digests=anchor,
+            )
+            entry = snapshot.catalog_entries[0]
+            store = SkillEnablementStore(root / "skills.json")
+            store.enable(
+                entry,
+                reviewed_permission_digest=permission_review_digest(
+                    entry
+                ),
+            )
+            self.assertFalse(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=False,
+                    utterance=entry.name,
+                )
+            )
+            self.assertTrue(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=True,
+                )
+            )
+
+    def test_disable_is_a_session_deny_even_if_persistence_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, anchor = _write_bundle(
+                root / "bundle",
+                {"summary.skill.json": _definition()},
+            )
+            snapshot = load_bundled_declarative_skills(
+                directory=directory,
+                embedded_digests=anchor,
+            )
+            entry = snapshot.catalog_entries[0]
+            store = SkillEnablementStore(root / "skills.json")
+            store.enable(
+                entry,
+                reviewed_permission_digest=permission_review_digest(
+                    entry
+                ),
+            )
+            with mock.patch.object(
+                store,
+                "_save",
+                side_effect=OSError("synthetic storage failure"),
+            ), self.assertRaises(OSError):
+                store.disable(entry.skill_id)
+
+            self.assertFalse(store.is_enabled(entry))
+            self.assertFalse(
+                declarative_skill_invocation_allowed(
+                    snapshot,
+                    store,
+                    entry.skill_id,
+                    explicit_selection=True,
+                )
+            )
 
 
 if __name__ == "__main__":
