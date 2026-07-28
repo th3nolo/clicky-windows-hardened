@@ -47,6 +47,8 @@ hidden = [
     "ai.hybrid_pointer",
     "ai.figure_detector",
     "memory.style_profiles",
+    "research.models",
+    "research.tools",
     "skills.declarative_runner",
     "skills.registry",
     "skills.schema",

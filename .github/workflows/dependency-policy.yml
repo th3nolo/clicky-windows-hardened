@@ -48,6 +48,8 @@ jobs:
           tests.test_privacy_consent
           tests.test_provider_security
           tests.test_quarantine_harness
+          tests.test_research_models
+          tests.test_research_tools
           tests.test_response_provider_terminology
           tests.test_security_hardening
           tests.test_stt_vocabulary_contract

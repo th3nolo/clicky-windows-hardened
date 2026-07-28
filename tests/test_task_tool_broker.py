@@ -7,6 +7,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from capability_registry import (
     CapabilityGrant,
@@ -125,6 +126,7 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         model_text: str = "bounded model response",
         search_text: str = "[1] bounded search result",
         fetch_text: str = "bounded fetched page",
+        use_default_web: bool = False,
     ) -> tuple[TaskToolBroker, TaskRun, TaskWorkspace]:
         limits = TaskLimits(
             runtime_seconds=60,
@@ -173,16 +175,23 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.adapter_calls["fetch"] += 1
             return fetch_text
 
+        web_adapters = (
+            {}
+            if use_default_web
+            else {
+                "web_search": web_search,
+                "web_fetch": web_fetch,
+            }
+        )
         broker = TaskToolBroker(
             run,
             workspace,
             steps,
             model_stream=model_stream,
-            web_search=web_search,
-            web_fetch=web_fetch,
             artifact_root=(
                 Path(self.temporary.name).absolute() / "adopted-artifacts"
             ),
+            **web_adapters,
         )
         return broker, run, workspace
 
@@ -736,6 +745,52 @@ class TaskToolBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.result.status, ToolResultStatus.SUCCEEDED)
         self.assertEqual(result.text, "bounded fetched page")
         self.assertEqual(self.adapter_calls["fetch"], 1)
+
+    async def test_default_web_adapter_sanitizes_research_sources(self):
+        search_step = declared_step(
+            "search",
+            DeclarativeTool.WEB_SEARCH,
+        )
+        verify_step = declared_step(
+            "verify",
+            DeclarativeTool.VERIFY_OUTPUT,
+            depends_on=("search",),
+        )
+        calls = 0
+
+        async def bounded_search(_query: str, _max_results: int) -> str:
+            nonlocal calls
+            calls += 1
+            return (
+                "[1] Public — https://EXAMPLE.com:443/source#one\n"
+                "Public evidence.\n\n"
+                "[2] Private — https://127.0.0.1/admin\n"
+                "Unsafe evidence."
+            )
+
+        with mock.patch(
+            "research.tools._existing_bounded_search",
+            new=bounded_search,
+        ):
+            broker, _, _ = self.create_broker(
+                (search_step, verify_step),
+                max_network_requests=8,
+                use_default_web=True,
+            )
+        arguments = WebSearchArguments(
+            query="bounded public evidence",
+            max_results=2,
+        )
+        result = await broker.execute(
+            call_for(search_step, arguments),
+            arguments,
+        )
+        self.assertEqual(result.result.status, ToolResultStatus.SUCCEEDED)
+        self.assertEqual(
+            result.text,
+            "[1] Public — https://example.com/source\nPublic evidence.",
+        )
+        self.assertEqual(calls, 1)
 
     async def test_provider_output_limit_returns_no_partial_text(self):
         model_step = declared_step(
