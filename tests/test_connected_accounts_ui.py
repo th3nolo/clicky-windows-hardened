@@ -293,6 +293,23 @@ class ConnectedAccountsUiTests(unittest.TestCase):
         )
         self.assertIn("reviewed scopes", self.panel._status.text())
 
+    def test_drive_row_selects_only_the_explicit_file_read_scope(self):
+        labels = [
+            self.panel._connector_combo.itemText(index)
+            for index in range(self.panel._connector_combo.count())
+        ]
+        self.assertIn("Google Drive", labels)
+        self.panel._connector_combo.setCurrentText("Google Drive")
+
+        request = self.panel.selected_connect_request()
+
+        self.assertIsNotNone(request)
+        self.assertEqual(request.connector, ConnectorId.GOOGLE_DRIVE)
+        self.assertEqual(
+            request.capabilities,
+            frozenset({CapabilityId.DRIVE_SELECTED_FILE_READ}),
+        )
+
     def test_cancelled_review_opens_no_browser_or_account_operation(self):
         self.confirmations.accepted = False
 

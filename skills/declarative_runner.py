@@ -58,6 +58,7 @@ from tasks.tool_broker import (
     ConnectorReadAdapter,
     ConnectorWriteAdapter,
     DeclaredToolStep,
+    DriveSelectedFileArguments,
     GmailDraftArguments,
     GmailSelectedThreadArguments,
     ModelGenerateArguments,
@@ -94,6 +95,7 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
             {
                 "authorization_id",
                 "selected_calendar_ids_json",
+                "selected_file_id",
                 "selected_page_id",
                 "selected_thread_id",
                 "time_max",
@@ -343,6 +345,12 @@ class _ResearchPdfMetadata:
 def _connector_argument_ids(step: WorkflowStep) -> frozenset[str]:
     if (
         step.tool is DeclarativeTool.CONNECTOR_READ
+        and step.connector is ConnectorId.GOOGLE_DRIVE
+        and step.capability is CapabilityId.DRIVE_SELECTED_FILE_READ
+    ):
+        return frozenset({"authorization_id", "selected_file_id"})
+    if (
+        step.tool is DeclarativeTool.CONNECTOR_READ
         and step.connector is ConnectorId.GOOGLE_CALENDAR
         and step.capability is CapabilityId.CALENDAR_EVENT_READ
     ):
@@ -459,6 +467,9 @@ def compile_declarative_plan(
                 CapabilityId.GMAIL_DRAFT_WRITE,
             }
         ),
+        ConnectorId.GOOGLE_DRIVE: frozenset(
+            {CapabilityId.DRIVE_SELECTED_FILE_READ}
+        ),
         ConnectorId.NOTION: frozenset(
             {CapabilityId.NOTION_PAGE_READ}
         ),
@@ -573,6 +584,7 @@ def compile_declarative_plan(
             step.capability
             not in {
                 CapabilityId.CALENDAR_EVENT_READ,
+                CapabilityId.DRIVE_SELECTED_FILE_READ,
                 CapabilityId.GMAIL_MESSAGE_READ,
                 CapabilityId.NOTION_PAGE_READ,
             }
@@ -965,6 +977,21 @@ class DeclarativeSkillRunner:
                 ),
             )
         if step.tool is DeclarativeTool.CONNECTOR_READ:
+            if step.capability is CapabilityId.DRIVE_SELECTED_FILE_READ:
+                return DriveSelectedFileArguments(
+                    authorization_id=_text_value(
+                        values["authorization_id"],
+                        "Drive account authorization ID",
+                    ),
+                    selected_file_id=_text_value(
+                        values["selected_file_id"],
+                        "Selected Drive file ID",
+                    ),
+                    maximum_response_bytes=min(
+                        self._definition.limits.max_output_bytes,
+                        1024 * 1024,
+                    ),
+                )
             if step.capability is CapabilityId.CALENDAR_EVENT_READ:
                 return CalendarAvailabilityArguments(
                     authorization_id=_text_value(

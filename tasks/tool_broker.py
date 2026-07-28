@@ -96,6 +96,7 @@ MAX_DECLARED_STEPS = 32
 MAX_SELECTED_CALENDARS = 50
 MAX_CALENDAR_ID_CHARS = 1_024
 MAX_GMAIL_THREAD_ID_CHARS = 128
+MAX_DRIVE_FILE_ID_CHARS = 256
 MAX_GMAIL_RECIPIENTS = 50
 MAX_GMAIL_ADDRESS_CHARS = 320
 MAX_GMAIL_SUBJECT_CHARS = 500
@@ -225,6 +226,7 @@ class DeclaredToolStep:
                 or self.capability
                 not in {
                     CapabilityId.CALENDAR_EVENT_READ,
+                    CapabilityId.DRIVE_SELECTED_FILE_READ,
                     CapabilityId.GMAIL_MESSAGE_READ,
                     CapabilityId.NOTION_PAGE_READ,
                 }
@@ -424,6 +426,35 @@ class GmailSelectedThreadArguments:
             1,
             MAX_CONNECTOR_OUTPUT_BYTES,
             "Gmail response limit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DriveSelectedFileArguments:
+    """One exact connected account and explicitly selected Drive file."""
+
+    authorization_id: str
+    selected_file_id: str = field(repr=False)
+    maximum_response_bytes: int = MAX_CONNECTOR_OUTPUT_BYTES
+
+    def __post_init__(self) -> None:
+        _bounded_token(
+            self.authorization_id,
+            _OPAQUE_ID,
+            128,
+            "Drive account authorization ID",
+        )
+        _bounded_token(
+            self.selected_file_id,
+            _OPAQUE_ID,
+            MAX_DRIVE_FILE_ID_CHARS,
+            "Selected Drive file ID",
+        )
+        _bounded_integer(
+            self.maximum_response_bytes,
+            1,
+            MAX_CONNECTOR_OUTPUT_BYTES,
+            "Drive response limit",
         )
 
 
@@ -1246,6 +1277,7 @@ BrokerArguments = (
     | WebSearchArguments
     | WebFetchArguments
     | CalendarAvailabilityArguments
+    | DriveSelectedFileArguments
     | GmailSelectedThreadArguments
     | GmailDraftArguments
     | SheetsExportArguments
@@ -1366,6 +1398,7 @@ ConnectorReadAdapter = Callable[
     [
         ToolCall,
         CalendarAvailabilityArguments
+        | DriveSelectedFileArguments
         | GmailSelectedThreadArguments
         | NotionSelectedPageArguments,
     ],
@@ -1775,6 +1808,7 @@ class TaskToolBroker:
         elif isinstance(
             arguments,
             (
+                DriveSelectedFileArguments,
                 GmailSelectedThreadArguments,
                 GmailDraftArguments,
                 NotionSelectedPageArguments,
@@ -1806,6 +1840,8 @@ class TaskToolBroker:
             )
             return self._text_execution(call, _require_text_output(text))
         if type(arguments) is CalendarAvailabilityArguments:
+            return await self._read_connector(call, arguments)
+        if type(arguments) is DriveSelectedFileArguments:
             return await self._read_connector(call, arguments)
         if type(arguments) is GmailSelectedThreadArguments:
             return await self._read_connector(call, arguments)
@@ -1842,6 +1878,7 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: (
             CalendarAvailabilityArguments
+            | DriveSelectedFileArguments
             | GmailSelectedThreadArguments
             | NotionSelectedPageArguments
         ),
@@ -2608,6 +2645,12 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
             "time_max": arguments.time_max,
             "time_min": arguments.time_min,
         }
+    if type(arguments) is DriveSelectedFileArguments:
+        return {
+            "authorization_id": arguments.authorization_id,
+            "maximum_response_bytes": arguments.maximum_response_bytes,
+            "selected_file_id": arguments.selected_file_id,
+        }
     if type(arguments) is GmailSelectedThreadArguments:
         return {
             "authorization_id": arguments.authorization_id,
@@ -2841,6 +2884,7 @@ _ARGUMENT_TYPES = {
 
 _CONNECTOR_ARGUMENT_TYPES = {
     CapabilityId.CALENDAR_EVENT_READ: CalendarAvailabilityArguments,
+    CapabilityId.DRIVE_SELECTED_FILE_READ: DriveSelectedFileArguments,
     CapabilityId.GMAIL_MESSAGE_READ: GmailSelectedThreadArguments,
     CapabilityId.GMAIL_DRAFT_WRITE: GmailDraftArguments,
     CapabilityId.NOTION_PAGE_READ: NotionSelectedPageArguments,
@@ -2872,6 +2916,11 @@ def _network_request_cost(
         and isinstance(arguments, NotionSelectedPageArguments)
     ):
         return MAX_NOTION_PROVIDER_REQUESTS
+    if (
+        tool is DeclarativeTool.CONNECTOR_READ
+        and isinstance(arguments, DriveSelectedFileArguments)
+    ):
+        return 2
     if tool in {
         DeclarativeTool.WEB_SEARCH,
         DeclarativeTool.WEB_FETCH,
@@ -3123,6 +3172,7 @@ __all__ = [
     "ConnectorWriteAdapter",
     "ConnectorWriteOutput",
     "DeclaredToolStep",
+    "DriveSelectedFileArguments",
     "GmailDraftArguments",
     "GmailSelectedThreadArguments",
     "ModelGenerateArguments",

@@ -46,6 +46,7 @@ PROVIDER_CONNECTORS = MappingProxyType(
             {
                 ConnectorId.GMAIL,
                 ConnectorId.GOOGLE_CALENDAR,
+                ConnectorId.GOOGLE_DRIVE,
                 ConnectorId.GOOGLE_SHEETS,
                 ConnectorId.GOOGLE_SLIDES,
             }

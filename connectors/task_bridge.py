@@ -25,6 +25,14 @@ from connectors.google_calendar import (
     CalendarAvailabilityResult,
     GoogleCalendarAvailabilityAdapter,
 )
+from connectors.google_drive import (
+    DriveNativeExportRequiredError,
+    DriveSelectedFileRequest,
+    DriveSelectedFileResult,
+    DriveUnsupportedMediaTypeError,
+    GoogleDriveSelectedFileAdapter,
+    MAX_DRIVE_FILE_CONTENT_BYTES,
+)
 from connectors.gmail import (
     GmailDraftOutcomeUnknownError,
     GmailDraftRequest,
@@ -62,6 +70,7 @@ from tasks.tool_broker import (
     CalendarAvailabilityArguments,
     ConnectorReadOutput,
     ConnectorWriteOutput,
+    DriveSelectedFileArguments,
     GmailDraftArguments,
     GmailSelectedThreadArguments,
     NotionSelectedPageArguments,
@@ -77,6 +86,10 @@ CalendarAdapterFactory = Callable[
     GoogleCalendarAvailabilityAdapter,
 ]
 GmailAdapterFactory = Callable[[ConnectedAccount], GoogleGmailAdapter]
+DriveAdapterFactory = Callable[
+    [ConnectedAccount],
+    GoogleDriveSelectedFileAdapter,
+]
 NotionAdapterFactory = Callable[[ConnectedAccount], NotionSelectedPageAdapter]
 SheetsAdapterFactory = Callable[
     [ConnectedAccount],
@@ -342,6 +355,108 @@ class GmailConnectorReadBroker:
                 "connector_evidence_invalid"
             )
         return execution
+
+
+class DriveConnectorReadBroker:
+    """Turn one exact task grant into one selected-file Drive read."""
+
+    def __init__(
+        self,
+        run: TaskRun,
+        account_service: ConnectedAccountService | None = None,
+        *,
+        adapter_factory: DriveAdapterFactory = (
+            GoogleDriveSelectedFileAdapter
+        ),
+    ) -> None:
+        _validate_service(run, account_service, adapter_factory)
+        self._run = run
+        self._accounts = account_service or ConnectedAccountService()
+        self._adapter_factory = adapter_factory
+
+    async def __call__(
+        self,
+        task_call: ToolCall,
+        arguments: DriveSelectedFileArguments,
+    ) -> ConnectorReadOutput:
+        if (
+            not isinstance(arguments, DriveSelectedFileArguments)
+            or not _task_call_matches(
+                self._run,
+                task_call,
+                arguments,
+                tool_name="connector.read",
+                capability=CapabilityId.DRIVE_SELECTED_FILE_READ,
+            )
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_read_not_supported"
+            )
+        try:
+            request = DriveSelectedFileRequest(
+                selected_file_id=arguments.selected_file_id,
+                maximum_content_bytes=min(
+                    arguments.maximum_response_bytes,
+                    MAX_DRIVE_FILE_CONTENT_BYTES,
+                ),
+            )
+            account = self._accounts.get_account(
+                arguments.authorization_id
+            )
+            if account.connector is not ConnectorId.GOOGLE_DRIVE:
+                raise ConnectorAuthorizationError(
+                    "Connected account is not a Drive account"
+                )
+            connector_call = ConnectorCall(
+                call_id=task_call.call_id,
+                run_id=task_call.run_id,
+                authorization_id=arguments.authorization_id,
+                connector=ConnectorId.GOOGLE_DRIVE,
+                capability=CapabilityId.DRIVE_SELECTED_FILE_READ,
+                operation_id=request.operation_id,
+                request_digest=request.request_digest,
+                maximum_response_bytes=arguments.maximum_response_bytes,
+            )
+            lease = self._accounts.lease_access_token(
+                arguments.authorization_id,
+                CapabilityId.DRIVE_SELECTED_FILE_READ,
+            )
+            try:
+                adapter = self._adapter_factory(account)
+                execution = await adapter.execute(
+                    connector_call,
+                    request,
+                    lease.token,
+                )
+            finally:
+                lease.close()
+        except DriveNativeExportRequiredError as exc:
+            raise TaskToolBrokerOperationError(
+                "drive_native_export_required"
+            ) from exc
+        except DriveUnsupportedMediaTypeError as exc:
+            raise TaskToolBrokerOperationError(
+                "drive_media_type_not_supported"
+            ) from exc
+        except Exception as exc:
+            _raise_broker_connector_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            not isinstance(execution, ConnectorExecution)
+            or not isinstance(execution.output, DriveSelectedFileResult)
+            or execution.result.call_id != task_call.call_id
+            or execution.result.run_id != task_call.run_id
+            or execution.result.operation_id != request.operation_id
+        ):
+            raise TaskToolBrokerOperationError(
+                "connector_evidence_invalid"
+            )
+        return ConnectorReadOutput(
+            content=execution.output.to_json_bytes(),
+            provider_response_digest=execution.result.response_digest,
+            provider_response_bytes=execution.result.response_bytes,
+            provider_request_id=execution.result.provider_request_id,
+        )
 
 
 class NotionConnectorReadBroker:
@@ -848,6 +963,7 @@ def _raise_broker_connector_error(exc: Exception) -> None:
 
 __all__ = [
     "CalendarConnectorReadBroker",
+    "DriveConnectorReadBroker",
     "GmailConnectorReadBroker",
     "GmailConnectorWriteBroker",
     "GoogleSheetsConnectorWriteBroker",
