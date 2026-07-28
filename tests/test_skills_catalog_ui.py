@@ -267,13 +267,17 @@ class SkillsCatalogUiTests(unittest.TestCase):
             }
             & imported
         )
-        for forbidden in (
-            "compile(",
-            "eval(",
-            "exec(",
-            "__import__(",
-        ):
-            self.assertNotIn(forbidden, source)
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+        }
+        self.assertTrue(
+            {"compile", "eval", "exec", "__import__"}.isdisjoint(
+                called_names
+            )
+        )
 
 
 if __name__ == "__main__":
