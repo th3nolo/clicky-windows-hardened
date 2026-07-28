@@ -568,6 +568,77 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
             ConnectorId.GMAIL,
         )
 
+    def test_drive_selected_file_compiles_with_exact_read_authority(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.DRIVE_SELECTED_FILE_READ.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.drive-one",
+                },
+                {
+                    "argument_id": "selected_file_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_DRIVE.value,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.DRIVE_SELECTED_FILE_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_DRIVE.value,
+                "capabilities": [
+                    CapabilityId.DRIVE_SELECTED_FILE_READ.value
+                ],
+                "oauth_scopes": [
+                    OAuthScopeId.DRIVE_SELECTED_FILE_READ.value
+                ],
+            }
+        ]
+        payload["limits"]["max_network_requests"] = 2
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "selected Drive file"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].capability,
+            CapabilityId.DRIVE_SELECTED_FILE_READ,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].connector,
+            ConnectorId.GOOGLE_DRIVE,
+        )
+
+        payload["steps"][0]["arguments"].pop()
+        definition_without_file = parsed_definition(payload)
+        run_without_file = make_run(
+            definition_without_file,
+            {"query": "selected Drive file"},
+        )
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "arguments do not match",
+        ):
+            compile_declarative_plan(
+                definition_without_file,
+                run_without_file,
+            )
+
     def test_gmail_draft_compiles_only_with_exact_approved_write(self):
         payload = definition_payload()
         payload["steps"][0] = {

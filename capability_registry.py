@@ -47,6 +47,7 @@ class UserPermissionId(str, Enum):
 class ConnectorId(str, Enum):
     GMAIL = "gmail"
     GOOGLE_CALENDAR = "google_calendar"
+    GOOGLE_DRIVE = "google_drive"
     NOTION = "notion"
     GOOGLE_SHEETS = "google_sheets"
     GOOGLE_SLIDES = "google_slides"
@@ -59,6 +60,7 @@ class OAuthScopeId(str, Enum):
     GMAIL_DRAFTS_WRITE = "gmail.drafts.write"
     CALENDAR_EVENTS_READ = "google_calendar.events.read"
     CALENDAR_EVENTS_WRITE = "google_calendar.events.write"
+    DRIVE_SELECTED_FILE_READ = "google_drive.selected_file.read"
     NOTION_PAGES_READ = "notion.pages.read"
     NOTION_PAGES_WRITE = "notion.pages.write"
     SHEETS_VALUES_READ = "google_sheets.values.read"
@@ -83,6 +85,7 @@ class CapabilityId(str, Enum):
     GMAIL_DRAFT_WRITE = "gmail.draft.write"
     CALENDAR_EVENT_READ = "google_calendar.event.read"
     CALENDAR_EVENT_WRITE = "google_calendar.event.write"
+    DRIVE_SELECTED_FILE_READ = "google_drive.selected_file.read"
     NOTION_PAGE_READ = "notion.page.read"
     NOTION_PAGE_WRITE = "notion.page.write"
     SHEETS_VALUES_READ = "google_sheets.values.read"
@@ -250,6 +253,13 @@ _DEFINITIONS = (
         approval=True,
     ),
     _definition(
+        CapabilityId.DRIVE_SELECTED_FILE_READ,
+        "Read one explicitly selected Google Drive file",
+        FeatureCapability.CONNECTOR_READ,
+        UserPermissionId.CONNECTOR_READ,
+        connector=ConnectorId.GOOGLE_DRIVE,
+    ),
+    _definition(
         CapabilityId.NOTION_PAGE_READ,
         "Read approved Notion pages",
         FeatureCapability.CONNECTOR_READ,
@@ -344,6 +354,9 @@ CAPABILITY_OAUTH_SCOPES: Mapping[
         CapabilityId.GMAIL_DRAFT_WRITE: OAuthScopeId.GMAIL_DRAFTS_WRITE,
         CapabilityId.CALENDAR_EVENT_READ: OAuthScopeId.CALENDAR_EVENTS_READ,
         CapabilityId.CALENDAR_EVENT_WRITE: OAuthScopeId.CALENDAR_EVENTS_WRITE,
+        CapabilityId.DRIVE_SELECTED_FILE_READ: (
+            OAuthScopeId.DRIVE_SELECTED_FILE_READ
+        ),
         CapabilityId.NOTION_PAGE_READ: OAuthScopeId.NOTION_PAGES_READ,
         CapabilityId.NOTION_PAGE_WRITE: OAuthScopeId.NOTION_PAGES_WRITE,
         CapabilityId.SHEETS_VALUES_READ: OAuthScopeId.SHEETS_VALUES_READ,

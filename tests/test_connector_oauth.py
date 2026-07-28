@@ -217,6 +217,12 @@ class OAuthPolicyTests(unittest.TestCase):
     def test_google_scope_mapping_uses_narrow_reviewed_provider_scopes(self):
         self.assertEqual(
             GOOGLE_PROVIDER_SCOPES[
+                OAuthScopeId.DRIVE_SELECTED_FILE_READ
+            ],
+            "https://www.googleapis.com/auth/drive.file",
+        )
+        self.assertEqual(
+            GOOGLE_PROVIDER_SCOPES[
                 OAuthScopeId.CALENDAR_EVENTS_READ
             ],
             "https://www.googleapis.com/auth/calendar.events.freebusy",
