@@ -7,6 +7,13 @@ import os
 import sys
 from pathlib import Path
 
+# The packaged worker must cross the process boundary before importing Qt,
+# configuration, providers, or any UI/application service.
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--task-worker":
+    from tasks.worker import run_worker
+
+    raise SystemExit(run_worker())
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
