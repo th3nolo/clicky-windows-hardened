@@ -218,8 +218,18 @@ show an explicit Tutor, Compose, or new Task Agent destination and the data
 class that may leave the process. Focus cannot select a destination, and a
 selection grants no insertion, connector, coding, task, or desktop-action
 authority. Topology, DPI, capture-generation, bounds, or expiry changes fail
-closed. The selection overlay and routing caller are not implemented yet, so
-region handoff remains unavailable in this revision.
+closed. The tray now exposes a preview-only rectangle or freehand-circle
+selection flow. It captures full-resolution frozen monitor frames through the
+same owned-window exclusion boundary, consumes pointer input in one overlay per
+monitor, binds the selection to the shared Escape/supersession coordinator, and
+wipes full frames after completion, cancellation, expiry, or failure. The
+review requires a destination, purpose, and visible screen-pixel data class,
+but this revision intentionally discards the reviewed pixels without routing
+them. Tutor, Compose, and new Task Agent caller adapters remain unavailable.
+The bytearray buffers are overwritten before release and selection windows are
+destroyed, but Python, Qt, image codecs, GPU/compositor memory, paging, crash
+dumps, and other same-user processes prevent this from being a forensic-erasure
+guarantee.
 
 ## Release and executable policy
 

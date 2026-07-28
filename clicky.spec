@@ -89,6 +89,7 @@ hidden = [
     "ui.task_center",
     "ui.connected_accounts",
     "ui.desktop_action_highlight",
+    "ui.region_handoff",
     "ui.workspace_diff_review",
     "workspace_coding.adoption",
     "workspace_coding.broker",
@@ -97,6 +98,8 @@ hidden = [
     "workspace_coding.paths",
     "workspace_coding.sandbox",
     "workspace_coding.snapshot",
+    "handoff.image_capture",
+    "handoff.selection",
 
     # Lazy STT providers
     "audio.stt.deepgram_stt",

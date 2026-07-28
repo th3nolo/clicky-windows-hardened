@@ -196,6 +196,37 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
+### Preview-only screen-region selection
+
+Run the pure contract and wiring tests without screen access:
+
+~~~powershell
+python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_wiring
+~~~
+
+The locked Windows suite additionally runs `tests.test_region_handoff_ui`.
+Confirm a fresh tray menu includes **Select screen region (preview only)…**.
+Without the current screen-capture permission it must fail before capture.
+With permission, choose Rectangle and Freehand circle separately on every
+monitor, including negative-origin and mixed-DPI arrangements. Confirm the
+overlay shows the frozen pre-overlay frame, consumes the drag instead of
+clicking the underlying application, and accepts a shape on exactly one
+monitor. Move, resize, reconnect, or rescale a display before selection and
+again before review; each change must discard the capture. Escape, the
+60-second timeout, a replacement push-to-talk turn, an invalid/open/crossing
+lasso, capture-exclusion failure, and application shutdown must close every
+overlay and wipe the transient frames.
+
+The review must show the exact selected image, require the user to choose
+Tutor context, Compose preview, or New Task Agent run, require a purpose, and
+label the data as selected screen pixels. Approve each destination and confirm
+the current revision reports **Preview only**, sends no provider request,
+starts no task, inserts nothing, changes no desktop state, and immediately
+wipes the selected bytes. Inspect the packaged smoke build to confirm the
+three lazy region modules are present. These source/UI checks are not live
+proof of compositor exclusion, multi-monitor DPI behavior, or pixel wiping;
+record those native observations separately.
+
 ### Desktop automation target, approval, and one-shot action boundary
 
 The source-only desktop-automation implementation remains build-unavailable.

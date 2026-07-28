@@ -60,6 +60,7 @@ class TrayManager(QObject):
     on_manage_skills = pyqtSignal()
     on_open_task_center = pyqtSignal()
     on_manage_connected_accounts = pyqtSignal()
+    on_select_region = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_set_stt_provider   = pyqtSignal(str)
@@ -181,6 +182,10 @@ class TrayManager(QObject):
         scope_label = "Instructions for Clicky…"
         scope_action = menu.addAction(scope_label)
         scope_action.triggered.connect(self._prompt_custom_instructions)
+        region_action = menu.addAction(
+            "Select screen region (preview only)…"
+        )
+        region_action.triggered.connect(self.on_select_region)
         if build_feature_available(
             ActionCapability.SCREEN_AWARE_COMPOSE
         ):

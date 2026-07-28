@@ -402,6 +402,12 @@ class CompanionManager(QObject):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    @property
+    def turn_coordinator(self) -> TurnCoordinator:
+        """Share one cancellation authority with bounded UI workflows."""
+
+        return self._turns
+
     def start(self):
         if microphone_allowed(cfg):
             try:
