@@ -70,6 +70,8 @@ jobs:
           tests.test_region_handoff_wiring
           tests.test_region_compose_context
           tests.test_region_compose_wiring
+          tests.test_region_task_context
+          tests.test_region_task_wiring
           tests.test_offline_model_loading
           tests.test_packaged_self_test
           tests.test_privacy_consent

@@ -441,6 +441,13 @@ class CompanionManager(QObject):
             raise TypeError("Owned turn submission requires a turn session")
         return self._submit(coroutine, session)
 
+    def submit_background_task(self, coroutine):
+        """Schedule a bounded task outside the conversational turn owner."""
+
+        if coroutine is None:
+            raise TypeError("Background task coroutine is invalid")
+        return self._submit(coroutine)
+
     def route_region_to_tutor(self, context) -> str:
         """Accept one reviewed JPEG as a new isolated Tutor turn."""
 

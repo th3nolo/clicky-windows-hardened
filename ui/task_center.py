@@ -347,7 +347,15 @@ class TaskCenterPanel(QWidget):
             f"State: {task.state.value} · "
             f"Elapsed: {_duration(snapshot.elapsed_seconds)}"
         )
-        self._result.setText(_terminal_result(task))
+        if content is not None and content.result_text is not None:
+            self._result.setText(
+                "Bounded task result "
+                "(delivery verified; factual claims not independently "
+                "verified):\n"
+                + content.result_text
+            )
+        else:
+            self._result.setText(_terminal_result(task))
         self._capabilities.setText(
             "Granted capabilities:\n"
             + "\n".join(

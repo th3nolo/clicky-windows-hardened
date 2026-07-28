@@ -84,6 +84,7 @@ hidden = [
     "skills.declarative_runner",
     "skills.registry",
     "skills.schema",
+    "tasks.region_context",
 
     # First-run setup wizard
     "ui.setup_wizard",
@@ -97,6 +98,7 @@ hidden = [
     "ui.compose_preview",
     "ui.region_compose",
     "ui.region_handoff",
+    "ui.region_task",
     "ui.workspace_diff_review",
     "workspace_coding.adoption",
     "workspace_coding.broker",

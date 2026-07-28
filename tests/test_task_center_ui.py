@@ -149,6 +149,34 @@ class TaskCenterUiTests(unittest.TestCase):
         self.assertIn("cancelled", panel._state.text())
         self.assertFalse(panel._cancel_button.isEnabled())
 
+    def test_verified_live_result_is_visible_but_not_persisted(self):
+        run = make_run()
+        self.store.create_task(run)
+        run.start()
+        self.store.sync_run(run)
+        self.registry.register(
+            ActiveTaskHandle(
+                content=TaskDisplayContent(
+                    run_id=run.run_id,
+                    goal=run.spec.goal,
+                    requested_result=run.spec.requested_result,
+                ),
+                cancel_callback=lambda: True,
+            )
+        )
+        result_text = "The reviewed warning describes a disabled setting."
+        self.registry.publish_result(run.run_id, result_text)
+
+        panel = self.create_panel()
+
+        self.assertIn(result_text, panel._result.text())
+        self.assertIn(
+            "factual claims not independently verified",
+            panel._result.text(),
+        )
+        exported = self.store.export_task(run.run_id).decode("utf-8")
+        self.assertNotIn(result_text, exported)
+
     def test_exact_active_preview_can_approve_once(self):
         run = make_run()
         self.store.create_task(run)

@@ -573,6 +573,7 @@ def required_capabilities(
         ),
         HandoffDestination.TASK_AGENT_NEW_RUN: (
             CapabilityId.TASK_AGENT_RUN,
+            CapabilityId.TASK_REGION_CONTEXT,
         ),
     }[destination]
 

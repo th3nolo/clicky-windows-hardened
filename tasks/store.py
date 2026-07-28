@@ -454,7 +454,8 @@ class TaskStore:
                 "Model output evidence requires a ToolCall and ToolResult"
             )
         if (
-            call.tool_name != "model.generate"
+            call.tool_name
+            not in {"model.generate", "model.generate.region"}
             or call.run_id != result.run_id
             or call.call_id != result.call_id
             or call.step_id != result.step_id

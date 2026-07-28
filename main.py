@@ -150,6 +150,22 @@ def main():
     tray    = TrayManager()
     import secrets
 
+    task_store = None
+    task_actions = None
+    if build_feature_available(ActionCapability.TASK_AGENT):
+        try:
+            from tasks.store import TaskStore
+            from tasks.task_center import TaskCenterActionRegistry
+
+            task_store = TaskStore()
+            task_actions = TaskCenterActionRegistry()
+        except Exception:
+            tray.show_notification(
+                "Task Agent unavailable",
+                "Task metadata could not be opened. Task actions remain "
+                "disabled.",
+            )
+
     from handoff.models import HandoffDestination
     from handoff.routing import HandoffRouter, HandoffRoutingError
     from ui.region_handoff import QtRegionHandoffController
@@ -196,6 +212,41 @@ def main():
             HandoffDestination.COMPOSE_PREVIEW
         ] = compose_region.route
 
+    task_region = None
+    if (
+        build_feature_available(ActionCapability.TASK_AGENT)
+        and task_store is not None
+        and task_actions is not None
+    ):
+        try:
+            from tasks.region_context import (
+                RegionTaskProviderSelection,
+            )
+            from ui.region_task import TaskRegionHandoffController
+
+            task_region = TaskRegionHandoffController(
+                task_store,
+                task_actions,
+                provider_selection=lambda: (
+                    RegionTaskProviderSelection(
+                        cfg.llm_provider(),
+                        manager.current_response_model or "",
+                    )
+                ),
+                submit=manager.submit_background_task,
+                config_provider=lambda: cfg,
+            )
+            handoff_handlers[
+                HandoffDestination.TASK_AGENT_NEW_RUN
+            ] = task_region.route
+            _region_task_keepalive[0] = task_region
+        except Exception:
+            task_region = None
+            tray.show_notification(
+                "Region tasks unavailable",
+                "New Task Agent runs from screen regions remain disabled.",
+            )
+
     handoff_router = HandoffRouter(
         handoff_handlers,
         route_id_factory=lambda: (
@@ -236,6 +287,31 @@ def main():
             lambda status, code: tray.show_notification(
                 "Compose insertion result",
                 f"Status: {status}. Result: {code}.",
+            )
+        )
+    if task_region is not None:
+        task_region.started.connect(
+            lambda run_id: tray.show_notification(
+                "Background task started",
+                f"New bounded run: {run_id}. Open Task Center for status.",
+            )
+        )
+        task_region.completed.connect(
+            lambda run_id: tray.show_notification(
+                "Background task completed",
+                f"Verified bounded result available for {run_id}.",
+            )
+        )
+        task_region.failed.connect(
+            lambda run_id, code: tray.show_notification(
+                "Background task failed",
+                f"Run: {run_id}. Result: {code}.",
+            )
+        )
+        task_region.cancelled.connect(
+            lambda run_id: tray.show_notification(
+                "Background task cancelled",
+                f"Run: {run_id}. Late output will be discarded.",
             )
         )
     if privacy_permission_error is not None:
@@ -294,34 +370,48 @@ def main():
 
         tray.on_manage_skills.connect(_show_skills_catalog)
 
-        try:
-            from tasks.store import TaskStore
-            from tasks.task_center import TaskCenterActionRegistry
-            from ui.task_center import TaskCenterPanel
+        if task_store is not None and task_actions is not None:
+            try:
+                from ui.task_center import TaskCenterPanel
 
-            task_center_panel = TaskCenterPanel(
-                TaskStore(),
-                TaskCenterActionRegistry(),
-                task_agent_available=user_permission_allowed(
-                    cfg,
-                    ActionCapability.TASK_AGENT,
-                ),
-            )
-            _task_center_keepalive[0] = task_center_panel
+                task_center_panel = TaskCenterPanel(
+                    task_store,
+                    task_actions,
+                    task_agent_available=user_permission_allowed(
+                        cfg,
+                        ActionCapability.TASK_AGENT,
+                    ),
+                )
+                _task_center_keepalive[0] = task_center_panel
 
-            def _show_task_center():
-                task_center_panel.refresh()
-                task_center_panel.show()
-                task_center_panel.raise_()
-                task_center_panel.activateWindow()
+                def _show_task_center():
+                    task_center_panel.refresh()
+                    task_center_panel.show()
+                    task_center_panel.raise_()
+                    task_center_panel.activateWindow()
 
-            tray.on_open_task_center.connect(_show_task_center)
-        except Exception:
-            tray.show_notification(
-                "Task Center unavailable",
-                "Task metadata could not be opened. Task actions remain "
-                "disabled.",
-            )
+                tray.on_open_task_center.connect(_show_task_center)
+                if task_region is not None:
+                    task_region.started.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+                    task_region.completed.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+                    task_region.failed.connect(
+                        lambda _run_id, _code: (
+                            task_center_panel.refresh()
+                        )
+                    )
+                    task_region.cancelled.connect(
+                        lambda _run_id: task_center_panel.refresh()
+                    )
+            except Exception:
+                tray.show_notification(
+                    "Task Center unavailable",
+                    "Task metadata could not be displayed. Task actions "
+                    "remain disabled.",
+                )
 
     if any(
         build_feature_available(capability)
@@ -557,6 +647,8 @@ def main():
     tray.on_switch_provider.connect(_switch)
     def _stop_all():
         region_handoff.cancel()
+        if task_region is not None:
+            task_region.cancel_all()
         manager.stop()
 
     tray.on_stop.connect(_stop_all)
@@ -714,7 +806,14 @@ def main():
             tray.show_notification("Diagnostics failed", str(e))
     tray.on_diagnostics.connect(_save_diagnostics)
 
-    tray.on_quit.connect(lambda: (tray.hide_icon(), manager.shutdown(), app.quit()))
+    def _quit():
+        if task_region is not None:
+            task_region.cancel_all()
+        tray.hide_icon()
+        manager.shutdown()
+        app.quit()
+
+    tray.on_quit.connect(_quit)
 
     # ── Global hotkey ─────────────────────────────────────────────────────────
     def _on_hotkey_press():
@@ -845,6 +944,7 @@ _skills_catalog_keepalive: list = [None]
 _task_center_keepalive: list = [None]
 _connected_accounts_keepalive: list = [None]
 _region_handoff_keepalive: list = [None]
+_region_task_keepalive: list = [None]
 
 
 if __name__ == "__main__":

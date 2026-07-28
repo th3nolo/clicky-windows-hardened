@@ -201,12 +201,13 @@ confirm startup refuses the invalid configuration rather than granting access.
 Run the pure contract and wiring tests without screen access:
 
 ~~~powershell
-python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_routing tests.test_region_handoff_wiring tests.test_region_compose_context tests.test_region_compose_wiring
+python -m unittest -v tests.test_handoff_models tests.test_region_handoff_selection tests.test_region_handoff_image tests.test_region_handoff_routing tests.test_region_handoff_wiring tests.test_region_compose_context tests.test_region_compose_wiring tests.test_region_task_context tests.test_region_task_wiring
 ~~~
 
 The locked Windows suite additionally runs `tests.test_region_handoff_ui` and
 `tests.test_region_handoff_tutor`, `tests.test_region_compose_ui`,
-`tests.test_compose_preview`, and the existing Compose service/insertion tests.
+`tests.test_region_task_ui`, `tests.test_compose_preview`,
+`tests.test_task_center_ui`, and the existing Compose service/insertion tests.
 Confirm a fresh default-build tray menu includes **Select screen region…**.
 Without the current screen-capture permission it must fail before capture.
 With permission, choose Rectangle and Freehand circle separately on every
@@ -230,10 +231,10 @@ Attempt to reuse the same intent and confirm it is rejected before a second
 provider call. Revoke screen permission, change the selected bytes, expire the
 intent, cancel with Escape, and stop the accepted turn; each path must fail
 closed and wipe its transient bytearrays. Inspect the packaged smoke build to
-confirm the four lazy region modules are present. These source/UI checks are
-not live proof of provider delivery, compositor exclusion, multi-monitor DPI
-behavior, cancellation timing, or pixel wiping; record those native
-observations separately.
+confirm every declared lazy handoff, Compose, and Task-region module is
+present. These source/UI checks are not live proof of provider delivery,
+compositor exclusion, multi-monitor DPI behavior, cancellation timing, or
+pixel wiping; record those native observations separately.
 
 For a controlled source test build only, make Screen-Aware Compose available
 with the current permission schema while leaving every other action build flag
@@ -257,6 +258,34 @@ target binding, while queued, during streaming, and during preview; late
 provider output must not appear. Keep the default build flag off until this
 passes on the representative Win32, WPF, browser, Electron, and Qt target
 matrix.
+
+For a separate controlled source test build, make only Task Agent available
+with the current permission schema. New Task Agent run must appear as a region
+destination only after the independent Task Agent and screen permissions are
+granted. Approve a synthetic region and confirm it creates a new persisted run
+instead of steering an existing run. Its grant must contain exactly
+`task_agent.run` and `task_agent.region_context`; artifact, connector, coding,
+workspace, insertion, and desktop-action capabilities must be absent.
+
+Confirm the lifecycle records queued, running, the exact expiring handoff
+approval, one `model.generate.region` call, provider/result digests, a
+machine-checked bounded-output verifier, and the terminal state. The provider
+must receive the exact reviewed JPEG once, empty history, no tools, and the
+fixed untrusted-image instruction boundary. The Task Center may show the
+bounded result text only for the live application session and must label
+delivery verification separately from factual correctness; exported task
+metadata and restart recovery must not contain the text.
+
+Revoke Task Agent or screen permission, change provider/model or validated
+vision support, mutate the bytes, expire the route, replay the call, or select
+a coding response provider; each must block before provider use and wipe the
+image. Cancel before scheduling, during streaming, and immediately before
+completion. Confirm the Task Worker process tree terminates, the persisted
+state is cancelled, and queued or late provider output cannot publish a result.
+Run two synthetic routes concurrently and confirm they receive distinct run
+IDs and grants. Keep the default Task Agent build flag off until this passes
+with the packaged worker and at least one disposable supported vision provider
+on native Windows.
 
 ### Desktop automation target, approval, and one-shot action boundary
 
@@ -877,9 +906,10 @@ bytes and OCR text are not contract fields, focus cannot infer a destination,
 and Compose or new-Task destinations expose only their existing required
 capability identifiers.
 
-This is source-only evidence. Do not report a selection UI, capture, provider
-handoff, or Task Agent handoff as available until the later overlay and routing
-tasks are wired and validated on native Windows.
+These contracts alone are source-only evidence. The gated callers and their
+tests are described earlier in this document, but no provider handoff or Task
+Agent region run may be reported as release-available until its controlled
+native Windows matrix and the final signed-package gates pass.
 
 ### Web search
 
