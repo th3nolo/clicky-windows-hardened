@@ -519,6 +519,51 @@ path. Keep Gmail read/write build-unavailable in the baseline until those
 checks pass. Gmail sending intentionally remains outside the capability
 registry and first release.
 
+### Notion selected-page read and local draft
+
+Notion public OAuth requires a confidential client secret for token exchange
+and refresh. Do not place that secret in the desktop application, package,
+environment, or preferences. Live account connection remains unavailable until
+a reviewed confidential authorization broker and user-controlled Notion
+registration exist.
+
+After that external gate is available, use a disposable workspace containing
+only synthetic pages. In a test build with Task Agent and connector reads
+explicitly enabled:
+
+1. Use the Notion authorization page picker to share only the synthetic parent
+   page. Confirm the consent capability is read content only for the read test.
+2. Supply one exact canonical page ID. Confirm Clicky calls only the fixed
+   `api.notion.com/v1/pages/{page_id}` and
+   `api.notion.com/v1/blocks/{block_id}/children` endpoints with
+   `Notion-Version: 2026-03-11`.
+3. Confirm recursion consumes at most 16 provider requests, treats cursors as
+   opaque, and sets `content_truncated=true` whenever pagination, nested
+   children, block count, depth, or text cannot be completed within the bound.
+4. Confirm the result contains only the selected page ID/title plus bounded
+   plain block text and structure. It must omit search results, comments,
+   people/email properties, unrelated database properties, file/media URLs,
+   signed URLs, and unselected pages.
+5. Change the selected page ID, run ID, authorization ID, capability, or
+   argument digest. Confirm each mismatch fails before a token lease or
+   provider request. A task with fewer than 16 remaining network requests must
+   also fail before provider access.
+6. Exercise 401, 403, 404, 409, 429, timeout, redirect, oversized body,
+   non-JSON body, duplicate block ID, malformed cursor, and provider identity
+   mismatch. Confirm each case fails closed with content-free diagnostics.
+7. Render a local draft from bounded title and block JSON. Confirm the artifact
+   says `state=local_unpublished` and `publication_authorized=false`, contains
+   no token or endpoint, and performs no connector call.
+8. Confirm there is no Notion create/append/update/archive/publish endpoint or
+   brokered `notion.page.write` route in this release. Saving the inert JSON
+   artifact may use the existing local-artifact approval; publishing requires a
+   future, separate exact-target approval and provider read-back.
+
+The checked-in tests use synthetic transports and accounts. They prove source,
+quota, parsing, packaging, and broker boundaries, not a live Notion consent
+flow or interactive Windows behavior. Keep Notion connector reads
+build-unavailable until the confidential broker and this matrix pass.
+
 ### GitHub Copilot token storage
 
 Use a disposable GitHub test account if an end-to-end check is required. Confirm:

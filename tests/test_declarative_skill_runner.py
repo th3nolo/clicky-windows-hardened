@@ -652,6 +652,125 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("gmail.send", {item.value for item in CapabilityId})
 
+    def test_notion_selected_page_reserves_exact_recursive_read_budget(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.NOTION_PAGE_READ.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.notion-one",
+                },
+                {
+                    "argument_id": "selected_page_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": (
+                        "11111111-1111-4111-8111-111111111111"
+                    ),
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.NOTION.value,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.NOTION_PAGE_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.NOTION.value,
+                "capabilities": [CapabilityId.NOTION_PAGE_READ.value],
+                "oauth_scopes": [OAuthScopeId.NOTION_PAGES_READ.value],
+            }
+        ]
+        payload["limits"]["max_network_requests"] = 16
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "selected Notion page"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].capability,
+            CapabilityId.NOTION_PAGE_READ,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].connector,
+            ConnectorId.NOTION,
+        )
+
+        payload["limits"]["max_network_requests"] = 15
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "selected Notion page"})
+        with self.assertRaisesRegex(
+            DeclarativeRunnerPlanningError,
+            "network limit",
+        ):
+            compile_declarative_plan(definition, run)
+
+    def test_notion_draft_render_is_local_and_publish_is_not_brokered(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.NOTION_DRAFT_RENDER.value,
+            "capability": CapabilityId.TASK_AGENT_RUN.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "title",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Reviewed local draft",
+                },
+                {
+                    "argument_id": "blocks_json",
+                    "source": "literal",
+                    "reference": None,
+                    "value": (
+                        '[{"type":"paragraph","text":"Local only"}]'
+                    ),
+                },
+                {
+                    "argument_id": "intended_parent_page_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": (
+                        "11111111-1111-4111-8111-111111111111"
+                    ),
+                },
+            ],
+            "output_id": "search_results",
+            "connector": None,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["limits"]["max_network_requests"] = 0
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "draft notes"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].tool,
+            DeclarativeTool.NOTION_DRAFT_RENDER,
+        )
+        self.assertIsNone(plan.declared_steps[0].connector)
+        self.assertIsNone(plan.declared_steps[0].approval_id)
+        self.assertNotIn(
+            CapabilityId.NOTION_PAGE_WRITE,
+            definition.capabilities,
+        )
+
     async def test_invalid_output_schema_fails_before_approval_or_write(self):
         definition = parsed_definition()
         inputs = {"query": "public creators"}
