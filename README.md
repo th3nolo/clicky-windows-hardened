@@ -103,6 +103,15 @@ message; response content is not sent to that fallback and barge-in cancels it.
   builds. The packaged Sandbox launcher/worker integration and interactive
   Windows evidence remain required. See
   [WORKSPACE_CODING_SECURITY.md](WORKSPACE_CODING_SECURITY.md).
+- Desktop automation remains default-off and unavailable in release builds.
+  Its source now defines an immutable, review-digest-bound UI Automation target
+  identity and a fail-closed policy for same-integrity foreground controls.
+  Credential, two-factor, payment, purchase, security, administrator,
+  account-change, secure-desktop, destructive, hidden, disabled, protected,
+  background, unsupported-pattern, and changed targets are denied. Raw
+  mouse/keyboard input and an action executor do not exist in this phase;
+  policy eligibility grants no action authority. See
+  [DESKTOP_AUTOMATION_SECURITY.md](DESKTOP_AUTOMATION_SECURITY.md).
 - The build-gated Global Dictation session uses a dedicated configurable
   hotkey and the same exclusive turn owner as tutor push-to-talk. Its state
   indicator contains no transcript text, and only a final transcript can

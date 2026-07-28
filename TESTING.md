@@ -196,6 +196,25 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
+### Desktop automation target and denial policy
+
+The source-only desktop-automation foundation contains no executor and remains
+build-unavailable. Run:
+
+~~~powershell
+python -m unittest -v tests.test_desktop_automation_policy
+~~~
+
+Confirm the model binds one target to process ID and start time, application
+identity, top-level/foreground window, UIA runtime ID, control type, framework,
+automation ID, bounds, supported patterns, visibility, desktop, and integrity.
+Confirm raw mouse/keyboard actions do not exist, policy eligibility has no
+execution method, and credential, two-factor, payment/purchase, security,
+administrator, account-change, secure-desktop, destructive deletion,
+elevation, protected, hidden, background, unsupported-pattern, and changed
+targets fail closed. Labels used for classification must not be read from or
+replaced with a control's current `ValuePattern` value.
+
 ### Workspace coding threat-model gate
 
 `WORKSPACE_CODING_SECURITY.md` selects a fresh, network-disabled Windows
