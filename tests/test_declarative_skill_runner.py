@@ -414,7 +414,7 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
                 run,
             )
 
-    def test_declared_connector_still_fails_closed_until_broker_support_exists(self):
+    def test_unsupported_gmail_read_still_fails_closed(self):
         payload = definition_payload()
         payload["steps"][0] = {
             "step_id": "search",
@@ -444,9 +444,78 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(
             DeclarativeRunnerPlanningError,
-            "Connector execution is unavailable",
+            "Only Calendar availability",
         ):
             compile_declarative_plan(definition, run)
+
+    def test_calendar_availability_compiles_with_exact_connector_authority(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.CALENDAR_EVENT_READ.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.calendar-one",
+                },
+                {
+                    "argument_id": "selected_calendar_ids_json",
+                    "source": "literal",
+                    "reference": None,
+                    "value": '["primary","team@example.com"]',
+                },
+                {
+                    "argument_id": "time_min",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "2026-07-27T12:00:00Z",
+                },
+                {
+                    "argument_id": "time_max",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "2026-07-28T12:00:00Z",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GOOGLE_CALENDAR.value,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.CALENDAR_EVENT_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GOOGLE_CALENDAR.value,
+                "capabilities": [CapabilityId.CALENDAR_EVENT_READ.value],
+                "oauth_scopes": [
+                    OAuthScopeId.CALENDAR_EVENTS_READ.value
+                ],
+            }
+        ]
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "availability"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].tool,
+            DeclarativeTool.CONNECTOR_READ,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].connector,
+            ConnectorId.GOOGLE_CALENDAR,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].capability,
+            CapabilityId.CALENDAR_EVENT_READ,
+        )
 
     async def test_invalid_output_schema_fails_before_approval_or_write(self):
         definition = parsed_definition()

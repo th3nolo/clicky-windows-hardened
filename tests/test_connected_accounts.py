@@ -77,6 +77,7 @@ class _FakeOAuth:
     def __init__(self, clock) -> None:
         self.clock = clock
         self.authorizations = []
+        self.refreshes = []
         self.revocations = []
         self.token_sets = []
         self.fail_revocation = False
@@ -127,6 +128,23 @@ class _FakeOAuth:
             provider_request_id="request-1",
             completed_at=self.clock(),
         )
+
+    def refresh(self, account, refresh_token):
+        self.refreshes.append((account, refresh_token.reveal()))
+        sequence = len(self.refreshes)
+        now = self.clock()
+        tokens = OAuthTokenSet(
+            access_token=SecretValue(
+                f"refreshed-access-token-{sequence}".encode("ascii")
+            ),
+            refresh_token=None,
+            token_type=OAuthTokenType.BEARER,
+            oauth_scopes=account.oauth_scopes,
+            issued_at=now,
+            access_expires_at=now + 3600,
+        )
+        self.token_sets.append(tokens)
+        return tokens
 
 
 class ConnectedAccountServiceTests(unittest.TestCase):
@@ -226,6 +244,27 @@ class ConnectedAccountServiceTests(unittest.TestCase):
         self.assertIsNone(cache.get_metadata(account.authorization_id))
         with self.store.lease(account.authorization_id) as lease:
             self.assertEqual(lease.token.reveal(), b"refresh-token-1")
+
+    def test_access_token_lease_refreshes_without_exposing_refresh_token(self):
+        account = self.service.connect(_REQUEST).account
+        self.now = 4_000.0
+
+        with self.service.lease_access_token(
+            account.authorization_id,
+            CapabilityId.GMAIL_MESSAGE_READ,
+        ) as lease:
+            self.assertEqual(
+                lease.token.reveal(),
+                b"refreshed-access-token-1",
+            )
+
+        self.assertEqual(
+            self.oauth.refreshes,
+            [(account, b"refresh-token-1")],
+        )
+        self.assertTrue(self.oauth.token_sets[-1].access_token.closed)
+        with self.store.lease(account.authorization_id) as refresh:
+            self.assertEqual(refresh.token.reveal(), b"refresh-token-1")
 
     def test_revoke_succeeds_before_local_token_and_cache_are_deleted(self):
         account = self.service.connect(_REQUEST).account

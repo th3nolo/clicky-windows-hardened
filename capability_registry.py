@@ -227,7 +227,7 @@ _DEFINITIONS = (
     ),
     _definition(
         CapabilityId.CALENDAR_EVENT_READ,
-        "Read approved Google Calendar events",
+        "Read selected Google Calendar availability",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_CALENDAR,

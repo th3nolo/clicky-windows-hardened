@@ -449,6 +449,37 @@ In a disposable Windows account with synthetic prompts:
 7. Confirm temporary screenshot files are absent after success, failure,
    timeout, and interruption.
 
+### Google Calendar availability connector
+
+Use a disposable Google test account and synthetic calendars only. In a test
+build with Task Agent and connector-read availability explicitly enabled:
+
+1. Connect only the Google Calendar read capability and confirm consent shows
+   the FreeBusy scope, not general Calendar event access.
+2. Start a task with the exact Calendar read grant and select one or more
+   synthetic calendar IDs plus a bounded UTC range of at most 31 days.
+3. Confirm the provider request uses only the fixed Calendar FreeBusy endpoint,
+   and the result contains only selected calendar IDs and busy start/end
+   intervals. It must not contain titles, descriptions, locations, attendees,
+   conferencing data, or unrelated calendars.
+4. Remove the run grant, change the run ID, account authorization ID, selected
+   calendar list, request digest, or response range in turn. Each change must
+   fail before a provider request or token lease.
+5. Expire the memory-only access token and confirm the account broker refreshes
+   it from the DPAPI-protected refresh token without exposing either token in a
+   task result, diagnostic record, prompt, or UI.
+6. Revoke or disconnect the account and confirm subsequent reads produce the
+   explicit connector error without a provider retry.
+7. Exercise a 401, 403, 429, timeout, oversized body, non-JSON body, calendar
+   error, unselected-calendar response, and event-body-shaped response. Confirm
+   every case fails closed and provider response content is not recorded.
+8. Confirm successful Task Center evidence retains only the output digest,
+   provider response digest and size, and a bounded provider request ID.
+
+The checked-in tests use synthetic transports and accounts. They do not prove
+live Google consent, network behavior, or the interactive Windows caller path.
+Keep connector reads build-unavailable in the baseline until those checks pass.
+
 ### GitHub Copilot token storage
 
 Use a disposable GitHub test account if an end-to-end check is required. Confirm:

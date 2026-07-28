@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Mapping
 from urllib.parse import urlsplit
 
+from capability_registry import CapabilityId, ConnectorId
 from declarative_tools import DeclarativeTool
 from skills.schema import (
     BindingSource,
@@ -50,6 +51,8 @@ from tasks.tool_broker import (
     ArtifactWriteArguments,
     BrokerArguments,
     BrokerExecution,
+    CalendarAvailabilityArguments,
+    ConnectorReadAdapter,
     DeclaredToolStep,
     ModelGenerateArguments,
     ModelStreamAdapter,
@@ -74,6 +77,14 @@ _SUPPORTED_ARGUMENTS = MappingProxyType(
         ),
         DeclarativeTool.WEB_SEARCH: frozenset({"query", "max_results"}),
         DeclarativeTool.WEB_FETCH: frozenset({"url", "max_chars"}),
+        DeclarativeTool.CONNECTOR_READ: frozenset(
+            {
+                "authorization_id",
+                "selected_calendar_ids_json",
+                "time_max",
+                "time_min",
+            }
+        ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
         ),
@@ -106,6 +117,14 @@ _REQUIRED_ARGUMENTS = MappingProxyType(
         DeclarativeTool.MODEL_GENERATE: frozenset({"system_prompt"}),
         DeclarativeTool.WEB_SEARCH: frozenset({"query"}),
         DeclarativeTool.WEB_FETCH: frozenset({"url"}),
+        DeclarativeTool.CONNECTOR_READ: frozenset(
+            {
+                "authorization_id",
+                "selected_calendar_ids_json",
+                "time_max",
+                "time_min",
+            }
+        ),
         DeclarativeTool.RESEARCH_CSV_RENDER: frozenset(
             {"records_json", "requested_rows", "source_context"}
         ),
@@ -263,10 +282,15 @@ def compile_declarative_plan(
         raise DeclarativeRunnerPlanningError(
             "Task grant must exactly match declared skill capabilities"
         )
-    if definition.connectors:
-        raise DeclarativeRunnerPlanningError(
-            "Connector execution is unavailable in the initial task broker"
-        )
+    for requirement in definition.connectors:
+        if (
+            requirement.connector is not ConnectorId.GOOGLE_CALENDAR
+            or requirement.capabilities
+            != frozenset({CapabilityId.CALENDAR_EVENT_READ})
+        ):
+            raise DeclarativeRunnerPlanningError(
+                "Only Calendar availability is available to connector reads"
+            )
     if definition.steps[-1].step_id != run.spec.verifier_step_id:
         raise DeclarativeRunnerPlanningError(
             "The declared verifier must be the final workflow step"
@@ -314,6 +338,16 @@ def compile_declarative_plan(
                 raise DeclarativeRunnerPlanningError(
                     "Verifier identity cannot be selected at runtime"
                 )
+        if (
+            step.tool is DeclarativeTool.CONNECTOR_READ
+            and (
+                step.connector is not ConnectorId.GOOGLE_CALENDAR
+                or step.capability is not CapabilityId.CALENDAR_EVENT_READ
+            )
+        ):
+            raise DeclarativeRunnerPlanningError(
+                "Connector read is not an approved Calendar operation"
+            )
         declared.append(
             DeclaredToolStep(
                 skill_id=definition.skill_id,
@@ -323,6 +357,7 @@ def compile_declarative_plan(
                 capability=step.capability,
                 output_id=step.output_id,
                 depends_on=step.depends_on,
+                connector=step.connector,
                 approval_id=step.approval_id,
             )
         )
@@ -384,6 +419,7 @@ class DeclarativeSkillRunner:
         model_stream: ModelStreamAdapter | None = None,
         web_search: WebSearchAdapter | None = None,
         web_fetch: WebFetchAdapter | None = None,
+        connector_read: ConnectorReadAdapter | None = None,
         artifact_root: Path | None = None,
     ) -> DeclarativeSkillRunner:
         plan = compile_declarative_plan(definition, run)
@@ -394,6 +430,7 @@ class DeclarativeSkillRunner:
             model_stream=model_stream,
             web_search=web_search,
             web_fetch=web_fetch,
+            connector_read=connector_read,
             artifact_root=artifact_root,
         )
         return cls(definition, run, plan, broker)
@@ -474,9 +511,10 @@ class DeclarativeSkillRunner:
         self._results.append(execution.result)
 
         if execution.result.status is not ToolResultStatus.SUCCEEDED:
-            self._broker.fail(
-                execution.result.error_code or "tool_step_failed"
-            )
+            if not self._run.terminal:
+                self._broker.fail(
+                    execution.result.error_code or "tool_step_failed"
+                )
             return self.snapshot()
 
         try:
@@ -625,6 +663,28 @@ class DeclarativeSkillRunner:
                 max_chars=_integer_value(
                     values.get("max_chars", 1_400),
                     "Fetch character count",
+                ),
+            )
+        if step.tool is DeclarativeTool.CONNECTOR_READ:
+            return CalendarAvailabilityArguments(
+                authorization_id=_text_value(
+                    values["authorization_id"],
+                    "Calendar account authorization ID",
+                ),
+                selected_calendar_ids=_calendar_ids_value(
+                    values["selected_calendar_ids_json"]
+                ),
+                time_min=_text_value(
+                    values["time_min"],
+                    "Calendar availability start",
+                ),
+                time_max=_text_value(
+                    values["time_max"],
+                    "Calendar availability end",
+                ),
+                maximum_response_bytes=min(
+                    self._definition.limits.max_output_bytes,
+                    1024 * 1024,
                 ),
             )
         if step.tool is DeclarativeTool.RESEARCH_CSV_RENDER:
@@ -1189,6 +1249,26 @@ def _string_tuple_value(value: object) -> tuple[str, ...]:
             "Verifier substrings are invalid"
         )
     return value
+
+
+def _calendar_ids_value(value: object) -> tuple[str, ...]:
+    text = _text_value(value, "Selected calendar IDs")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DeclarativeRunnerInputError(
+            "Selected calendar IDs must be a JSON array"
+        ) from exc
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or len(parsed) > 50
+        or any(not isinstance(item, str) for item in parsed)
+    ):
+        raise DeclarativeRunnerInputError(
+            "Selected calendar IDs must be a bounded JSON array"
+        )
+    return tuple(parsed)
 
 
 def _finite_timestamp(value: object) -> float:

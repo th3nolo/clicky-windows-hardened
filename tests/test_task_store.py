@@ -168,6 +168,33 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(store.list_approvals(run.run_id)[0].status, "granted")
             run.authorize_tool_call(call)
 
+            provider_result = ToolResult(
+                result_id="provider-result-1",
+                call_id="provider-call-1",
+                run_id=run.run_id,
+                step_id="calendar",
+                status=ToolResultStatus.SUCCEEDED,
+                output_digest=DIGEST_A,
+                output_bytes=64,
+                provider_response_digest=DIGEST_B,
+                provider_response_bytes=128,
+                provider_request_id="provider-request-1",
+            )
+            provider_event = store.record_tool_result(provider_result)
+            provider_metadata = dict(provider_event.metadata)
+            self.assertEqual(
+                provider_metadata["provider_response_digest"],
+                DIGEST_B,
+            )
+            self.assertEqual(
+                provider_metadata["provider_response_bytes"],
+                128,
+            )
+            self.assertEqual(
+                provider_metadata["provider_request_id"],
+                "provider-request-1",
+            )
+
             artifact = Artifact(
                 artifact_id="artifact-1",
                 run_id=run.run_id,
