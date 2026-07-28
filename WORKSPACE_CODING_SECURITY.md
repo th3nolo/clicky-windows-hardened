@@ -2,9 +2,10 @@
 
 ## Decision record
 
-**Status:** proposed implementation boundary; merging this document is the
-explicit security-review gate for later implementation. Workspace coding stays
-build-unavailable until the implementation and Windows acceptance matrix pass.
+**Status:** approved boundary with default-off source contracts for selection,
+isolated staging, broker operations, Sandbox configuration, and result
+verification. Workspace coding stays build-unavailable until Diff/Apply,
+packaged worker/launcher integration, and the Windows acceptance matrix pass.
 
 **V1 boundary:** a fresh, network-disabled Windows Sandbox containing a bounded
 copy of one user-selected Git working tree. The original repository is never
@@ -360,9 +361,9 @@ must prove:
 
 ## Review checklist
 
-Merging this decision accepts only the Windows Sandbox architecture and limits
-above. It does not enable the feature and does not approve future
-implementation automatically. Each later task must cite the exact sections it
-implements, retain the default-off gate, add adversarial source/Windows tests,
-and pass the dependency, locked-build, packaging, interactive Sandbox, and
-signed-release gates applicable to its authority.
+The approved source contracts implement only the portions named above. They do
+not enable the feature, provide host Apply authority, or prove live Windows
+containment. Each later task must cite the exact sections it implements, retain
+the default-off gate, add adversarial source/Windows tests, and pass the
+dependency, locked-build, packaging, interactive Sandbox, and signed-release
+gates applicable to its authority.
