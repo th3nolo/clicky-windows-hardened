@@ -46,6 +46,8 @@ hidden = [
     "ai.lmstudio_provider",
     "ai.hybrid_pointer",
     "ai.figure_detector",
+    "connectors.base",
+    "connectors.token_store",
     "memory.style_profiles",
     "research.models",
     "research.csv_artifact",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from capability_registry import (
+    CAPABILITY_OAUTH_SCOPES,
     CAPABILITY_REGISTRY,
     DEPRECATED_CAPABILITY_IDS,
     AccountAuthorization,
@@ -14,9 +15,11 @@ from capability_registry import (
     ConnectorId,
     DeprecatedCapabilityError,
     FeatureCapability,
+    OAuthScopeId,
     UnknownCapabilityError,
     UserPermissionId,
     require_capability,
+    require_oauth_scope,
 )
 
 
@@ -111,6 +114,9 @@ class CapabilityRegistryTests(unittest.TestCase):
             capabilities=frozenset(
                 {CapabilityId.GMAIL_DRAFT_WRITE}
             ),
+            oauth_scopes=frozenset(
+                {OAuthScopeId.GMAIL_DRAFTS_WRITE}
+            ),
         )
         approval = ActionApproval(
             approval_id="approval-1",
@@ -155,7 +161,53 @@ class CapabilityRegistryTests(unittest.TestCase):
                 capabilities=frozenset(
                     {CapabilityId.CALENDAR_EVENT_READ}
                 ),
+                oauth_scopes=frozenset(
+                    {OAuthScopeId.CALENDAR_EVENTS_READ}
+                ),
             )
+
+    def test_oauth_scope_vocabulary_is_exact_for_every_connector_capability(
+        self,
+    ):
+        connector_capabilities = {
+            capability
+            for capability, definition in CAPABILITY_REGISTRY.items()
+            if definition.connector is not None
+        }
+        self.assertEqual(
+            set(CAPABILITY_OAUTH_SCOPES),
+            connector_capabilities,
+        )
+        self.assertEqual(
+            require_oauth_scope(CapabilityId.GMAIL_MESSAGE_READ),
+            OAuthScopeId.GMAIL_MESSAGES_READ,
+        )
+        with self.assertRaisesRegex(ValueError, "Non-connector"):
+            require_oauth_scope(CapabilityId.LOCAL_ARTIFACT_READ)
+
+    def test_account_oauth_scopes_must_exactly_match_capabilities(self):
+        for scopes in (
+            frozenset({OAuthScopeId.GMAIL_MESSAGES_READ}),
+            frozenset(
+                {
+                    OAuthScopeId.GMAIL_DRAFTS_WRITE,
+                    OAuthScopeId.GMAIL_MESSAGES_READ,
+                }
+            ),
+        ):
+            with self.subTest(scopes=scopes), self.assertRaisesRegex(
+                ValueError,
+                "exactly match",
+            ):
+                AccountAuthorization(
+                    authorization_id="auth-1",
+                    connector=ConnectorId.GMAIL,
+                    account_reference="account-opaque-1",
+                    capabilities=frozenset(
+                        {CapabilityId.GMAIL_DRAFT_WRITE}
+                    ),
+                    oauth_scopes=scopes,
+                )
 
     def test_action_approval_requires_mutating_or_explicit_context_capability(self):
         with self.assertRaisesRegex(

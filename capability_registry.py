@@ -52,6 +52,21 @@ class ConnectorId(str, Enum):
     GOOGLE_SLIDES = "google_slides"
 
 
+class OAuthScopeId(str, Enum):
+    """Stable semantic scopes; provider strings stay inside OAuth adapters."""
+
+    GMAIL_MESSAGES_READ = "gmail.messages.read"
+    GMAIL_DRAFTS_WRITE = "gmail.drafts.write"
+    CALENDAR_EVENTS_READ = "google_calendar.events.read"
+    CALENDAR_EVENTS_WRITE = "google_calendar.events.write"
+    NOTION_PAGES_READ = "notion.pages.read"
+    NOTION_PAGES_WRITE = "notion.pages.write"
+    SHEETS_VALUES_READ = "google_sheets.values.read"
+    SHEETS_VALUES_WRITE = "google_sheets.values.write"
+    SLIDES_PRESENTATIONS_READ = "google_slides.presentations.read"
+    SLIDES_PRESENTATIONS_WRITE = "google_slides.presentations.write"
+
+
 class CapabilityId(str, Enum):
     """Narrow authorities that may appear in a per-run grant."""
 
@@ -305,6 +320,27 @@ CAPABILITY_REGISTRY: Mapping[
     {definition.capability_id: definition for definition in _DEFINITIONS}
 )
 
+CAPABILITY_OAUTH_SCOPES: Mapping[
+    CapabilityId, OAuthScopeId
+] = MappingProxyType(
+    {
+        CapabilityId.GMAIL_MESSAGE_READ: OAuthScopeId.GMAIL_MESSAGES_READ,
+        CapabilityId.GMAIL_DRAFT_WRITE: OAuthScopeId.GMAIL_DRAFTS_WRITE,
+        CapabilityId.CALENDAR_EVENT_READ: OAuthScopeId.CALENDAR_EVENTS_READ,
+        CapabilityId.CALENDAR_EVENT_WRITE: OAuthScopeId.CALENDAR_EVENTS_WRITE,
+        CapabilityId.NOTION_PAGE_READ: OAuthScopeId.NOTION_PAGES_READ,
+        CapabilityId.NOTION_PAGE_WRITE: OAuthScopeId.NOTION_PAGES_WRITE,
+        CapabilityId.SHEETS_VALUES_READ: OAuthScopeId.SHEETS_VALUES_READ,
+        CapabilityId.SHEETS_VALUES_WRITE: OAuthScopeId.SHEETS_VALUES_WRITE,
+        CapabilityId.SLIDES_PRESENTATION_READ: (
+            OAuthScopeId.SLIDES_PRESENTATIONS_READ
+        ),
+        CapabilityId.SLIDES_PRESENTATION_WRITE: (
+            OAuthScopeId.SLIDES_PRESENTATIONS_WRITE
+        ),
+    }
+)
+
 # Historical or rejected broad names are deny-only. They are never grantable.
 DEPRECATED_CAPABILITY_IDS = frozenset(
     {
@@ -319,6 +355,14 @@ DEPRECATED_CAPABILITY_IDS = frozenset(
 
 if set(CAPABILITY_REGISTRY) != set(CapabilityId):
     raise RuntimeError("Capability registry does not cover every stable ID")
+if set(CAPABILITY_OAUTH_SCOPES) != {
+    capability_id
+    for capability_id, definition in CAPABILITY_REGISTRY.items()
+    if definition.connector is not None
+}:
+    raise RuntimeError(
+        "OAuth scope vocabulary does not cover every connector capability"
+    )
 
 
 def require_capability(
@@ -341,6 +385,19 @@ def require_capability(
             "Capability ID is not registered"
         ) from None
     return CAPABILITY_REGISTRY[capability_id]
+
+
+def require_oauth_scope(
+    capability: CapabilityId,
+) -> OAuthScopeId:
+    """Resolve the one semantic OAuth scope for a connector capability."""
+
+    definition = require_capability(capability)
+    if definition.connector is None:
+        raise ValueError(
+            "Non-connector capabilities do not have OAuth scopes"
+        )
+    return CAPABILITY_OAUTH_SCOPES[definition.capability_id]
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +475,7 @@ class AccountAuthorization:
     connector: ConnectorId
     account_reference: str
     capabilities: frozenset[CapabilityId]
+    oauth_scopes: frozenset[OAuthScopeId]
 
     def __post_init__(self) -> None:
         _validate_opaque_id(
@@ -450,6 +508,25 @@ class AccountAuthorization:
                 raise ValueError(
                     "Account authorization contains another connector"
                 )
+        if (
+            not isinstance(self.oauth_scopes, frozenset)
+            or not self.oauth_scopes
+            or any(
+                not isinstance(scope, OAuthScopeId)
+                for scope in self.oauth_scopes
+            )
+        ):
+            raise TypeError(
+                "Account authorization requires semantic OAuth scopes"
+            )
+        expected_scopes = frozenset(
+            require_oauth_scope(capability)
+            for capability in self.capabilities
+        )
+        if self.oauth_scopes != expected_scopes:
+            raise ValueError(
+                "Account OAuth scopes must exactly match its capabilities"
+            )
 
     def allows(self, capability: CapabilityId) -> bool:
         if not isinstance(capability, CapabilityId):
