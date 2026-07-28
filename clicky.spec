@@ -85,6 +85,8 @@ hidden = [
     "skills.registry",
     "skills.schema",
     "tasks.region_context",
+    "walkthrough.models",
+    "walkthrough.protocol",
 
     # First-run setup wizard
     "ui.setup_wizard",
