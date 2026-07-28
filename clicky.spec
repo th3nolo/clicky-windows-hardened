@@ -113,6 +113,7 @@ for pkg in (
 
 hiddenimports += hidden
 hiddenimports += collect_submodules("PyQt6")
+hiddenimports += collect_submodules("tasks")
 
 
 a = Analysis(
