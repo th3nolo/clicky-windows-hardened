@@ -86,6 +86,8 @@ class HandoffRouteContext:
     media_type: str
     image_content: bytearray = field(repr=False)
     image_sha256: str
+    width: int
+    height: int
     accepted_at: float
     expires_at: float
     mask_sha256: str | None = field(default=None, repr=False)
@@ -127,6 +129,15 @@ class HandoffRouteContext:
         if self.media_type != "image/jpeg":
             raise HandoffRoutingError(
                 "Route image must be the exact reviewed JPEG"
+            )
+        if (
+            type(self.width) is not int
+            or type(self.height) is not int
+            or not 1 <= self.width <= 16_384
+            or not 1 <= self.height <= 16_384
+        ):
+            raise HandoffRoutingError(
+                "Route image dimensions are invalid"
             )
         if (
             not isinstance(self.image_content, bytearray)
@@ -295,6 +306,8 @@ class HandoffRouter:
                     image_sha256=(
                         reviewed.payload.selection.capture_sha256
                     ),
+                    width=reviewed.payload.selection.region.width,
+                    height=reviewed.payload.selection.region.height,
                     mask_sha256=(
                         reviewed.payload.selection.mask_sha256
                     ),

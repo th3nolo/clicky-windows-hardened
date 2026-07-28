@@ -128,6 +128,7 @@ class HandoffRouterTests(unittest.TestCase):
             context.purpose,
             "Explain only this selected chart.",
         )
+        self.assertEqual((context.width, context.height), (400, 300))
         self.assertEqual(
             bytes(item.payload.image.content),
             b"\x00" * original_size,

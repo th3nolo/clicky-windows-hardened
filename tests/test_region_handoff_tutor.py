@@ -36,6 +36,8 @@ def context() -> HandoffRouteContext:
         media_type="image/jpeg",
         image_content=bytearray(JPEG),
         image_sha256=hashlib.sha256(JPEG).hexdigest(),
+        width=640,
+        height=360,
         accepted_at=10.0,
         expires_at=60.0,
     )

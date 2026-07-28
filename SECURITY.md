@@ -231,9 +231,27 @@ Tutor turn. That turn has no conversation history, does not recapture the
 screen, strips drawing tags, and receives no insertion, connector, coding,
 task, or desktop-action authority. Replay, expiry, changed bytes, unavailable
 destinations, and failed dispatch are rejected and consumed. Compose and new
-Task Agent callers remain unavailable and therefore do not appear in the
-review. The bytearray buffers are overwritten before release and selection
-windows are destroyed, but provider serialization, Python, Qt, image codecs,
+Task Agent callers remain unavailable in the default build and therefore do
+not appear in its review.
+
+The source includes a build-gated Compose region caller for controlled
+validation. It becomes registrable only with the current Screen-Aware Compose
+build schema and independent user permission. After the region review closes,
+a non-activating picker tells the user to focus an ordinary editable field and
+binds it only after three identical allowed UIA observations. The existing
+target policy rejects Clicky, password, protected, read-only, sensitive,
+elevated, secure-desktop, unstable, or non-editable targets. Compose consumes
+the exact reviewed JPEG through a one-use gateway, revalidates the target,
+provider, model, vision support, screen permission, and Compose grant, sends
+empty history and no tools, and shows only a non-activating draft preview.
+Region-derived drafts cannot reuse the pixels for Regenerate. Copy changes only
+the clipboard after an explicit Copy click. Insert requires a separate
+one-use preview approval and uses the existing insertion broker; it never sends
+or submits a form. The default build flag stays unavailable until the
+representative native Windows target matrix passes.
+
+The bytearray buffers are overwritten before release and selection windows are
+destroyed, but provider and clipboard serialization, Python, Qt, image codecs,
 GPU/compositor memory, paging, crash dumps, and other same-user processes
 prevent this from being a forensic-erasure guarantee.
 
