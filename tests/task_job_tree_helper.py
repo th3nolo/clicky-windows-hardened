@@ -25,7 +25,11 @@ def main() -> int:
             return 3
         time.sleep(0.02)
     child = subprocess.Popen(
-        [sys.executable, str(Path(__file__)), "child"],
+        [
+            getattr(sys, "_base_executable", sys.executable),
+            str(Path(__file__)),
+            "child",
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

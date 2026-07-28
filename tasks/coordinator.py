@@ -795,9 +795,14 @@ def _launch_worker(
 
 
 def _worker_command() -> tuple[str, ...]:
-    executable = str(Path(sys.executable).resolve(strict=True))
     if getattr(sys, "frozen", False):
+        executable = str(Path(sys.executable).resolve(strict=True))
         return (executable, "--task-worker")
+    # Windows virtual environments may use a redirector that creates another
+    # process. The worker is stdlib-only, so use the exact pinned base runtime
+    # and preserve the zero-child Job Object limit.
+    base_executable = getattr(sys, "_base_executable", sys.executable)
+    executable = str(Path(base_executable).resolve(strict=True))
     worker = Path(__file__).with_name("worker.py").resolve(strict=True)
     return (executable, "-I", "-B", str(worker))
 
