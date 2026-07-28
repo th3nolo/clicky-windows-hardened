@@ -914,6 +914,15 @@ def main():
 
     tray.on_run_onboarding.connect(_run_onboarding)
 
+    def _manage_app_suggestions():
+        from ui.app_suggestions import show_app_suggestions
+
+        show_app_suggestions()
+
+    tray.on_manage_app_suggestions.connect(
+        _manage_app_suggestions
+    )
+
     def _open_startup_settings():
         try:
             os.startfile("ms-settings:startupapps")

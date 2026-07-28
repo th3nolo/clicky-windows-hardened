@@ -97,6 +97,12 @@ class SetupWizard(QDialog):
         self.practice_btn.setObjectName("secondary")
         self.practice_btn.clicked.connect(self._open_practice)
         button_row.addWidget(self.practice_btn)
+        self.suggestions_btn = QPushButton("Local app ideas")
+        self.suggestions_btn.setObjectName("secondary")
+        self.suggestions_btn.clicked.connect(
+            self._open_app_suggestions
+        )
+        button_row.addWidget(self.suggestions_btn)
         button_row.addStretch(1)
         self.action_btn = QPushButton("Check local setup")
         self.action_btn.clicked.connect(self._on_action)
@@ -238,6 +244,11 @@ class SetupWizard(QDialog):
         from ui.onboarding_demo import show_onboarding_demo
 
         show_onboarding_demo(cfg.hotkey, self)
+
+    def _open_app_suggestions(self) -> None:
+        from ui.app_suggestions import show_app_suggestions
+
+        show_app_suggestions(self)
 
 
 def maybe_show_setup_wizard(parent=None) -> SetupWizard | None:
