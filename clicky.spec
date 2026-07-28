@@ -89,6 +89,7 @@ hidden = [
     # First-run setup wizard
     "ui.setup_wizard",
     "ui.onboarding_demo",
+    "ui.microphone_test",
     "ui.stt_readiness",
     "ui.style_profiles",
     "ui.skills_catalog",

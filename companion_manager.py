@@ -299,6 +299,8 @@ class CompanionManager(QObject):
     sig_dictation_state     = pyqtSignal(object)          # DictationSnapshot
     sig_dictation_error     = pyqtSignal(str)
     sig_dictation_result    = pyqtSignal(object)          # DictationRunOutcome
+    sig_microphone_test_level = pyqtSignal(str, float)     # opaque id, local RMS
+    sig_microphone_test_stopped = pyqtSignal(str, str)     # opaque id, reason
 
     def __init__(
         self,
@@ -318,6 +320,7 @@ class CompanionManager(QObject):
         self._input_lock = threading.RLock()
         self._pressed_session: TurnSession | None = None
         self._dictation_pressed: DictationSession | None = None
+        self._microphone_test_id: str | None = None
         self._dictation_clipboard_owner = 0
         self._dictation_targets = (
             dictation_targets
@@ -669,6 +672,7 @@ class CompanionManager(QObject):
             pass   # silent — not user-facing on startup
 
     def shutdown(self):
+        self.stop_microphone_test(reason="shutdown")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None
@@ -726,6 +730,7 @@ class CompanionManager(QObject):
 
     def _on_system_resume(self):
         """Called automatically after the laptop wakes from sleep."""
+        self.stop_microphone_test(reason="device_reset")
         with self._input_lock:
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
@@ -988,6 +993,12 @@ class CompanionManager(QObject):
 
     def on_hotkey_press(self):
         with self._input_lock:
+            if self._microphone_test_id is not None:
+                self.sig_error.emit(
+                    "Stop the local microphone test before starting speech "
+                    "input."
+                )
+                return
             if (
                 self._pressed_session is not None
                 and self._turns.is_current(self._pressed_session)
@@ -1013,6 +1024,12 @@ class CompanionManager(QObject):
     def on_dictation_hotkey_press(self) -> None:
         """Capture one secure target, then open the owned microphone stream."""
         with self._input_lock:
+            if self._microphone_test_id is not None:
+                self.sig_dictation_error.emit(
+                    "Stop the local microphone test before starting Global "
+                    "Dictation."
+                )
+                return
             active = self._dictation_pressed
             if active is not None and self._turns.is_current(active.turn):
                 return
@@ -1044,7 +1061,10 @@ class CompanionManager(QObject):
     def _handle_wake(self):
         """Triggered from ambient listener when wake-word is detected."""
         with self._input_lock:
-            if self._turns.active is not None:
+            if (
+                self._microphone_test_id is not None
+                or self._turns.active is not None
+            ):
                 return
             session = self._turns.start_capture()
             if session is None:
@@ -1065,6 +1085,12 @@ class CompanionManager(QObject):
     def _begin_dictation_capture(self, session: DictationSession) -> bool:
         """Start STT without exposing dictated content to the tutor UI."""
 
+        if self._microphone_test_id is not None:
+            self.sig_dictation_error.emit(
+                "Stop the local microphone test before starting Global "
+                "Dictation."
+            )
+            return False
         if not microphone_allowed(cfg):
             self.sig_dictation_error.emit(
                 "Microphone access is disabled for Global Dictation."
@@ -1260,6 +1286,13 @@ class CompanionManager(QObject):
             self.discard_dictation_preview(outcome)
 
     def _begin_capture(self, session: TurnSession) -> bool:
+        if self._microphone_test_id is not None:
+            self._emit_turn_signal(
+                session,
+                self.sig_error,
+                "Stop the local microphone test before starting speech input.",
+            )
+            return False
         if not microphone_allowed(cfg):
             self._emit_turn_signal(session, self.sig_error,
                 "Microphone access is disabled. Open Setup & Diagnostics → "
@@ -2441,6 +2474,7 @@ class CompanionManager(QObject):
 
     def set_mic_device(self, device_index: int):
         """Tray callback — switch input device without restarting the app."""
+        self.stop_microphone_test(reason="device_changed")
         try:
             cfg.set_mic_device_index(device_index if device_index >= 0 else None)
         except Exception as exc:
@@ -2464,6 +2498,101 @@ class CompanionManager(QObject):
                 self._listener.start()
             except Exception as e:
                 self.sig_error.emit(f"Could not start mic: {e}")
+
+    def start_microphone_test(
+        self,
+        test_id: str,
+        duration_seconds: float = 10.0,
+    ) -> bool:
+        """Claim the selected input for one local, bounded RMS-only test."""
+
+        if (
+            not isinstance(test_id, str)
+            or not test_id
+            or len(test_id) > 128
+        ):
+            self.sig_error.emit("The microphone test request was invalid.")
+            return False
+        if not microphone_allowed(cfg):
+            self.sig_error.emit(
+                "Microphone access is disabled. Review Privacy permissions "
+                "before testing the selected device."
+            )
+            return False
+        with self._input_lock:
+            if (
+                self._turns.active is not None
+                or self._dictation.active is not None
+            ):
+                self.sig_error.emit(
+                    "Stop the active voice operation before testing the "
+                    "microphone."
+                )
+                return False
+            if self._microphone_test_id is not None:
+                return False
+            try:
+                started = self._listener.start_level_test(
+                    test_id,
+                    lambda rms: self._emit_microphone_test_level(
+                        test_id,
+                        rms,
+                    ),
+                    duration_seconds,
+                )
+            except Exception as exc:
+                _log.info("local microphone test could not start: %s", exc)
+                self.sig_error.emit(
+                    "The selected microphone could not start its local test."
+                )
+                return False
+            if not started:
+                return False
+            self._microphone_test_id = test_id
+            return True
+
+    def stop_microphone_test(
+        self,
+        test_id: str | None = None,
+        reason: str = "stopped",
+    ) -> bool:
+        """Release only the active local meter lease."""
+
+        with self._input_lock:
+            active = self._microphone_test_id
+            if active is None:
+                return False
+            if test_id is not None and test_id != active:
+                return False
+            self._microphone_test_id = None
+            stop_level_test = getattr(
+                self._listener,
+                "stop_level_test",
+                None,
+            )
+            if callable(stop_level_test):
+                try:
+                    stop_level_test(active)
+                except Exception:
+                    _log.exception("local microphone test stop failed")
+        try:
+            self.sig_microphone_test_stopped.emit(active, str(reason))
+        except Exception:
+            pass
+        return True
+
+    def _emit_microphone_test_level(
+        self,
+        test_id: str,
+        rms: float,
+    ) -> None:
+        with self._input_lock:
+            if self._microphone_test_id != test_id:
+                return
+        try:
+            self.sig_microphone_test_level.emit(test_id, float(rms))
+        except Exception:
+            pass
 
     def set_stt_provider(self, name: str) -> bool:
         """Switch live/cloud-batch/local transcription explicitly."""
@@ -2508,6 +2637,8 @@ class CompanionManager(QObject):
 
     def refresh_privacy_permissions(self) -> None:
         """Apply persisted choices immediately without restarting Clicky."""
+        if not microphone_allowed(cfg):
+            self.stop_microphone_test(reason="permission_revoked")
         with self._input_lock:
             self._pressed_session = None
             self._turns.cancel_active(self._set_idle_state)
@@ -2733,6 +2864,7 @@ class CompanionManager(QObject):
 
     def stop(self):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
+        self.stop_microphone_test(reason="cancelled")
         with self._input_lock:
             self._pressed_session = None
             self._dictation_pressed = None

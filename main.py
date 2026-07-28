@@ -682,6 +682,45 @@ def main():
     tray.on_ollama_set_model.connect(manager.set_ollama_model)
     tray.on_ollama_refresh.connect(manager.refresh_ollama_models)
     tray.on_set_mic_device.connect(manager.set_mic_device)
+
+    def _selected_microphone_label() -> str:
+        try:
+            import sounddevice as sd
+
+            selected = sd.query_devices(cfg.mic_device_index, "input")
+            return str(selected.get("name") or "Selected input device")
+        except Exception:
+            return "System default input device"
+
+    def _open_microphone_test() -> None:
+        from ui.microphone_test import MicrophoneTestDialog
+
+        dialog = MicrophoneTestDialog(
+            _selected_microphone_label(),
+            manager.start_microphone_test,
+            manager.stop_microphone_test,
+        )
+        manager.sig_microphone_test_level.connect(dialog.receive_level)
+        manager.sig_microphone_test_stopped.connect(dialog.manager_stopped)
+        _microphone_test_keepalive[0] = dialog
+        try:
+            dialog.exec()
+        finally:
+            manager.stop_microphone_test(reason="closed")
+            try:
+                manager.sig_microphone_test_level.disconnect(
+                    dialog.receive_level
+                )
+                manager.sig_microphone_test_stopped.disconnect(
+                    dialog.manager_stopped
+                )
+            except (RuntimeError, TypeError):
+                pass
+            _microphone_test_keepalive[0] = None
+            dialog.deleteLater()
+
+    tray.on_test_microphone.connect(_open_microphone_test)
+
     def _set_transcription_vocabulary(terms: list):
         approved = manager.set_transcription_vocabulary(terms)
         if approved is not None:
@@ -945,6 +984,7 @@ _task_center_keepalive: list = [None]
 _connected_accounts_keepalive: list = [None]
 _region_handoff_keepalive: list = [None]
 _region_task_keepalive: list = [None]
+_microphone_test_keepalive: list = [None]
 
 
 if __name__ == "__main__":

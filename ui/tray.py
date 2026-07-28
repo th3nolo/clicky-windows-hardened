@@ -63,6 +63,7 @@ class TrayManager(QObject):
     on_select_region = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
+    on_test_microphone    = pyqtSignal()
     on_set_stt_provider   = pyqtSignal(str)
     on_set_stt_fallback   = pyqtSignal(str)
     on_set_transcription_vocabulary = pyqtSignal(list)
@@ -503,6 +504,9 @@ class TrayManager(QObject):
             return  # sounddevice not ready yet — skip silently, not fatal
 
         mic_menu = parent_menu.addMenu("Microphone")
+        test_action = mic_menu.addAction("Test selected microphone…")
+        test_action.triggered.connect(self.on_test_microphone)
+        mic_menu.addSeparator()
         for idx, dev in enumerate(devices):
             if dev.get("max_input_channels", 0) <= 0:
                 continue
