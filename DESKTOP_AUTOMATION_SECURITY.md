@@ -14,8 +14,9 @@ permission, is granted to one task run, and always requires action approval.
 Tutor, Dictation, Compose, screen capture, response providers, and pointing
 cannot satisfy any of those requirements.
 
-This phase adds no executor. A policy-eligible target is not an authorization
-to act.
+The source adds a read-only focused-control inspector, review highlighter, and
+global stop ownership, but no executor. A policy-eligible or visibly reviewed
+target is not an authorization to act.
 
 ## Exact target identity
 
@@ -74,8 +75,9 @@ Approval cannot override these denials.
 
 No release may expose the feature until later reviewed changes provide:
 
-1. a Windows UIA inspector, visible non-interactive highlight, immediate
-   revalidation, queue cancellation, and global stop;
+1. disposable native Windows proof for the inspector, visible non-interactive
+   highlight, mixed-DPI routing, immediate revalidation, queue cancellation,
+   and global stop already present in source;
 2. a one-use task grant and exact step approval bound to the highlighted
    review digest;
 3. allowlisted pattern executors with bounded time and no coordinate fallback;

@@ -21,6 +21,23 @@ from automation.policy import (
     classify_surface_risks,
     user_visible_reason,
 )
+from automation.review import (
+    DesktopHighlightRequest,
+    DesktopReviewLease,
+    DesktopReviewResult,
+    DesktopReviewStatus,
+    DesktopTargetReviewController,
+)
+from automation.stop import (
+    AutomationRunLease,
+    AutomationStopController,
+    GlobalAutomationStopHotkey,
+)
+from automation.targeting import (
+    DesktopObservation,
+    DesktopTargetGuard,
+    WindowsDesktopTargetInspector,
+)
 
 __all__ = [
     "MAX_RUNTIME_ID_PARTS",
@@ -28,12 +45,23 @@ __all__ = [
     "AutomationPattern",
     "DesktopActionKind",
     "DesktopBounds",
+    "DesktopHighlightRequest",
+    "DesktopObservation",
     "DesktopPolicyDecision",
     "DesktopPolicyReason",
     "DesktopPolicyStatus",
     "DesktopSurfaceRisk",
     "DesktopTarget",
+    "DesktopTargetGuard",
+    "DesktopTargetReviewController",
+    "DesktopReviewLease",
+    "DesktopReviewResult",
+    "DesktopReviewStatus",
+    "AutomationRunLease",
+    "AutomationStopController",
+    "GlobalAutomationStopHotkey",
     "SafeDesktopTargetPolicy",
+    "WindowsDesktopTargetInspector",
     "classify_surface_risks",
     "user_visible_reason",
 ]

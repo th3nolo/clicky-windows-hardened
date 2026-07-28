@@ -427,3 +427,41 @@ def discover_monitor_topology(
         qt_monitors=qt_monitors,
         focused_handle=focused_handle,
     )
+
+
+def discover_desktop_topology() -> list[MonitorDescriptor]:
+    """Join Win32 physical and Qt logical monitors without capture access."""
+
+    from PyQt6.QtGui import QGuiApplication
+
+    application = QGuiApplication.instance()
+    if application is None:
+        raise MonitorTopologyError(
+            "desktop topology requires the running Qt application"
+        )
+    native, focused_handle = _native_monitors()
+    qt_primary = application.primaryScreen()
+    qt_monitors = []
+    for screen in application.screens():
+        geometry = screen.geometry()
+        qt_monitors.append(
+            QtMonitor(
+                name=screen.name(),
+                logical=Rect(
+                    geometry.x(),
+                    geometry.y(),
+                    geometry.width(),
+                    geometry.height(),
+                ),
+                manufacturer=screen.manufacturer(),
+                model=screen.model(),
+                serial=screen.serialNumber(),
+                primary=screen is qt_primary,
+            )
+        )
+    return build_monitor_descriptors(
+        capture_rectangles=[monitor.physical for monitor in native],
+        native_monitors=native,
+        qt_monitors=qt_monitors,
+        focused_handle=focused_handle,
+    )

@@ -203,6 +203,7 @@ build-unavailable. Run:
 
 ~~~powershell
 python -m unittest -v tests.test_desktop_automation_policy
+python -m unittest -v tests.test_desktop_automation_target_review tests.test_desktop_action_highlight
 ~~~
 
 Confirm the model binds one target to process ID and start time, application
@@ -214,6 +215,18 @@ administrator, account-change, secure-desktop, destructive deletion,
 elevation, protected, hidden, background, unsupported-pattern, and changed
 targets fail closed. Labels used for classification must not be read from or
 replaced with a control's current `ValuePattern` value.
+
+On a disposable native Windows desktop containing only synthetic controls,
+start a source test build with desktop automation still build-unavailable.
+Exercise the inspector and review components directly. Confirm the exact
+foreground control receives a named cyan, click-through highlight that does
+not take focus; negative-origin and mixed-DPI monitor coordinates route to the
+correct logical rectangle. Change name, runtime ID, bounds, pattern,
+foreground window, desktop, or integrity and confirm revalidation clears the
+highlight. Press Escape and confirm it invalidates the run, clears the
+highlight, invokes every registered cancellation, and suppresses all queued
+callbacks. Confirm removing the one hotkey leaves unrelated keyboard hooks
+untouched. Do not expose or execute a UIA action in this phase.
 
 ### Workspace coding threat-model gate
 
