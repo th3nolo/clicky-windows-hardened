@@ -48,6 +48,7 @@ hidden = [
     "ai.figure_detector",
     "connectors.accounts",
     "connectors.base",
+    "connectors.gmail",
     "connectors.google_calendar",
     "connectors.oauth",
     "connectors.task_bridge",

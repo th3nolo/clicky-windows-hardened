@@ -414,7 +414,7 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
                 run,
             )
 
-    def test_unsupported_gmail_read_still_fails_closed(self):
+    def test_gmail_read_without_exact_selected_thread_fails_closed(self):
         payload = definition_payload()
         payload["steps"][0] = {
             "step_id": "search",
@@ -444,7 +444,7 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(
             DeclarativeRunnerPlanningError,
-            "Only Calendar availability",
+            "arguments do not match",
         ):
             compile_declarative_plan(definition, run)
 
@@ -516,6 +516,141 @@ class DeclarativeSkillRunnerTests(unittest.IsolatedAsyncioTestCase):
             plan.declared_steps[0].capability,
             CapabilityId.CALENDAR_EVENT_READ,
         )
+
+    def test_gmail_selected_thread_compiles_with_exact_read_authority(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_READ.value,
+            "capability": CapabilityId.GMAIL_MESSAGE_READ.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.gmail-one",
+                },
+                {
+                    "argument_id": "selected_thread_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "thread-123",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GMAIL.value,
+            "approval_id": None,
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.GMAIL_MESSAGE_READ.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GMAIL.value,
+                "capabilities": [CapabilityId.GMAIL_MESSAGE_READ.value],
+                "oauth_scopes": [OAuthScopeId.GMAIL_MESSAGES_READ.value],
+            }
+        ]
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "selected Gmail thread"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].capability,
+            CapabilityId.GMAIL_MESSAGE_READ,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].connector,
+            ConnectorId.GMAIL,
+        )
+
+    def test_gmail_draft_compiles_only_with_exact_approved_write(self):
+        payload = definition_payload()
+        payload["steps"][0] = {
+            "step_id": "search",
+            "tool": DeclarativeTool.CONNECTOR_WRITE.value,
+            "capability": CapabilityId.GMAIL_DRAFT_WRITE.value,
+            "depends_on": [],
+            "arguments": [
+                {
+                    "argument_id": "authorization_id",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "oauth.gmail-one",
+                },
+                {
+                    "argument_id": "to_addresses_json",
+                    "source": "literal",
+                    "reference": None,
+                    "value": '["recipient@example.com"]',
+                },
+                {
+                    "argument_id": "cc_addresses_json",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "[]",
+                },
+                {
+                    "argument_id": "bcc_addresses_json",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "[]",
+                },
+                {
+                    "argument_id": "subject",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Reviewed subject",
+                },
+                {
+                    "argument_id": "body_text",
+                    "source": "literal",
+                    "reference": None,
+                    "value": "Reviewed body",
+                },
+            ],
+            "output_id": "search_results",
+            "connector": ConnectorId.GMAIL.value,
+            "approval_id": "approve_gmail_draft",
+        }
+        payload["capabilities"] = [
+            CapabilityId.TASK_AGENT_RUN.value,
+            CapabilityId.GMAIL_DRAFT_WRITE.value,
+            CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+        ]
+        payload["connectors"] = [
+            {
+                "connector": ConnectorId.GMAIL.value,
+                "capabilities": [CapabilityId.GMAIL_DRAFT_WRITE.value],
+                "oauth_scopes": [OAuthScopeId.GMAIL_DRAFTS_WRITE.value],
+            }
+        ]
+        payload["approvals"].append(
+            {
+                "approval_id": "approve_gmail_draft",
+                "capability": CapabilityId.GMAIL_DRAFT_WRITE.value,
+                "reason": "Review exact Gmail draft content.",
+                "preview_references": ["input.query"],
+            }
+        )
+        definition = parsed_definition(payload)
+        run = make_run(definition, {"query": "reviewed Gmail draft"})
+
+        plan = compile_declarative_plan(definition, run)
+
+        self.assertEqual(
+            plan.declared_steps[0].tool,
+            DeclarativeTool.CONNECTOR_WRITE,
+        )
+        self.assertEqual(
+            plan.declared_steps[0].approval_id,
+            "approve_gmail_draft",
+        )
+        self.assertNotIn("gmail.send", {item.value for item in CapabilityId})
 
     async def test_invalid_output_schema_fails_before_approval_or_write(self):
         definition = parsed_definition()

@@ -427,17 +427,17 @@ class TaskBrokerCalendarReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(execution.result.provider_response_digest)
         self.assertIsNone(execution.provider_response_digest)
 
-    def test_mismatched_connector_or_unapproved_read_operation_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "unavailable"):
-            DeclaredToolStep(
-                skill_id="clicky.calendar",
-                skill_version="1.0.0",
-                step_id="calendar",
-                tool=DeclarativeTool.CONNECTOR_READ,
-                capability=CapabilityId.GMAIL_MESSAGE_READ,
-                connector=ConnectorId.GMAIL,
-                output_id="messages",
-            )
+    def test_gmail_read_is_available_but_mismatched_connector_is_rejected(self):
+        gmail = DeclaredToolStep(
+            skill_id="clicky.gmail",
+            skill_version="1.0.0",
+            step_id="thread",
+            tool=DeclarativeTool.CONNECTOR_READ,
+            capability=CapabilityId.GMAIL_MESSAGE_READ,
+            connector=ConnectorId.GMAIL,
+            output_id="messages",
+        )
+        self.assertEqual(gmail.connector, ConnectorId.GMAIL)
         with self.assertRaisesRegex(ValueError, "unavailable"):
             DeclaredToolStep(
                 skill_id="clicky.calendar",

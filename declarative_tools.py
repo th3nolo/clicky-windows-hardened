@@ -39,7 +39,11 @@ TOOL_CAPABILITIES: Mapping[
 
 
 INITIAL_TASK_BROKER_TOOLS = frozenset(
-    {*TOOL_CAPABILITIES, DeclarativeTool.CONNECTOR_READ}
+    {
+        *TOOL_CAPABILITIES,
+        DeclarativeTool.CONNECTOR_READ,
+        DeclarativeTool.CONNECTOR_WRITE,
+    }
 )
 
 
