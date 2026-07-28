@@ -232,13 +232,14 @@ class WorkspaceSelectionTests(unittest.TestCase):
                 _runner=runner,
                 _require_windows_volume=False,
             )
+            expected_root = root.resolve(strict=True)
 
         self.assertTrue(identity.dirty)
         self.assertEqual(identity.branch, "feature/synthetic")
         self.assertEqual(identity.head_commit, "a" * 40)
         self.assertGreaterEqual(len(calls), 7)
         for command, cwd, environment in calls:
-            self.assertEqual(cwd, root)
+            self.assertEqual(cwd, expected_root)
             self.assertIn("--no-replace-objects", command)
             self.assertIn("core.hooksPath=NUL", command)
             self.assertEqual(environment["GIT_CONFIG_GLOBAL"], "NUL")
@@ -315,7 +316,13 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             self.assertFalse((snapshot.workspace_root / ".git").exists())
             self.assertTrue(snapshot.identity.dirty)
             self.assertEqual(len(snapshot.baseline_manifest.files), 2)
-            self.assertEqual(revalidations, [source, source])
+            self.assertEqual(
+                revalidations,
+                [
+                    source.resolve(strict=True),
+                    source.resolve(strict=True),
+                ],
+            )
 
     def test_changed_git_identity_cleans_the_incomplete_staging_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
