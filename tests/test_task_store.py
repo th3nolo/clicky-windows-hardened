@@ -27,6 +27,7 @@ from tasks.models import (
 from tasks.store import (
     INTERRUPTED_RESULT_CODE,
     TASK_DATABASE_VERSION,
+    TASK_EXPORT_VERSION,
     TaskStore,
     TaskStoreError,
 )
@@ -175,6 +176,8 @@ class TaskStoreTests(unittest.TestCase):
                 media_type="text/csv",
                 byte_count=128,
                 sha256=DIGEST_A,
+                verification_result_id="verifier-result-1",
+                verification_evidence_digest=DIGEST_C,
             )
             store.record_artifact(artifact)
             self.assertEqual(store.list_artifacts(run.run_id), (artifact,))
@@ -182,6 +185,7 @@ class TaskStoreTests(unittest.TestCase):
             result = verifier_result()
             event = store.record_tool_result(result)
             self.assertEqual(event.event_type, "tool_result")
+            self.assertTrue(dict(event.metadata)["postcondition_met"])
             run.complete(result)
             completed = store.sync_run(run)
             self.assertEqual(completed.state, TaskState.COMPLETED)
@@ -193,6 +197,7 @@ class TaskStoreTests(unittest.TestCase):
 
             exported = json.loads(store.export_task(run.run_id))
             self.assertEqual(exported["format"], "clicky-task-metadata")
+            self.assertEqual(exported["version"], TASK_EXPORT_VERSION)
             self.assertEqual(
                 exported["task"]["state"],
                 TaskState.COMPLETED.value,
@@ -200,6 +205,16 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(
                 exported["task"]["limits"]["max_tool_calls"],
                 8,
+            )
+            self.assertEqual(
+                exported["artifacts"][0]["verification_result_id"],
+                "verifier-result-1",
+            )
+            self.assertEqual(
+                exported["artifacts"][0][
+                    "verification_evidence_digest"
+                ],
+                DIGEST_C,
             )
             self.assertGreaterEqual(len(exported["events"]), 7)
 
@@ -266,6 +281,179 @@ class TaskStoreTests(unittest.TestCase):
 
             third = TaskStore(database, _clock=Clock(1_820_000_000.0))
             self.assertEqual(third.recovered_run_ids, ())
+
+    def test_rejected_and_expired_approval_decisions_are_truthful(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "task_metadata.db"
+            store = TaskStore(database, _clock=Clock())
+
+            rejected = run_fixture("rejected-run")
+            store.create_task(rejected)
+            rejected.start()
+            store.sync_run(rejected)
+            rejected_call = write_call("rejected-run")
+            rejected_request = approval(rejected_call)
+            rejected.request_approval(
+                rejected_call,
+                rejected_request,
+                now=1_800_000_010.0,
+            )
+            store.sync_run(rejected)
+            rejected.reject_approval(
+                rejected_request.approval_id,
+                rejected_request.action_digest,
+                now=1_800_000_020.0,
+            )
+            rejected_record = store.sync_run(rejected)
+            self.assertEqual(rejected_record.state, TaskState.FAILED)
+            self.assertEqual(
+                rejected_record.result_code,
+                "approval_rejected",
+            )
+            self.assertEqual(
+                store.list_approvals("rejected-run")[0].status,
+                "rejected",
+            )
+
+            expired = run_fixture("expired-run")
+            store.create_task(expired)
+            expired.start()
+            store.sync_run(expired)
+            expired_call = write_call("expired-run")
+            expired_request = approval(expired_call)
+            expired.request_approval(
+                expired_call,
+                expired_request,
+                now=1_800_000_010.0,
+            )
+            store.sync_run(expired)
+            expired.expire_approval(now=1_900_000_001.0)
+            expired_record = store.sync_run(expired)
+            self.assertEqual(expired_record.state, TaskState.EXPIRED)
+            self.assertEqual(
+                expired_record.result_code,
+                "approval_expired",
+            )
+            self.assertEqual(
+                store.list_approvals("expired-run")[0].status,
+                "expired",
+            )
+
+    def test_version_one_store_migrates_adoption_and_decision_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "task_metadata.db"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA foreign_keys = ON")
+                task_store._migration_0_to_1(connection)
+                connection.execute(
+                    "INSERT INTO task_runs ("
+                    "run_id, created_at, updated_at, state, skill_id, "
+                    "skill_version, input_digest, goal_digest, "
+                    "requested_result_digest, verifier_step_id, verifier_id, "
+                    "grant_schema_version, capabilities_json, runtime_seconds, "
+                    "max_tool_calls, max_network_requests, max_output_bytes, "
+                    "result_code, verifier_result_id, "
+                    "verifier_evidence_digest, interrupted"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?)",
+                    (
+                        "legacy-run",
+                        1.0,
+                        2.0,
+                        TaskState.FAILED.value,
+                        "clicky.legacy",
+                        "1.0.0",
+                        DIGEST_A,
+                        DIGEST_B,
+                        DIGEST_C,
+                        "verify",
+                        "verify-v1",
+                        1,
+                        json.dumps([CapabilityId.TASK_AGENT_RUN.value]),
+                        60,
+                        4,
+                        0,
+                        1024,
+                        "legacy_failure",
+                        None,
+                        None,
+                        0,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO task_approvals ("
+                    "approval_id, run_id, call_id, capability, action_digest, "
+                    "reason_digest, preview_digests_json, expires_at, status"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "legacy-approval",
+                        "legacy-run",
+                        "legacy-call",
+                        CapabilityId.LOCAL_ARTIFACT_WRITE.value,
+                        DIGEST_A,
+                        DIGEST_B,
+                        json.dumps([DIGEST_A]),
+                        100.0,
+                        "granted",
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO task_artifacts ("
+                    "artifact_id, run_id, source_call_id, name, media_type, "
+                    "byte_count, sha256, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "legacy-artifact",
+                        "legacy-run",
+                        "legacy-call",
+                        "legacy.txt",
+                        "text/plain",
+                        4,
+                        DIGEST_C,
+                        3.0,
+                    ),
+                )
+                connection.execute("PRAGMA user_version = 1")
+                connection.commit()
+
+            migrated = TaskStore(database, _clock=Clock())
+            with closing(sqlite3.connect(database)) as connection:
+                version = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+                artifact_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(task_artifacts)"
+                    )
+                }
+                approval_sql = connection.execute(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'task_approvals'"
+                ).fetchone()[0]
+                integrity = connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()[0]
+                foreign_key_violations = list(
+                    connection.execute("PRAGMA foreign_key_check")
+                )
+            self.assertEqual(version, TASK_DATABASE_VERSION)
+            self.assertEqual(integrity, "ok")
+            self.assertEqual(foreign_key_violations, [])
+            self.assertIn("verification_result_id", artifact_columns)
+            self.assertIn(
+                "verification_evidence_digest",
+                artifact_columns,
+            )
+            self.assertIn("'rejected'", approval_sql)
+            self.assertIn("'expired'", approval_sql)
+            self.assertEqual(
+                migrated.list_approvals("legacy-run")[0].status,
+                "granted",
+            )
+            legacy_artifact = migrated.list_artifacts("legacy-run")[0]
+            self.assertFalse(legacy_artifact.adopted)
+            self.assertIsNone(legacy_artifact.verification_result_id)
 
     def test_retention_delete_and_export_are_explicit_and_cascade(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -358,6 +546,8 @@ class TaskStoreTests(unittest.TestCase):
                         media_type="text/plain",
                         byte_count=4,
                         sha256=DIGEST_A,
+                        verification_result_id="late-verifier-result",
+                        verification_evidence_digest=DIGEST_C,
                     )
                 )
 

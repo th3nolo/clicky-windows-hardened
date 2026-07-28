@@ -25,8 +25,8 @@ from tasks.models import (
 )
 
 
-TASK_DATABASE_VERSION = 1
-TASK_EXPORT_VERSION = 1
+TASK_DATABASE_VERSION = 2
+TASK_EXPORT_VERSION = 2
 TASK_EXPORT_FORMAT = "clicky-task-metadata"
 MAX_TASKS = 2_000
 MAX_EVENTS_PER_TASK = 1_024
@@ -334,10 +334,15 @@ class TaskStore:
                     previous is TaskState.WAITING_FOR_APPROVAL
                     and current in _TERMINAL_STATES
                 ):
+                    approval_status = "cancelled"
+                    if run.result_code == "approval_rejected":
+                        approval_status = "rejected"
+                    elif run.result_code == "approval_expired":
+                        approval_status = "expired"
                     connection.execute(
-                        "UPDATE task_approvals SET status = 'cancelled' "
+                        "UPDATE task_approvals SET status = ? "
                         "WHERE run_id = ? AND status = 'pending'",
-                        (run.run_id,),
+                        (approval_status, run.run_id),
                     )
 
                 verifier_result_id = None
@@ -387,6 +392,7 @@ class TaskStore:
             "evidence_digest": result.evidence_digest,
             "output_bytes": result.output_bytes,
             "output_digest": result.output_digest,
+            "postcondition_met": result.postcondition_met,
             "result_id": result.result_id,
             "status": result.status.value,
             "step_id": result.step_id,
@@ -402,6 +408,10 @@ class TaskStore:
     def record_artifact(self, artifact: Artifact) -> Artifact:
         if not isinstance(artifact, Artifact):
             raise TypeError("Task store requires Artifact metadata")
+        if not artifact.adopted:
+            raise ValueError(
+                "Task store records only verifier-adopted artifacts"
+            )
         now = self._now()
         with self._lock, self._connection(create=False) as connection:
             try:
@@ -423,8 +433,9 @@ class TaskStore:
                 connection.execute(
                     "INSERT INTO task_artifacts ("
                     "artifact_id, run_id, source_call_id, name, media_type, "
-                    "byte_count, sha256, created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "byte_count, sha256, verification_result_id, "
+                    "verification_evidence_digest, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         artifact.artifact_id,
                         artifact.run_id,
@@ -433,6 +444,8 @@ class TaskStore:
                         artifact.media_type,
                         artifact.byte_count,
                         artifact.sha256,
+                        artifact.verification_result_id,
+                        artifact.verification_evidence_digest,
                         now,
                     ),
                 )
@@ -447,6 +460,12 @@ class TaskStore:
                         "byte_count": artifact.byte_count,
                         "sha256": artifact.sha256,
                         "source_call_id": artifact.source_call_id,
+                        "verification_evidence_digest": (
+                            artifact.verification_evidence_digest
+                        ),
+                        "verification_result_id": (
+                            artifact.verification_result_id
+                        ),
                     },
                 )
                 connection.execute(
@@ -520,6 +539,12 @@ class TaskStore:
                         media_type=row["media_type"],
                         byte_count=row["byte_count"],
                         sha256=row["sha256"],
+                        verification_result_id=row[
+                            "verification_result_id"
+                        ],
+                        verification_evidence_digest=row[
+                            "verification_evidence_digest"
+                        ],
                     )
                     for row in rows
                 )
@@ -569,6 +594,10 @@ class TaskStore:
                     "name": item.name,
                     "sha256": item.sha256,
                     "source_call_id": item.source_call_id,
+                    "verification_evidence_digest": (
+                        item.verification_evidence_digest
+                    ),
+                    "verification_result_id": item.verification_result_id,
                 }
                 for item in artifacts
             ],
@@ -1023,6 +1052,19 @@ class TaskStore:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 _migration_0_to_1(connection)
+                _migration_1_to_2(connection)
+                connection.execute(
+                    f"PRAGMA user_version = {TASK_DATABASE_VERSION}"
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            return
+        if version == 1:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _migration_1_to_2(connection)
                 connection.execute(
                     f"PRAGMA user_version = {TASK_DATABASE_VERSION}"
                 )
@@ -1139,6 +1181,58 @@ def _migration_0_to_1(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX ix_task_artifacts_run_created "
         "ON task_artifacts(run_id, created_at, artifact_id)"
+    )
+
+
+def _migration_1_to_2(connection: sqlite3.Connection) -> None:
+    """Record adoption evidence and truthful approval terminal decisions."""
+
+    connection.execute(
+        "ALTER TABLE task_artifacts ADD COLUMN "
+        "verification_result_id TEXT "
+        "CHECK(verification_result_id IS NULL OR "
+        "length(verification_result_id) BETWEEN 1 AND 128)"
+    )
+    connection.execute(
+        "ALTER TABLE task_artifacts ADD COLUMN "
+        "verification_evidence_digest TEXT "
+        "CHECK(verification_evidence_digest IS NULL OR "
+        "length(verification_evidence_digest) = 64)"
+    )
+    connection.execute("DROP INDEX ix_task_approvals_run_status")
+    connection.execute(
+        "ALTER TABLE task_approvals RENAME TO task_approvals_v1"
+    )
+    connection.execute(
+        "CREATE TABLE task_approvals ("
+        "approval_id TEXT PRIMARY KEY NOT NULL "
+        "CHECK(length(approval_id) BETWEEN 1 AND 128),"
+        "run_id TEXT NOT NULL,"
+        "call_id TEXT NOT NULL CHECK(length(call_id) BETWEEN 1 AND 128),"
+        "capability TEXT NOT NULL CHECK(length(capability) BETWEEN 1 AND 96),"
+        "action_digest TEXT NOT NULL CHECK(length(action_digest) = 64),"
+        "reason_digest TEXT NOT NULL CHECK(length(reason_digest) = 64),"
+        "preview_digests_json TEXT NOT NULL "
+        "CHECK(length(preview_digests_json) BETWEEN 2 AND 4096),"
+        "expires_at REAL NOT NULL,"
+        "status TEXT NOT NULL "
+        "CHECK(status IN ('pending', 'granted', 'rejected', 'expired', "
+        "'cancelled', 'interrupted')),"
+        "FOREIGN KEY(run_id) REFERENCES task_runs(run_id) ON DELETE CASCADE"
+        ") WITHOUT ROWID"
+    )
+    connection.execute(
+        "INSERT INTO task_approvals ("
+        "approval_id, run_id, call_id, capability, action_digest, "
+        "reason_digest, preview_digests_json, expires_at, status"
+        ") SELECT approval_id, run_id, call_id, capability, action_digest, "
+        "reason_digest, preview_digests_json, expires_at, status "
+        "FROM task_approvals_v1"
+    )
+    connection.execute("DROP TABLE task_approvals_v1")
+    connection.execute(
+        "CREATE INDEX ix_task_approvals_run_status "
+        "ON task_approvals(run_id, status)"
     )
 
 

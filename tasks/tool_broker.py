@@ -10,9 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
-import stat
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +20,17 @@ from declarative_tools import (
     INITIAL_TASK_BROKER_TOOLS,
     TOOL_CAPABILITIES,
     DeclarativeTool,
+)
+from tasks.approvals import (
+    ApprovalPayload,
+    ApprovalPreview,
+    build_approval_payload,
+    task_artifact_target,
+)
+from tasks.artifacts import (
+    ArtifactAdoptionError,
+    ArtifactAdoptionManager,
+    PendingArtifact,
 )
 from tasks.coordinator import TaskWorkspace
 from tasks.models import (
@@ -33,6 +42,7 @@ from tasks.models import (
     ToolResult,
     ToolResultStatus,
 )
+from tasks.verifiers import FileExpectation, verify_file
 
 
 MAX_MODEL_PROMPT_CHARS = 32 * 1024
@@ -221,6 +231,8 @@ class ArtifactWriteArguments:
     name: str
     media_type: str
     content: bytes = field(repr=False)
+    complete: bool = True
+    partial_reason: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _bounded_token(
@@ -235,6 +247,22 @@ class ArtifactWriteArguments:
         if not 1 <= len(self.content) <= MAX_ARTIFACT_BYTES:
             raise ValueError("Artifact content size is invalid")
         _validate_inert_artifact_content(self.media_type, self.content)
+        if type(self.complete) is not bool:
+            raise TypeError("Artifact completeness must be explicit")
+        if self.complete:
+            if self.partial_reason is not None:
+                raise ValueError(
+                    "Complete artifact output cannot have a partial reason"
+                )
+        elif (
+            not isinstance(self.partial_reason, str)
+            or not self.partial_reason.strip()
+            or len(self.partial_reason) > 512
+            or "\x00" in self.partial_reason
+        ):
+            raise ValueError(
+                "Partial artifact output requires a bounded reason"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +374,7 @@ class BrokerExecution:
 
     result: ToolResult
     text: str | None = field(default=None, repr=False)
+    pending_artifact: PendingArtifact | None = None
     artifact: Artifact | None = None
     content: bytes | None = field(default=None, repr=False)
 
@@ -354,6 +383,11 @@ class BrokerExecution:
             raise TypeError("Broker execution requires a ToolResult")
         if self.text is not None and not isinstance(self.text, str):
             raise TypeError("Broker text output is invalid")
+        if self.pending_artifact is not None and not isinstance(
+            self.pending_artifact,
+            PendingArtifact,
+        ):
+            raise TypeError("Broker pending artifact output is invalid")
         if self.artifact is not None and not isinstance(
             self.artifact,
             Artifact,
@@ -383,6 +417,7 @@ class TaskToolBroker:
         model_stream: ModelStreamAdapter | None = None,
         web_search: WebSearchAdapter | None = None,
         web_fetch: WebFetchAdapter | None = None,
+        artifact_root: Path | None = None,
     ) -> None:
         if not isinstance(run, TaskRun):
             raise TypeError("Task tool broker requires a TaskRun")
@@ -426,12 +461,60 @@ class TaskToolBroker:
         self._model_stream = model_stream or _configured_model_stream
         self._web_search = web_search or _bounded_web_search
         self._web_fetch = web_fetch or _bounded_web_fetch
+        self._artifact_manager = ArtifactAdoptionManager(
+            run,
+            workspace,
+            adoption_root=artifact_root,
+        )
         self._tool_calls = 0
         self._network_requests = 0
         self._output_bytes = 0
         self._call_ids: set[str] = set()
         self._completed_steps: set[str] = set()
-        self._artifacts: dict[str, tuple[Artifact, Path]] = {}
+
+    def approval_payload(
+        self,
+        call: ToolCall,
+        arguments: ArtifactWriteArguments,
+        *,
+        approval_id: str,
+        reason: str,
+        expires_at: float,
+    ) -> ApprovalPayload:
+        """Build the exact target and bounded preview before requesting access."""
+
+        step = self._preflight(call, arguments, check_run_state=False)
+        if step.tool is not DeclarativeTool.ARTIFACT_WRITE:
+            raise TaskToolBrokerValidationError(
+                "Initial broker approval preview supports artifact writes"
+            )
+        content_digest = hashlib.sha256(arguments.content).hexdigest()
+        excerpt = arguments.content.decode("utf-8")[:2_048]
+        return build_approval_payload(
+            call,
+            approval_id=approval_id,
+            reason=reason,
+            expires_at=expires_at,
+            target=task_artifact_target(
+                artifact_id=arguments.artifact_id,
+                name=arguments.name,
+                content_sha256=content_digest,
+            ),
+            preview=ApprovalPreview(
+                media_type=arguments.media_type,
+                byte_count=len(arguments.content),
+                content_sha256=content_digest,
+                excerpt=excerpt,
+            ),
+        )
+
+    def cancel(self, result_code: str = "user_cancelled") -> None:
+        """Cancel the run and remove pending bytes, preserving adopted output."""
+
+        try:
+            self._artifact_manager.discard_incomplete()
+        finally:
+            self._run.cancel(result_code)
 
     async def execute(
         self,
@@ -480,8 +563,10 @@ class TaskToolBroker:
         self,
         call: ToolCall,
         arguments: BrokerArguments,
+        *,
+        check_run_state: bool = True,
     ) -> DeclaredToolStep:
-        if self._run.state is not TaskState.RUNNING:
+        if check_run_state and self._run.state is not TaskState.RUNNING:
             raise TaskToolBrokerValidationError(
                 "Task broker run is not running"
             )
@@ -632,53 +717,37 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: ArtifactWriteArguments,
     ) -> BrokerExecution:
-        if arguments.artifact_id in self._artifacts:
-            raise TaskToolBrokerOperationError("artifact_exists")
         self._require_output_capacity(len(arguments.content))
-        self._workspace.verify()
-        artifact_directory = self._workspace.path / "artifacts"
         try:
-            artifact_directory.mkdir(mode=0o700, exist_ok=True)
-            self._workspace.verify()
-            filename = hashlib.sha256(
-                arguments.artifact_id.encode("utf-8")
-            ).hexdigest() + ".artifact"
-            path = artifact_directory / filename
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            if hasattr(os, "O_BINARY"):
-                flags |= os.O_BINARY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            descriptor = os.open(path, flags, 0o600)
-            try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(arguments.content)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except Exception:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise
-            self._workspace.verify()
-        except Exception as exc:
+            pending = self._artifact_manager.stage(
+                call,
+                artifact_id=arguments.artifact_id,
+                name=arguments.name,
+                media_type=arguments.media_type,
+                content=arguments.content,
+                complete=arguments.complete,
+                partial_reason=arguments.partial_reason,
+            )
+        except ArtifactAdoptionError as exc:
             raise TaskToolBrokerOperationError("artifact_write_failed") from exc
-        digest = hashlib.sha256(arguments.content).hexdigest()
-        artifact = Artifact(
-            artifact_id=arguments.artifact_id,
-            run_id=call.run_id,
-            source_call_id=call.call_id,
-            name=arguments.name,
-            media_type=arguments.media_type,
-            byte_count=len(arguments.content),
-            sha256=digest,
-        )
-        self._artifacts[artifact.artifact_id] = (artifact, path)
-        self._reserve_output(artifact.byte_count)
+        self._reserve_output(pending.byte_count)
+        if not pending.complete:
+            return BrokerExecution(
+                result=ToolResult(
+                    result_id=_result_id(call),
+                    call_id=call.call_id,
+                    run_id=call.run_id,
+                    step_id=call.step_id,
+                    status=ToolResultStatus.PARTIAL,
+                    output_digest=pending.sha256,
+                    output_bytes=pending.byte_count,
+                    error_code="partial_output",
+                ),
+                pending_artifact=pending,
+            )
         return BrokerExecution(
             result=_succeeded_result(call, arguments.content),
-            artifact=artifact,
+            pending_artifact=pending,
         )
 
     def _read_artifact(
@@ -686,7 +755,12 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: ArtifactReadArguments,
     ) -> BrokerExecution:
-        artifact, content = self._load_artifact(arguments.artifact_id)
+        try:
+            artifact, content = self._artifact_manager.read_adopted(
+                arguments.artifact_id
+            )
+        except ArtifactAdoptionError as exc:
+            raise TaskToolBrokerOperationError("artifact_read_failed") from exc
         self._reserve_output(len(content))
         return BrokerExecution(
             result=_succeeded_result(call, content),
@@ -699,87 +773,43 @@ class TaskToolBroker:
         call: ToolCall,
         arguments: VerifyOutputArguments,
     ) -> BrokerExecution:
-        artifact, content = self._load_artifact(arguments.artifact_id)
-        checks: dict[str, bool] = {}
-        if arguments.expected_sha256 is not None:
-            checks["sha256"] = artifact.sha256 == arguments.expected_sha256
-        if arguments.expected_media_type is not None:
-            checks["media_type"] = (
-                artifact.media_type == arguments.expected_media_type
-            )
-        if arguments.minimum_bytes is not None:
-            checks["minimum_bytes"] = (
-                artifact.byte_count >= arguments.minimum_bytes
-            )
-        if arguments.maximum_bytes is not None:
-            checks["maximum_bytes"] = (
-                artifact.byte_count <= arguments.maximum_bytes
-            )
-        if arguments.required_utf8_substrings:
-            try:
-                text = content.decode("utf-8")
-            except UnicodeDecodeError:
-                checks["required_utf8_substrings"] = False
-            else:
-                checks["required_utf8_substrings"] = all(
-                    substring in text
-                    for substring in arguments.required_utf8_substrings
-                )
-        postcondition_met = all(checks.values())
-        evidence = _canonical_json(
-            {
-                "actual": {
-                    "artifact_id": artifact.artifact_id,
-                    "byte_count": artifact.byte_count,
-                    "media_type": artifact.media_type,
-                    "sha256": artifact.sha256,
-                },
-                "checks": checks,
-                "postcondition_met": postcondition_met,
-                "verifier_id": arguments.verifier_id,
-            }
-        )
-        self._reserve_output(len(evidence))
-        evidence_digest = hashlib.sha256(evidence).hexdigest()
-        return BrokerExecution(
-            result=ToolResult(
-                result_id=_result_id(call),
-                call_id=call.call_id,
-                run_id=call.run_id,
-                step_id=call.step_id,
-                status=ToolResultStatus.SUCCEEDED,
-                output_digest=evidence_digest,
-                output_bytes=len(evidence),
-                verifier_id=arguments.verifier_id,
-                postcondition_met=postcondition_met,
-                evidence_digest=evidence_digest,
-            ),
-            artifact=artifact,
-        )
-
-    def _load_artifact(self, artifact_id: str) -> tuple[Artifact, bytes]:
-        record = self._artifacts.get(artifact_id)
-        if record is None:
-            raise TaskToolBrokerOperationError("artifact_not_found")
-        artifact, path = record
         try:
-            self._workspace.verify()
-            metadata = path.stat(follow_symlinks=False)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_size != artifact.byte_count
-            ):
-                raise OSError("artifact identity changed")
-            with path.open("rb") as stream:
-                content = stream.read(artifact.byte_count + 1)
-            if (
-                len(content) != artifact.byte_count
-                or hashlib.sha256(content).hexdigest() != artifact.sha256
-            ):
-                raise OSError("artifact integrity changed")
-        except Exception as exc:
-            raise TaskToolBrokerOperationError("artifact_read_failed") from exc
-        return artifact, content
+            pending, content = self._artifact_manager.load_pending(
+                arguments.artifact_id
+            )
+        except ArtifactAdoptionError as exc:
+            raise TaskToolBrokerOperationError(
+                "artifact_verification_input_failed"
+            ) from exc
+        evidence = verify_file(
+            pending.file_snapshot(),
+            FileExpectation(
+                expected_sha256=arguments.expected_sha256,
+                expected_media_type=arguments.expected_media_type,
+                minimum_bytes=arguments.minimum_bytes,
+                maximum_bytes=arguments.maximum_bytes,
+                required_utf8_substrings=(
+                    arguments.required_utf8_substrings
+                ),
+            ),
+            verifier_id=arguments.verifier_id,
+            content=content,
+        )
+        self._reserve_output(evidence.evidence_bytes)
+        result = evidence.to_tool_result(call)
+        artifact = None
+        if result.is_successful_verification:
+            try:
+                artifact = self._artifact_manager.adopt(
+                    arguments.artifact_id,
+                    evidence=evidence,
+                    result=result,
+                )
+            except ArtifactAdoptionError as exc:
+                raise TaskToolBrokerOperationError(
+                    "artifact_adoption_failed"
+                ) from exc
+        return BrokerExecution(result=result, artifact=artifact)
 
     def _require_output_capacity(self, additional_bytes: int) -> None:
         if (
@@ -895,10 +925,12 @@ def _canonical_arguments(arguments: BrokerArguments) -> dict[str, object]:
     if type(arguments) is ArtifactWriteArguments:
         return {
             "artifact_id": arguments.artifact_id,
+            "complete": arguments.complete,
             "content_bytes": len(arguments.content),
             "content_sha256": hashlib.sha256(arguments.content).hexdigest(),
             "media_type": arguments.media_type,
             "name": arguments.name,
+            "partial_reason": arguments.partial_reason,
         }
     if type(arguments) is ArtifactReadArguments:
         return {"artifact_id": arguments.artifact_id}
