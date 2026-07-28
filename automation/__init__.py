@@ -1,9 +1,20 @@
 """Permissioned desktop-automation contracts.
 
-The package exposes policy and immutable target identity only. Importing it
-does not inspect the desktop or perform an action.
+Importing this package does not inspect the desktop or perform an action.
+Execution requires the explicit broker and its one-shot worker path.
 """
 
+from automation.action_approval import build_desktop_action_approval
+from automation.action_broker import DesktopActionBroker
+from automation.action_models import (
+    DesktopActionEvidence,
+    DesktopActionReceipt,
+    DesktopActionRequest,
+    DesktopActionStatus,
+    InvokePostcondition,
+    ScrollAmount,
+    ToggleGoal,
+)
 from automation.models import (
     MAX_RUNTIME_ID_PARTS,
     MAX_TARGET_TEXT_CHARS,
@@ -43,7 +54,12 @@ __all__ = [
     "MAX_RUNTIME_ID_PARTS",
     "MAX_TARGET_TEXT_CHARS",
     "AutomationPattern",
+    "DesktopActionBroker",
+    "DesktopActionEvidence",
     "DesktopActionKind",
+    "DesktopActionReceipt",
+    "DesktopActionRequest",
+    "DesktopActionStatus",
     "DesktopBounds",
     "DesktopHighlightRequest",
     "DesktopObservation",
@@ -60,8 +76,12 @@ __all__ = [
     "AutomationRunLease",
     "AutomationStopController",
     "GlobalAutomationStopHotkey",
+    "InvokePostcondition",
     "SafeDesktopTargetPolicy",
+    "ScrollAmount",
+    "ToggleGoal",
     "WindowsDesktopTargetInspector",
+    "build_desktop_action_approval",
     "classify_surface_risks",
     "user_visible_reason",
 ]

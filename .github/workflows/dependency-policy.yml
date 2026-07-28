@@ -54,6 +54,9 @@ jobs:
           tests.test_compose_service
           tests.test_desktop_automation_policy
           tests.test_desktop_automation_target_review
+          tests.test_desktop_action_broker
+          tests.test_desktop_action_protocol
+          tests.test_desktop_uia_actions
           tests.test_dependency_policy
           tests.test_dictation_insertion
           tests.test_dictation_session

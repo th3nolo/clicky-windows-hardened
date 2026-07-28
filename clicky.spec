@@ -28,11 +28,18 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 # ── Modules that are lazy-imported by CompanionManager — PyInstaller's
 #    static analysis misses them, so we list them explicitly.
 hidden = [
+    "automation.action_approval",
+    "automation.action_broker",
+    "automation.action_models",
+    "automation.action_process",
+    "automation.action_protocol",
     "automation.models",
     "automation.policy",
     "automation.review",
     "automation.stop",
     "automation.targeting",
+    "automation.uia_actions",
+    "automation.uia_worker",
     # Lazy LLM providers
     "ai.claude_provider",
     "ai.openai_provider",

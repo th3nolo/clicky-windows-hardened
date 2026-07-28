@@ -196,14 +196,15 @@ run ID, permission version, or capability ID and confirm authorization fails.
 Finally, enable a persisted action permission without its current schema and
 confirm startup refuses the invalid configuration rather than granting access.
 
-### Desktop automation target and denial policy
+### Desktop automation target, approval, and one-shot action boundary
 
-The source-only desktop-automation foundation contains no executor and remains
-build-unavailable. Run:
+The source-only desktop-automation implementation remains build-unavailable.
+Run:
 
 ~~~powershell
 python -m unittest -v tests.test_desktop_automation_policy
 python -m unittest -v tests.test_desktop_automation_target_review tests.test_desktop_action_highlight
+python -m unittest -v tests.test_desktop_action_broker tests.test_desktop_action_protocol tests.test_desktop_uia_actions
 ~~~
 
 Confirm the model binds one target to process ID and start time, application
@@ -214,19 +215,31 @@ execution method, and credential, two-factor, payment/purchase, security,
 administrator, account-change, secure-desktop, destructive deletion,
 elevation, protected, hidden, background, unsupported-pattern, and changed
 targets fail closed. Labels used for classification must not be read from or
-replaced with a control's current `ValuePattern` value.
+replaced with a control's current `ValuePattern` value. Confirm the broker
+consumes one exact Task Agent approval, revalidates the still-visible review,
+launches only one bounded worker, binds Escape to its job, and never retries.
+The pipe protocol must reject malformed, oversized, duplicate-key,
+wrong-nonce, and incorrectly authenticated responses. Every allowlisted
+pattern must be invoked at most once and must expose action-specific observed
+post-state. A failed postcondition cannot be success, and a post-delivery
+transport failure must remain an unknown outcome.
 
 On a disposable native Windows desktop containing only synthetic controls,
-start a source test build with desktop automation still build-unavailable.
-Exercise the inspector and review components directly. Confirm the exact
-foreground control receives a named cyan, click-through highlight that does
-not take focus; negative-origin and mixed-DPI monitor coordinates route to the
-correct logical rectangle. Change name, runtime ID, bounds, pattern,
+start a source test build with desktop automation still build-unavailable and
+invoke the components only from the controlled validation harness. Confirm the
+exact foreground control receives a named cyan, click-through highlight that
+does not take focus; negative-origin and mixed-DPI monitor coordinates route
+to the correct logical rectangle. Change name, runtime ID, bounds, pattern,
 foreground window, desktop, or integrity and confirm revalidation clears the
-highlight. Press Escape and confirm it invalidates the run, clears the
-highlight, invokes every registered cancellation, and suppresses all queued
-callbacks. Confirm removing the one hotkey leaves unrelated keyboard hooks
-untouched. Do not expose or execute a UIA action in this phase.
+highlight. Exercise each semantic pattern against disposable synthetic
+controls and confirm the declared postcondition and one-call limit. Force a
+post-action read failure, worker timeout, malformed receipt, stop-before-send,
+and stop-after-send; confirm no automatic retry and truthful classification.
+Press Escape and confirm it invalidates the run, clears the highlight,
+terminates the exact worker job, invokes every registered cancellation, and
+suppresses all queued callbacks. Confirm removing the one hotkey leaves
+unrelated keyboard hooks untouched. Do not use real credentials, payments,
+accounts, destructive controls, or personal content.
 
 ### Workspace coding threat-model gate
 

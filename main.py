@@ -14,6 +14,15 @@ if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--task-work
 
     raise SystemExit(run_worker())
 
+if (
+    __name__ == "__main__"
+    and len(sys.argv) == 2
+    and sys.argv[1] == "--desktop-uia-worker"
+):
+    from automation.uia_worker import run_worker
+
+    raise SystemExit(run_worker())
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 

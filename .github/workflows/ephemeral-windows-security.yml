@@ -176,7 +176,8 @@ jobs:
         shell: pwsh
         run: >-
           uv run --frozen --no-sync --python "3.12.10" python -W error
-          -m compileall -q ai audio screen skills tools ui
+          -m compileall -q ai audio automation connectors research screen
+          skills tasks tools ui workspace_coding
           companion_manager.py config.py main.py packaged_self_test.py
 
       - name: Build the unsigned onedir distribution
