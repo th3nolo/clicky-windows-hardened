@@ -383,7 +383,7 @@ def scan_workspace(
                 directories.append(relative)
                 stack.append((path, relative))
                 continue
-            ensure_regular_unlinked_file(path)
+            file_identity = ensure_regular_unlinked_file(path)
             if len(records) >= MAX_WORKSPACE_FILES:
                 raise WorkspaceSnapshotError(
                     "Workspace file-count limit exceeded"
@@ -392,7 +392,10 @@ def scan_workspace(
                 raise WorkspaceSnapshotError(
                     "Workspace file-size limit exceeded"
                 )
-            digest, byte_count = _hash_stable_file(path, info)
+            digest, byte_count = _hash_stable_file(
+                path,
+                file_identity,
+            )
             total_bytes += byte_count
             if total_bytes > MAX_WORKSPACE_BYTES:
                 raise WorkspaceSnapshotError(
