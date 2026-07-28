@@ -64,6 +64,7 @@ class TrayManager(QObject):
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_test_microphone    = pyqtSignal()
+    on_manage_tts_voice   = pyqtSignal()
     on_set_stt_provider   = pyqtSignal(str)
     on_set_stt_fallback   = pyqtSignal(str)
     on_set_transcription_vocabulary = pyqtSignal(list)
@@ -320,6 +321,10 @@ class TrayManager(QObject):
         readiness.triggered.connect(self._open_stt_readiness)
         vocabulary = setup_menu.addAction("Transcription vocabulary…")
         vocabulary.triggered.connect(self._prompt_transcription_vocabulary)
+        voice = setup_menu.addAction(
+            f"Speech voice: {providers.get('tts_voice', 'reviewed default')}…"
+        )
+        voice.triggered.connect(self.on_manage_tts_voice)
         privacy_permissions = setup_menu.addAction("Privacy permissions…")
         privacy_permissions.triggered.connect(self.on_privacy_permissions)
         onboarding = setup_menu.addAction("Practice hotkey && pointing…")

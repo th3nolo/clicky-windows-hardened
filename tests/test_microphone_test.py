@@ -186,6 +186,7 @@ class _ManagerHarness:
         self._dictation = types.SimpleNamespace(active=None)
         self._listener = _Listener()
         self._microphone_test_id = None
+        self._tts_preview_id = None
         self.sig_error = _Signal()
         self.sig_microphone_test_level = _Signal()
         self.sig_microphone_test_stopped = _Signal()

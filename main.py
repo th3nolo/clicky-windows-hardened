@@ -34,7 +34,7 @@ from feature_gates import (
     user_permission_allowed,
     validate_action_capability_startup,
 )
-from privacy_controls import microphone_allowed
+from privacy_controls import cloud_tts_allowed, microphone_allowed
 from screen.capture_exclusion import install_qt_capture_exclusion
 from screen.dpi_awareness import enable_per_monitor_v2
 from ui.tray import TrayManager
@@ -818,6 +818,42 @@ def main():
             dialog.deleteLater()
 
     tray.on_test_microphone.connect(_open_microphone_test)
+
+    def _open_tts_voice() -> None:
+        from audio.tts.voice_catalog import (
+            provider_destination,
+            provider_label,
+            reviewed_voices,
+        )
+        from ui.voice_picker import VoicePickerDialog
+
+        provider = cfg.tts_provider()
+        dialog = VoicePickerDialog(
+            provider_label=provider_label(provider),
+            provider=provider,
+            destination=provider_destination(provider),
+            voices=reviewed_voices(provider),
+            selected_voice_id=cfg.get_tts_voice(provider),
+            cloud_tts_allowed=cloud_tts_allowed(cfg),
+            save_voice=manager.set_tts_voice,
+            start_preview=manager.start_tts_voice_preview,
+            stop_preview=manager.stop_tts_voice_preview,
+        )
+        manager.sig_tts_preview_stopped.connect(dialog.preview_stopped)
+        try:
+            dialog.exec()
+        finally:
+            manager.stop_tts_voice_preview(reason="closed")
+            try:
+                manager.sig_tts_preview_stopped.disconnect(
+                    dialog.preview_stopped
+                )
+            except (RuntimeError, TypeError):
+                pass
+            dialog.deleteLater()
+            tray.rebuild_menu()
+
+    tray.on_manage_tts_voice.connect(_open_tts_voice)
 
     def _set_transcription_vocabulary(terms: list):
         approved = manager.set_transcription_vocabulary(terms)
