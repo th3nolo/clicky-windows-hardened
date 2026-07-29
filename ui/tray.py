@@ -71,6 +71,16 @@ class TrayManager(QObject):
     on_set_transcription_vocabulary = pyqtSignal(list)
     on_set_response_language = pyqtSignal(str)  # "" = auto-detect, else ISO code
     on_set_custom_instructions = pyqtSignal(str)
+    on_toggle_realtime_voice = pyqtSignal(bool)
+    on_start_realtime_voice = pyqtSignal()
+    on_stop_realtime_voice = pyqtSignal()
+    on_set_realtime_output_device = pyqtSignal(int)
+    on_toggle_meeting_countdowns = pyqtSignal(bool)
+    on_refresh_meeting_countdowns = pyqtSignal()
+    on_toggle_signed_skill_import = pyqtSignal(bool)
+    on_import_signed_skill = pyqtSignal()
+    on_lookup_place = pyqtSignal()
+    on_lookup_stock = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +114,7 @@ class TrayManager(QObject):
         self._journal_enabled = bool(cfg.journal_enabled)
         self._ocr_enabled = True
         self._is_recording = False
+        self._realtime_status = "stopped"
 
         # Ollama model state — populated by manager via set_ollama_models()
         self._ollama_installed: dict[str, list[str]] = {"vision": [], "text": []}
@@ -313,6 +324,77 @@ class TrayManager(QObject):
         # join.triggered.connect(self.on_collab_join)
 
         menu.addSeparator()
+
+        restored_menu = menu.addMenu("Restored features")
+        realtime_toggle = restored_menu.addAction("Enable Realtime voice")
+        realtime_toggle.setCheckable(True)
+        realtime_toggle.setChecked(bool(cfg.realtime_voice_enabled))
+        realtime_toggle.triggered.connect(self.on_toggle_realtime_voice)
+        if self._realtime_status in {"connecting", "connected", "interrupted"}:
+            realtime_action = restored_menu.addAction(
+                f"Stop Realtime voice ({self._realtime_status})"
+            )
+            realtime_action.triggered.connect(self.on_stop_realtime_voice)
+        else:
+            realtime_action = restored_menu.addAction("Start Realtime voice")
+            realtime_action.setEnabled(bool(cfg.realtime_voice_enabled))
+            realtime_action.triggered.connect(self.on_start_realtime_voice)
+
+        speaker_menu = restored_menu.addMenu("Realtime speaker")
+        default_speaker = speaker_menu.addAction("Windows default output")
+        default_speaker.setCheckable(True)
+        default_speaker.setChecked(cfg.realtime_output_device_index is None)
+        default_speaker.triggered.connect(
+            lambda: self.on_set_realtime_output_device.emit(-1)
+        )
+        try:
+            import sounddevice as sd
+
+            for index, device in enumerate(sd.query_devices()):
+                if int(device.get("max_output_channels", 0)) <= 0:
+                    continue
+                label = str(device.get("name", f"Output {index}"))[:160]
+                output_action = speaker_menu.addAction(label)
+                output_action.setCheckable(True)
+                output_action.setChecked(
+                    cfg.realtime_output_device_index == index
+                )
+                output_action.triggered.connect(
+                    lambda _checked=False, selected=index: (
+                        self.on_set_realtime_output_device.emit(selected)
+                    )
+                )
+        except Exception:
+            unavailable = speaker_menu.addAction("Output devices unavailable")
+            unavailable.setEnabled(False)
+
+        restored_menu.addSeparator()
+        countdown_toggle = restored_menu.addAction("Enable meeting countdowns")
+        countdown_toggle.setCheckable(True)
+        countdown_toggle.setChecked(bool(cfg.meeting_countdowns_enabled))
+        countdown_toggle.triggered.connect(self.on_toggle_meeting_countdowns)
+        refresh_countdowns = restored_menu.addAction("Show upcoming meetings now")
+        refresh_countdowns.setEnabled(bool(cfg.meeting_countdowns_enabled))
+        refresh_countdowns.triggered.connect(self.on_refresh_meeting_countdowns)
+
+        restored_menu.addSeparator()
+        signed_toggle = restored_menu.addAction("Enable signed skill import")
+        signed_toggle.setCheckable(True)
+        signed_toggle.setChecked(bool(cfg.signed_skill_import_enabled))
+        signed_toggle.triggered.connect(self.on_toggle_signed_skill_import)
+        import_skill = restored_menu.addAction("Import signed skill…")
+        import_skill.setEnabled(bool(cfg.signed_skill_import_enabled))
+        import_skill.triggered.connect(self.on_import_signed_skill)
+
+        restored_menu.addSeparator()
+        place_lookup = restored_menu.addAction("Find a place…")
+        place_lookup.triggered.connect(self.on_lookup_place)
+        stock_lookup = restored_menu.addAction("Look up end-of-day stock quote…")
+        stock_lookup.triggered.connect(self.on_lookup_stock)
+        restored_note = restored_menu.addAction(
+            "Provider, account, or trust setup may still be required"
+        )
+        restored_note.setEnabled(False)
 
         # ── Setup / Diagnostics ──
         setup_menu = menu.addMenu("Setup && Diagnostics")
@@ -722,6 +804,12 @@ class TrayManager(QObject):
 
     def set_state_icon(self, state: str):
         self._tray.setIcon(self._icons.get(state, self._icons["idle"]))
+
+    def set_realtime_status(self, status: str) -> None:
+        if status not in {"stopped", "connecting", "connected", "interrupted"}:
+            return
+        self._realtime_status = status
+        self.rebuild_menu()
 
     def rebuild_menu(self):
         """Rebuild so the Model submenu reflects the newly-active provider."""

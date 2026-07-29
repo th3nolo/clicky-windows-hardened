@@ -46,8 +46,8 @@ DEVELOPER_PYTHON_WARNING = (
     "authority. A matching SHA-256 proves file identity, not code safety."
 )
 SIGNED_EXTERNAL_UNAVAILABLE_REASON = (
-    "Signed external skill verification and installation are not implemented. "
-    "Remote skill installation is disabled."
+    "Only local, data-only packages from an approved signing root can be "
+    "staged. Remote skill installation remains disabled."
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DEFINITION_SUFFIX = ".skill.json"
@@ -97,7 +97,9 @@ class SkillOrigin(str, Enum):
     BUNDLED = "bundled"
     BUNDLED_DEVELOPER_PYTHON = "bundled_developer_python"
     USER_APPROVED_DEVELOPER_PYTHON = "user_approved_developer_python"
-    FUTURE_SIGNED_EXTERNAL = "future_signed_external"
+    SIGNED_EXTERNAL = "signed_external"
+    # Compatibility alias for the earlier hard-off placeholder.
+    FUTURE_SIGNED_EXTERNAL = "signed_external"
 
 
 class SkillRegistrationStatus(str, Enum):
@@ -108,21 +110,23 @@ class SkillRegistrationStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ExternalSkillSupport:
-    origin: SkillOrigin = SkillOrigin.FUTURE_SIGNED_EXTERNAL
-    registration_enabled: bool = False
+    origin: SkillOrigin = SkillOrigin.SIGNED_EXTERNAL
+    registration_enabled: bool = True
     remote_installation_enabled: bool = False
     reason: str = SIGNED_EXTERNAL_UNAVAILABLE_REASON
 
     def __post_init__(self) -> None:
-        if self.origin is not SkillOrigin.FUTURE_SIGNED_EXTERNAL:
+        if self.origin is not SkillOrigin.SIGNED_EXTERNAL:
             raise ValueError("External support origin is invalid")
         if (
             type(self.registration_enabled) is not bool
             or type(self.remote_installation_enabled) is not bool
-            or self.registration_enabled
+            or not self.registration_enabled
             or self.remote_installation_enabled
         ):
-            raise ValueError("External skill support must remain disabled")
+            raise ValueError(
+                "Only local signed registration may be enabled"
+            )
         if not self.reason:
             raise ValueError("External skill support needs a visible reason")
 
@@ -936,6 +940,51 @@ def catalog_developer_python_skills(
     return tuple(entries)
 
 
+def register_signed_external_skills(
+    snapshot: SkillRegistrySnapshot,
+    entries: tuple[SkillCatalogEntry, ...],
+) -> SkillRegistrySnapshot:
+    """Return an immutable registry extended only with verified signed entries."""
+
+    if not isinstance(snapshot, SkillRegistrySnapshot):
+        raise TypeError("Signed skill registration requires a registry snapshot")
+    if not snapshot.external_support.registration_enabled:
+        raise SkillRegistryError("Signed external skill registration is disabled")
+    if (
+        not isinstance(entries, tuple)
+        or len(snapshot.catalog_entries) + len(entries) > MAX_CATALOG_ENTRIES
+    ):
+        raise TypeError("Signed skill registration must be a bounded tuple")
+    catalog_ids = {entry.catalog_id for entry in snapshot.catalog_entries}
+    skill_ids = {
+        entry.skill_id
+        for entry in snapshot.catalog_entries
+        if entry.kind is SkillKind.DECLARATIVE
+    }
+    registered = dict(snapshot.registered_definitions)
+    for entry in entries:
+        if (
+            not isinstance(entry, SkillCatalogEntry)
+            or entry.kind is not SkillKind.DECLARATIVE
+            or entry.origin is not SkillOrigin.SIGNED_EXTERNAL
+            or entry.definition is None
+        ):
+            raise TypeError("Signed skill registration entry is invalid")
+        if entry.catalog_id in catalog_ids or entry.skill_id in skill_ids:
+            raise SkillRegistryError(
+                "Signed skill identity conflicts with the current catalog"
+            )
+        catalog_ids.add(entry.catalog_id)
+        skill_ids.add(entry.skill_id)
+        if entry.status is SkillRegistrationStatus.AVAILABLE:
+            registered[entry.skill_id] = entry.definition
+    return SkillRegistrySnapshot(
+        catalog_entries=snapshot.catalog_entries + entries,
+        registered_definitions=registered,
+        external_support=snapshot.external_support,
+    )
+
+
 def combined_skill_catalog(
     snapshot: SkillRegistrySnapshot,
     developer_skills: Iterable[Mapping[str, Any]],
@@ -972,5 +1021,6 @@ __all__ = [
     "combined_skill_catalog",
     "declarative_skill_invocation_allowed",
     "load_bundled_declarative_skills",
+    "register_signed_external_skills",
     "permission_review_digest",
 ]

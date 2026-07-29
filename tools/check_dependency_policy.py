@@ -80,7 +80,12 @@ EXPECTED_ACTIONS = {
     "astral-sh/setup-uv": "08807647e7069bb48b6ef5acd8ec9567f424441b",
 }
 BUNDLED_SKILL_INFRASTRUCTURE = frozenset(
-    {"declarative_runner.py", "registry.py", "schema.py"}
+    {
+        "declarative_runner.py",
+        "registry.py",
+        "schema.py",
+        "signed_import.py",
+    }
 )
 
 

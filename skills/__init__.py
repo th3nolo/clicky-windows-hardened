@@ -31,7 +31,7 @@ _BUNDLED_MANIFEST_NAME = "manifest.json"
 # Package infrastructure is imported normally and covered by the application
 # package.  It must never be compiled and executed as a Developer Python Skill.
 _BUNDLED_INFRASTRUCTURE_MODULES = frozenset(
-    {"declarative_runner.py", "registry.py", "schema.py"}
+    {"declarative_runner.py", "registry.py", "schema.py", "signed_import.py"}
 )
 # This immutable trust anchor is embedded in the PyInstaller executable/PYZ.
 # The external manifest is retained for transparency, but cannot authorize a

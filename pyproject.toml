@@ -29,6 +29,7 @@ dependencies = [
     "rapidocr-onnxruntime==1.4.4",
     "sounddevice==0.5.5",
     "uiautomation==2.0.29",
+    "cryptography==45.0.7",
 ]
 
 # `langdetect` and `pynput` are intentionally not part of the locked build.

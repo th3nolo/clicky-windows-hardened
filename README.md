@@ -46,6 +46,40 @@ Do not install this project with pip. See [SETUP.md](SETUP.md).
 
 The application does not provide a fully offline guarantee. Cloud AI providers receive the data needed for the selected request. Cloud speech-to-text, Edge TTS, and web search also require network access. Microphone access, cloud speech-to-text, cloud text-to-speech, and screen capture each remain disabled until the first-run privacy dialog records an explicit choice.
 
+## Restored optional parity features
+
+The source contains four additional, default-off capabilities. They are wired
+through the tray and privacy controls, but are not release or live-service
+claims until the validation gates below pass:
+
+- OpenAI Realtime duplex voice uses only the fixed OpenAI Realtime WebSocket,
+  selected microphone and speaker devices, the reviewed model and voice, and
+  explicit microphone, cloud-STT, and cloud-TTS permissions. Sessions are
+  bounded and cancellable, support server VAD and barge-in, and never reconnect
+  or fall back silently.
+- Signed declarative-skill import accepts one bounded JSON package containing
+  data-only skill definitions. An Ed25519 release signature must chain to an
+  approved root policy with publisher, capability, sequence, expiry, rotation,
+  and revocation constraints. Production signing roots are intentionally empty,
+  so import remains fail-closed until a key ceremony approves one.
+- Google Calendar meeting countdowns read only start/end/status metadata from
+  the selected account's primary calendar and display the generic label
+  "Meeting soon". The feature suppresses all access while Windows is locked
+  or the user says the screen is being shared; no event title, attendee, body,
+  or location is requested or displayed.
+- Place cards require a reviewed private, self-hosted, or contracted Nominatim
+  endpoint. The public OSMF service is refused. Stock cards use the fixed Alpha
+  Vantage end-of-day quote API only when separate privacy consent, an API key,
+  and an explicit license confirmation are present. Neither card performs
+  background lookup, trading, navigation, or another external action.
+
+Before enabling these in a release, validate real microphone/speaker behavior
+and cancellation on Windows, a production signing root and signed sample,
+locked/shared-screen Calendar behavior with a disposable account, a reviewed
+Nominatim deployment, and Alpha Vantage licensing, key handling, and freshness.
+Source tests and an unsigned package build do not replace those interactive and
+service-owner checks.
+
 Normal response narration still uses only the explicitly selected cloud TTS
 provider. If that approved request fails, Clicky shows the error and uses an
 allowlisted local Windows `winrt` or `sapi` voice only for the fixed status
@@ -237,6 +271,8 @@ $env:BAILIAN_CODING_PLAN_API_KEY = "..."
 $env:DEEPGRAM_API_KEY = "..."
 $env:ELEVENLABS_API_KEY = "..."
 $env:TAVILY_API_KEY = "..."
+$env:ALPHA_VANTAGE_API_KEY = "..."
+$env:CLICKY_ALPHA_VANTAGE_LICENSE_CONFIRMED = "1"
 ~~~
 
 Do not place keys in this repository or in a sidecar configuration file.

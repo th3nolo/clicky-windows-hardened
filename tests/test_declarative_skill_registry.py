@@ -368,19 +368,19 @@ class DeclarativeSkillRegistryTests(unittest.TestCase):
             {entry.skill_id for entry in combined},
         )
 
-    def test_future_signed_external_and_remote_installation_remain_disabled(self):
+    def test_local_signed_registration_never_enables_remote_installation(self):
         self.assertEqual(
             SIGNED_EXTERNAL_SKILL_SUPPORT.origin,
-            SkillOrigin.FUTURE_SIGNED_EXTERNAL,
+            SkillOrigin.SIGNED_EXTERNAL,
         )
-        self.assertFalse(
+        self.assertTrue(
             SIGNED_EXTERNAL_SKILL_SUPPORT.registration_enabled
         )
         self.assertFalse(
             SIGNED_EXTERNAL_SKILL_SUPPORT.remote_installation_enabled
         )
         self.assertIn(
-            "Remote skill installation is disabled",
+            "Remote skill installation remains disabled",
             SIGNED_EXTERNAL_SKILL_SUPPORT.reason,
         )
 
