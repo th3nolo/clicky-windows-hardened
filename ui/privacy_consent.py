@@ -87,6 +87,43 @@ class PrivacyConsentDialog(QDialog):
         tts_notice.setWordWrap(True)
         layout.addWidget(tts_notice)
 
+        self.external_place_search = QCheckBox(
+            "Allow explicit place searches with the configured map provider"
+        )
+        self.external_place_search.setChecked(
+            bool(cfg.external_place_search_consent)
+        )
+        self.external_place_search.setToolTip(
+            "Only a search you submit is sent to a reviewed private or contracted "
+            "Nominatim endpoint. Background autocomplete is disabled."
+        )
+        layout.addWidget(self.external_place_search)
+        place_notice = QLabel(
+            "Place cards send only your explicit query to the deployment's fixed "
+            "map search endpoint. The public OpenStreetMap Nominatim service is "
+            "not used by default, results show attribution, and no map action is "
+            "performed."
+        )
+        place_notice.setWordWrap(True)
+        layout.addWidget(place_notice)
+
+        self.market_data = QCheckBox(
+            "Allow explicit end-of-day stock quote lookups"
+        )
+        self.market_data.setChecked(bool(cfg.market_data_consent))
+        self.market_data.setToolTip(
+            "A symbol you submit may be sent to the licensed, fixed market-data "
+            "provider. Realtime prices and trading actions are not supported."
+        )
+        layout.addWidget(self.market_data)
+        market_notice = QLabel(
+            "Stock cards remain unavailable until the distributor confirms the "
+            "data license and configures its provider key. Results are labeled "
+            "end-of-day, source-attributed, and informational only."
+        )
+        market_notice.setWordWrap(True)
+        layout.addWidget(market_notice)
+
         self.screen_capture = QCheckBox("Allow screen capture and model sharing")
         self.screen_capture.setChecked(bool(cfg.screen_capture_consent))
         self.screen_capture.setToolTip(
@@ -192,6 +229,8 @@ class PrivacyConsentDialog(QDialog):
             microphone=microphone,
             cloud_stt=cloud_stt,
             cloud_tts=cloud_tts,
+            external_place_search=self.external_place_search.isChecked(),
+            market_data=self.market_data.isChecked(),
             screen_capture=screen,
             coding_agent=coding_agent,
             notice_version=PRIVACY_NOTICE_VERSION,
@@ -213,6 +252,8 @@ class PrivacyConsentDialog(QDialog):
             self.global_dictation.setChecked(False)
         if self.screen_compose is not None:
             self.screen_compose.setChecked(False)
+        self.external_place_search.setChecked(False)
+        self.market_data.setChecked(False)
         self._persist(False, False, False, False, False)
 
     def _save(self) -> None:

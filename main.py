@@ -5,6 +5,7 @@ Boots Qt, spawns overlay+panel+tray, starts ambient mic listener, binds hotkey.
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 # The packaged worker must cross the process boundary before importing Qt,
@@ -402,11 +403,32 @@ def main():
         from skills.registry import (
             SkillEnablementStore,
             load_bundled_declarative_skills,
+            register_signed_external_skills,
         )
         from ui.skills_catalog import SkillsCatalogPanel
 
+        skills_snapshot = load_bundled_declarative_skills()
+        if cfg.signed_skill_import_enabled:
+            try:
+                from optional_features_runtime import SignedSkillImportRuntime
+                from skills.signed_import import APPROVED_SIGNING_ROOTS
+
+                if APPROVED_SIGNING_ROOTS:
+                    signed_runtime = SignedSkillImportRuntime(
+                        feature_enabled=True
+                    )
+                    skills_snapshot = register_signed_external_skills(
+                        skills_snapshot,
+                        signed_runtime.active_entries(),
+                    )
+            except Exception as exc:
+                tray.show_notification(
+                    "Signed skills disabled",
+                    "Stored signed skills could not be reverified: " + str(exc),
+                )
+
         skills_catalog_panel = SkillsCatalogPanel(
-            load_bundled_declarative_skills(),
+            skills_snapshot,
             SkillEnablementStore(),
             developer_skills=skills_package.list_skills(),
             task_agent_available=user_permission_allowed(
@@ -780,6 +802,366 @@ def main():
     tray.on_ollama_set_model.connect(manager.set_ollama_model)
     tray.on_ollama_refresh.connect(manager.refresh_ollama_models)
     tray.on_set_mic_device.connect(manager.set_mic_device)
+    def _toggle_optional_feature(name: str, enabled: bool) -> None:
+        try:
+            cfg.set_optional_feature(name, bool(enabled))
+            if name == "realtime_voice" and not enabled:
+                manager.stop_realtime_voice()
+            tray.rebuild_menu()
+        except Exception as exc:
+            tray.show_notification("Feature setting unchanged", str(exc))
+
+    tray.on_toggle_realtime_voice.connect(
+        lambda enabled: _toggle_optional_feature("realtime_voice", enabled)
+    )
+    tray.on_toggle_meeting_countdowns.connect(
+        lambda enabled: _toggle_optional_feature("meeting_countdowns", enabled)
+    )
+    tray.on_toggle_signed_skill_import.connect(
+        lambda enabled: _toggle_optional_feature("signed_skill_import", enabled)
+    )
+    tray.on_start_realtime_voice.connect(manager.start_realtime_voice)
+    tray.on_stop_realtime_voice.connect(manager.stop_realtime_voice)
+    manager.sig_realtime_status.connect(tray.set_realtime_status)
+    manager.sig_realtime_transcript.connect(panel.append_response_chunk)
+
+    def _set_realtime_output_device(device_index: int) -> None:
+        manager.stop_realtime_voice(wait=True)
+        try:
+            cfg.set_realtime_output_device_index(
+                None if device_index < 0 else device_index
+            )
+            tray.rebuild_menu()
+        except Exception as exc:
+            tray.show_notification("Speaker setting unchanged", str(exc))
+
+    tray.on_set_realtime_output_device.connect(
+        _set_realtime_output_device
+    )
+
+
+    def _show_optional_feature_result(result) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        if not isinstance(result, tuple) or len(result) != 2:
+            return
+        kind, value = result
+        if kind == "error":
+            tray.show_notification("Restored feature unavailable", str(value))
+            return
+        if kind == "meeting":
+            cards = tuple(value)
+            if not cards:
+                tray.show_notification(
+                    "Meeting countdowns",
+                    "No meeting is due soon, or display is hidden by privacy mode.",
+                )
+                return
+            lines = [
+                f"Meeting soon — {max(0, card.remaining_seconds // 60)} min"
+                for card in cards
+            ]
+            QMessageBox.information(
+                None,
+                "Upcoming meetings",
+                "\n".join(lines),
+            )
+            return
+        if kind == "place":
+            card = value
+            QMessageBox.information(
+                None,
+                card.title,
+                "\n".join(
+                    (
+                        card.subtitle,
+                        card.coordinates,
+                        card.source_label,
+                        card.attribution,
+                        card.retrieved_at_label,
+                        card.freshness_label,
+                    )
+                ),
+            )
+            return
+        if kind == "stock":
+            card = value
+            QMessageBox.information(
+                None,
+                card.title,
+                "\n".join(
+                    (
+                        card.price_label,
+                        card.change_label,
+                        card.as_of_label,
+                        card.source_label,
+                        card.freshness_label,
+                        card.currency_label,
+                        card.informational_notice,
+                    )
+                ),
+            )
+
+    manager.sig_optional_feature_result.connect(
+        _show_optional_feature_result
+    )
+
+    def _run_optional_worker(operation) -> None:
+        def worker() -> None:
+            try:
+                operation()
+            except Exception as exc:
+                manager.sig_optional_feature_result.emit(
+                    ("error", str(exc))
+                )
+
+        threading.Thread(
+            target=worker,
+            name="clicky-optional-feature",
+            daemon=True,
+        ).start()
+
+    _place_provider_holder = [None]
+    _place_provider_lock = threading.Lock()
+
+    def _refresh_meeting_countdowns() -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        if QMessageBox.question(
+            None,
+            "Meeting countdown privacy",
+            "Show generic countdowns only for this request? Choose No if "
+            "the screen is shared. Clicky also suppresses output when Windows "
+            "reports a locked session.",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        def operation() -> None:
+            import asyncio
+            from optional_features_runtime import MeetingCountdownRuntime
+
+            cards = asyncio.run(
+                MeetingCountdownRuntime().refresh(
+                    enabled=cfg.meeting_countdowns_enabled,
+                    connector_read_allowed=user_permission_allowed(
+                        cfg,
+                        ActionCapability.CONNECTOR_READ,
+                    ),
+                    screen_shared=False,
+                )
+            )
+            manager.sig_optional_feature_result.emit(("meeting", cards))
+
+        _run_optional_worker(operation)
+
+    tray.on_refresh_meeting_countdowns.connect(
+        _refresh_meeting_countdowns
+    )
+
+    def _import_signed_skill() -> None:
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from optional_features_runtime import SignedSkillImportRuntime
+        from skills.signed_import import APPROVED_SIGNING_ROOTS
+
+        if not APPROVED_SIGNING_ROOTS:
+            tray.show_notification(
+                "Signed skill import unavailable",
+                "No production Ed25519 trust root is approved in this build.",
+            )
+            return
+        policy_name, _ = QFileDialog.getOpenFileName(
+            None,
+            "Choose signed trust policy",
+            "",
+            "Clicky trust policy (*.json);;JSON (*.json)",
+        )
+        if not policy_name:
+            return
+        package_name, _ = QFileDialog.getOpenFileName(
+            None,
+            "Choose signed skill package",
+            "",
+            "Clicky signed skill (*.clickyskill);;JSON (*.json)",
+        )
+        if not package_name:
+            return
+        try:
+            runtime = SignedSkillImportRuntime(
+                feature_enabled=cfg.signed_skill_import_enabled
+            )
+            _policy, preview = runtime.preview(
+                trust_policy_path=Path(policy_name),
+                package_path=Path(package_name),
+            )
+            capabilities = ", ".join(
+                capability.value for capability in preview.entry.capabilities
+            ) or "none"
+            approved = QMessageBox.question(
+                None,
+                "Activate verified signed skill?",
+                "\n".join(
+                    (
+                        f"Publisher: {preview.entry.publisher_name}",
+                        f"Skill: {preview.entry.name}",
+                        f"Version: {preview.entry.version}",
+                        f"Capabilities: {capabilities}",
+                        f"Package: {preview.package_digest}",
+                    )
+                ),
+            )
+            if approved != QMessageBox.StandardButton.Yes:
+                return
+            runtime.activate(
+                preview,
+                reviewed_approval_digest=preview.approval_digest,
+            )
+            if skills_catalog_panel is not None:
+                from skills.registry import (
+                    load_bundled_declarative_skills,
+                    register_signed_external_skills,
+                )
+
+                snapshot = register_signed_external_skills(
+                    load_bundled_declarative_skills(),
+                    runtime.active_entries(),
+                )
+                skills_catalog_panel.replace_snapshot(
+                    snapshot,
+                    developer_skills=skills_package.list_skills(),
+                )
+                tray.show_notification(
+                    "Signed skill activated",
+                    "The exact verified package is available in the local catalog.",
+                )
+            else:
+                tray.show_notification(
+                    "Signed skill verified and stored",
+                    "This build does not expose the declarative-skill catalog, "
+                    "so the package cannot run here.",
+                )
+        except Exception as exc:
+            tray.show_notification("Signed skill import failed", str(exc))
+
+    tray.on_import_signed_skill.connect(_import_signed_skill)
+
+    def _lookup_place() -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        from privacy_controls import external_place_search_allowed
+
+        if not external_place_search_allowed(cfg):
+            tray.show_notification(
+                "Place search disabled",
+                "Grant explicit place-search permission in Privacy permissions.",
+            )
+            return
+        query, accepted = QInputDialog.getText(
+            None,
+            "Find a place",
+            "Place query (sent only when you submit):",
+        )
+        query = query.strip()
+        if not accepted or not query:
+            return
+
+        def operation() -> None:
+            from datetime import datetime, timezone
+            from data_providers.places import (
+                REVIEWED_NOMINATIM_ENDPOINTS,
+                NominatimPlaceProvider,
+                PlaceProviderDisabledError,
+                PlaceSearchRequest,
+            )
+            from widgets.result_cards import place_result_card
+
+            if not REVIEWED_NOMINATIM_ENDPOINTS:
+                raise PlaceProviderDisabledError(
+                    "No reviewed self-hosted or contracted Nominatim endpoint "
+                    "is configured in this build."
+                )
+            endpoint_id = sorted(REVIEWED_NOMINATIM_ENDPOINTS)[0]
+            with _place_provider_lock:
+                provider = _place_provider_holder[0]
+                if provider is None:
+                    provider = NominatimPlaceProvider(
+                        endpoint_id,
+                        feature_enabled=True,
+                        external_search_consent=True,
+                    )
+                    _place_provider_holder[0] = provider
+            now = datetime.now(timezone.utc)
+            results = provider.search(
+                PlaceSearchRequest(query=query, user_initiated=True),
+                now=now,
+            )
+            if not results:
+                raise RuntimeError("The place provider returned no results")
+            manager.sig_optional_feature_result.emit(
+                ("place", place_result_card(results[0], now=now))
+            )
+
+        _run_optional_worker(operation)
+
+    tray.on_lookup_place.connect(_lookup_place)
+
+    def _lookup_stock() -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        from privacy_controls import market_data_allowed
+
+        if not market_data_allowed(cfg):
+            tray.show_notification(
+                "Stock cards disabled",
+                "Grant explicit market-data permission in Privacy permissions.",
+            )
+            return
+        symbol, accepted = QInputDialog.getText(
+            None,
+            "End-of-day stock quote",
+            "Ticker symbol:",
+        )
+        symbol = symbol.strip().upper()
+        if not accepted or not symbol:
+            return
+
+        def operation() -> None:
+            from datetime import datetime, timezone
+            from connectors.base import SecretValue
+            from data_providers.stocks import (
+                AlphaVantageEndOfDayProvider,
+                StockQuoteRequest,
+            )
+            from widgets.result_cards import stock_result_card
+
+            if not cfg.alpha_vantage_api_key:
+                raise RuntimeError(
+                    "ALPHA_VANTAGE_API_KEY is not configured."
+                )
+            secret = SecretValue(cfg.alpha_vantage_api_key.encode("ascii"))
+            try:
+                provider = AlphaVantageEndOfDayProvider(
+                    api_key=secret,
+                    feature_enabled=True,
+                    market_data_consent=True,
+                    license_confirmed=(
+                        cfg.alpha_vantage_license_confirmed
+                    ),
+                )
+                now = datetime.now(timezone.utc)
+                quote = provider.quote(
+                    StockQuoteRequest(
+                        symbol=symbol,
+                        user_initiated=True,
+                    ),
+                    now=now,
+                )
+                manager.sig_optional_feature_result.emit(
+                    ("stock", stock_result_card(quote, now=now))
+                )
+            finally:
+                secret.close()
+
+        _run_optional_worker(operation)
+
+    tray.on_lookup_stock.connect(_lookup_stock)
 
     def _selected_microphone_label() -> str:
         try:

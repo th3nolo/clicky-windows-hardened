@@ -294,6 +294,18 @@ class SkillsCatalogPanel(QWidget):
 
         self.refresh()
 
+    def replace_snapshot(
+        self,
+        snapshot: SkillRegistrySnapshot,
+        *,
+        developer_skills: Iterable[Mapping[str, Any]] = (),
+    ) -> None:
+        if not isinstance(snapshot, SkillRegistrySnapshot):
+            raise TypeError("Skills Catalog requires a registry snapshot")
+        self._snapshot = snapshot
+        self._entries = combined_skill_catalog(snapshot, developer_skills)
+        self.refresh()
+
     def refresh(self, catalog_id: str | None = None) -> None:
         selected = catalog_id
         if selected is None:

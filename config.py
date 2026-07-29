@@ -47,8 +47,13 @@ _PREFERENCE_BOOL_KEYS = {
     "microphone_consent",
     "cloud_stt_consent",
     "cloud_tts_consent",
+    "external_place_search_consent",
+    "market_data_consent",
     "screen_capture_consent",
     "coding_agent_consent",
+    "realtime_voice_enabled",
+    "signed_skill_import_enabled",
+    "meeting_countdowns_enabled",
     "global_dictation_permission",
     "screen_compose_permission",
     "task_agent_permission",
@@ -131,9 +136,17 @@ def _sanitize_preferences(values) -> dict:
         and 0 <= action_version <= ACTION_PERMISSION_SCHEMA_VERSION
     ):
         clean["action_permission_schema_version"] = action_version
-    mic = values.get("mic_device_index")
-    if mic is None or (isinstance(mic, int) and not isinstance(mic, bool) and 0 <= mic <= 4096):
-        clean["mic_device_index"] = mic
+    for device_key in (
+        "mic_device_index",
+        "realtime_output_device_index",
+    ):
+        device = values.get(device_key)
+        if device is None or (
+            isinstance(device, int)
+            and not isinstance(device, bool)
+            and 0 <= device <= 4096
+        ):
+            clean[device_key] = device
     return clean
 
 
@@ -286,6 +299,14 @@ class Config:
     tavily_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("TAVILY_API_KEY") or None
     )
+    alpha_vantage_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("ALPHA_VANTAGE_API_KEY") or None
+    )
+    alpha_vantage_license_confirmed: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CLICKY_ALPHA_VANTAGE_LICENSE_CONFIRMED") == "1"
+        )
+    )
     kimi_code_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("KIMI_CODE_API_KEY") or None
     )
@@ -380,6 +401,9 @@ class Config:
     mic_device_index: Optional[int] = field(
         default_factory=lambda: _preference("mic_device_index", None)
     )
+    realtime_output_device_index: Optional[int] = field(
+        default_factory=lambda: _preference("realtime_output_device_index", None)
+    )
     response_language: str = field(
         default_factory=lambda: _preference("response_language", "")
     )
@@ -426,11 +450,28 @@ class Config:
     cloud_tts_consent: bool = field(
         default_factory=lambda: bool(_preference("cloud_tts_consent", False))
     )
+    external_place_search_consent: bool = field(
+        default_factory=lambda: bool(
+            _preference("external_place_search_consent", False)
+        )
+    )
+    market_data_consent: bool = field(
+        default_factory=lambda: bool(_preference("market_data_consent", False))
+    )
     screen_capture_consent: bool = field(
         default_factory=lambda: bool(_preference("screen_capture_consent", False))
     )
     coding_agent_consent: bool = field(
         default_factory=lambda: bool(_preference("coding_agent_consent", False))
+    )
+    realtime_voice_enabled: bool = field(
+        default_factory=lambda: bool(_preference("realtime_voice_enabled", False))
+    )
+    signed_skill_import_enabled: bool = field(
+        default_factory=lambda: bool(_preference("signed_skill_import_enabled", False))
+    )
+    meeting_countdowns_enabled: bool = field(
+        default_factory=lambda: bool(_preference("meeting_countdowns_enabled", False))
     )
     action_permission_schema_version: int = field(
         default_factory=lambda: int(
@@ -845,6 +886,30 @@ class Config:
         self.web_search_enabled = bool(enabled)
         _save_preferences(web_search_enabled=self.web_search_enabled)
 
+    def set_realtime_output_device_index(self, device_index: int | None) -> None:
+        if device_index is not None and (
+            type(device_index) is not int or not 0 <= device_index <= 4096
+        ):
+            raise ValueError("Realtime output device is invalid")
+        self.realtime_output_device_index = device_index
+        _save_preferences(realtime_output_device_index=device_index)
+
+    def set_optional_feature(self, name: str, enabled: bool) -> None:
+        """Persist one reviewed, default-off feature switch."""
+        if type(enabled) is not bool:
+            raise TypeError("Optional feature state must be boolean")
+        attributes = {
+            "meeting_countdowns": "meeting_countdowns_enabled",
+            "realtime_voice": "realtime_voice_enabled",
+            "signed_skill_import": "signed_skill_import_enabled",
+        }
+        try:
+            attribute = attributes[name]
+        except (KeyError, TypeError) as exc:
+            raise ValueError("Unknown optional feature") from exc
+        setattr(self, attribute, enabled)
+        _save_preferences(**{attribute: enabled})
+
     def set_privacy_permissions(
         self,
         *,
@@ -853,6 +918,8 @@ class Config:
         cloud_tts: bool,
         screen_capture: bool,
         coding_agent: bool = False,
+        external_place_search: bool = False,
+        market_data: bool = False,
         notice_version: int,
         global_dictation: bool | None = None,
         screen_compose: bool | None = None,
@@ -866,6 +933,8 @@ class Config:
                 microphone,
                 cloud_stt,
                 cloud_tts,
+                external_place_search,
+                market_data,
                 screen_capture,
                 coding_agent,
             )
@@ -886,6 +955,8 @@ class Config:
             microphone_consent=microphone,
             cloud_stt_consent=cloud_stt,
             cloud_tts_consent=cloud_tts,
+            external_place_search_consent=external_place_search,
+            market_data_consent=market_data,
             screen_capture_consent=screen_capture,
             coding_agent_consent=coding_agent,
         )

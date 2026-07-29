@@ -51,6 +51,7 @@ from privacy_controls import (
     cloud_tts_allowed,
     coding_agent_allowed,
     microphone_allowed,
+    realtime_voice_allowed,
     screen_capture_allowed,
 )
 from screen.capture import capture_all_screens
@@ -319,6 +320,9 @@ class CompanionManager(QObject):
     sig_walkthrough_progress = pyqtSignal(object)          # WalkthroughProgress
     sig_walkthrough_ended = pyqtSignal(str)                # content-free reason
     sig_task_followup_transcript = pyqtSignal(str)
+    sig_realtime_status = pyqtSignal(str)
+    sig_realtime_transcript = pyqtSignal(str)
+    sig_optional_feature_result = pyqtSignal(object)
 
     def __init__(
         self,
@@ -345,6 +349,9 @@ class CompanionManager(QObject):
         self._microphone_test_id: str | None = None
         self._tts_preview_id: str | None = None
         self._tts_preview_future: concurrent.futures.Future | None = None
+        self._realtime_controller = None
+        self._realtime_future: concurrent.futures.Future | None = None
+        self._realtime_stopping = False
         walkthrough_targets = (
             walkthrough_target_guard
             if walkthrough_target_guard is not None
@@ -879,6 +886,7 @@ class CompanionManager(QObject):
             pass   # silent — not user-facing on startup
 
     def shutdown(self):
+        self.stop_realtime_voice(wait=True)
         self.stop_microphone_test(reason="shutdown")
         self.stop_tts_voice_preview(reason="shutdown")
         self._walkthrough.cancel("shutdown")
@@ -1307,6 +1315,7 @@ class CompanionManager(QObject):
         if (
             self._microphone_test_id is not None
             or self._tts_preview_id is not None
+            or getattr(self, "_realtime_controller", None) is not None
         ):
             self.sig_dictation_error.emit(
                 "Stop the active voice test or preview before starting Global "
@@ -1511,6 +1520,7 @@ class CompanionManager(QObject):
         if (
             self._microphone_test_id is not None
             or self._tts_preview_id is not None
+            or getattr(self, "_realtime_controller", None) is not None
         ):
             self._emit_turn_signal(
                 session,
@@ -2854,8 +2864,136 @@ class CompanionManager(QObject):
         except Exception as exc:
             self.sig_error.emit(f"Could not save language setting: {exc}")
 
+    def start_realtime_voice(self) -> bool:
+        """Claim selected audio devices and open one reviewed duplex session."""
+        from audio.realtime.controller import RealtimeVoiceController
+
+        if not realtime_voice_allowed(cfg):
+            self.sig_error.emit(
+                "Realtime voice is off. Enable it and grant microphone, cloud "
+                "speech-to-text, and cloud text-to-speech permissions."
+            )
+            return False
+        if not cfg.openai_api_key:
+            self.sig_error.emit(
+                "Realtime voice needs OPENAI_API_KEY in the process environment."
+            )
+            return False
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            self.sig_error.emit("Realtime voice loop is unavailable.")
+            return False
+        with self._input_lock:
+            if (
+                self._turns.active is not None
+                or self._dictation.active is not None
+                or self._microphone_test_id is not None
+                or self._tts_preview_id is not None
+                or self._realtime_controller is not None
+            ):
+                self.sig_error.emit(
+                    "Finish the active speech or action before starting Realtime voice."
+                )
+                return False
+            controller = RealtimeVoiceController(loop=loop)
+            self._realtime_controller = controller
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
+            future = self._submit(self._start_realtime_voice(controller))
+            if future is None:
+                self._realtime_controller = None
+                if microphone_allowed(cfg):
+                    try:
+                        self._listener.start()
+                    except Exception:
+                        pass
+                self.sig_error.emit("Realtime voice loop is unavailable.")
+                return False
+            self._realtime_future = future
+        self.sig_realtime_status.emit("connecting")
+        return True
+
+    async def _start_realtime_voice(self, controller) -> None:
+        try:
+            await controller.start(
+                api_key=cfg.openai_api_key or "",
+                feature_enabled=cfg.realtime_voice_enabled,
+                microphone_consent=cfg.microphone_consent,
+                cloud_stt_consent=cfg.cloud_stt_consent,
+                cloud_tts_consent=cfg.cloud_tts_consent,
+                input_device=cfg.mic_device_index,
+                output_device=cfg.realtime_output_device_index,
+                on_transcript=self.sig_realtime_transcript.emit,
+                on_barge_in=lambda: self.sig_realtime_status.emit("interrupted"),
+                on_error=self.sig_error.emit,
+            )
+        except Exception:
+            if self._realtime_stopping:
+                raise
+            if self._realtime_controller is controller:
+                self._realtime_controller = None
+            self._realtime_future = None
+            if microphone_allowed(cfg):
+                try:
+                    self._listener.start()
+                except Exception as restart_error:
+                    self.sig_error.emit(
+                        f"Could not restart microphone: {restart_error}"
+                    )
+            self.sig_realtime_status.emit("stopped")
+            raise
+        if self._realtime_stopping:
+            return
+        self._realtime_future = None
+        self.sig_realtime_status.emit("connected")
+
+    def stop_realtime_voice(self, *, wait: bool = False) -> bool:
+        with self._input_lock:
+            controller = self._realtime_controller
+            if controller is None:
+                return False
+            future = self._realtime_future
+            if not self._realtime_stopping:
+                self._realtime_stopping = True
+                if future is not None and not future.done():
+                    future.cancel()
+                future = self._submit(
+                    self._stop_realtime_voice(controller)
+                )
+                if future is None:
+                    self._realtime_stopping = False
+                    return False
+                self._realtime_future = future
+        if wait and future is not None:
+            try:
+                future.result(timeout=4.0)
+            except Exception as exc:
+                self.sig_error.emit(
+                    "Realtime voice did not stop cleanly: "
+                    f"{type(exc).__name__}"
+                )
+        return True
+
+    async def _stop_realtime_voice(self, controller) -> None:
+        try:
+            await controller.stop(cancel=True)
+        finally:
+            if self._realtime_controller is controller:
+                self._realtime_controller = None
+            self._realtime_stopping = False
+            self._realtime_future = None
+            if microphone_allowed(cfg):
+                try:
+                    self._listener.start()
+                except Exception as exc:
+                    self.sig_error.emit(f"Could not restart microphone: {exc}")
+            self.sig_realtime_status.emit("stopped")
+
     def set_mic_device(self, device_index: int):
         """Tray callback — switch input device without restarting the app."""
+        self.stop_realtime_voice(wait=True)
         self.stop_microphone_test(reason="device_changed")
         try:
             cfg.set_mic_device_index(device_index if device_index >= 0 else None)
@@ -2906,6 +3044,7 @@ class CompanionManager(QObject):
                 self._turns.active is not None
                 or self._dictation.active is not None
                 or self._tts_preview_id is not None
+                or getattr(self, "_realtime_controller", None) is not None
             ):
                 self.sig_error.emit(
                     "Stop the active voice operation before testing the "
@@ -3324,6 +3463,7 @@ class CompanionManager(QObject):
                 or self._dictation.active is not None
                 or self._microphone_test_id is not None
                 or self._tts_preview_id is not None
+                or getattr(self, "_realtime_controller", None) is not None
             ):
                 self.sig_error.emit(
                     "Stop the active voice operation before previewing a voice."
@@ -3447,6 +3587,7 @@ class CompanionManager(QObject):
 
     def stop(self):
         """Cancel the current owned turn and all of its resources. Bound to Esc."""
+        self.stop_realtime_voice()
         self.stop_microphone_test(reason="cancelled")
         self.stop_tts_voice_preview(reason="cancelled")
         self._walkthrough.cancel("cancelled")

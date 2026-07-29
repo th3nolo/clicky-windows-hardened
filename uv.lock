@@ -179,6 +179,7 @@ dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "anthropic", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "av", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "cryptography", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "edge-tts", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "faster-whisper", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "httpx", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
@@ -210,6 +211,7 @@ requires-dist = [
     { name = "aiohttp", specifier = "==3.14.2" },
     { name = "anthropic", specifier = "==0.112.0" },
     { name = "av", specifier = "==17.1.0" },
+    { name = "cryptography", specifier = "==45.0.7" },
     { name = "edge-tts", specifier = "==7.2.8" },
     { name = "faster-whisper", specifier = "==1.2.1" },
     { name = "httpx", specifier = "==0.28.1" },
@@ -250,6 +252,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c6/2a/65274c13327f637ec13af8d39f2cf579d9ebe7a0e683696b5f05236d2805/comtypes-1.4.16.tar.gz", hash = "sha256:cd66d1add01265cface4df51ba1e31cd1657e04463c281c802e737e79e1ba93c", size = 260252, upload-time = "2026-03-02T23:11:42.413Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/7c/0eb685107290b6221c03c46d39214a4e42a124189691cb83ae3228257f46/comtypes-1.4.16-py3-none-any.whl", hash = "sha256:e18d85179ff12955524c5a8c3bc09cb3c0d890f1da4d7123d14244c7b78f84c8", size = 296230, upload-time = "2026-03-02T23:11:41.049Z" },
+]
+
+[[package]]
+name = "cryptography"
+version = "45.0.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi", marker = "platform_machine == 'AMD64' and platform_python_implementation != 'PyPy' and sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a7/35/c495bffc2056f2dadb32434f1feedd79abde2a7f8363e1974afa9c33c7e2/cryptography-45.0.7.tar.gz", hash = "sha256:4b1654dfc64ea479c242508eb8c724044f1e964a47d1d1cacc5132292d851971", size = 744980, upload-time = "2025-09-01T11:15:03.146Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/61/0ab90f421c6194705a99d0fa9f6ee2045d916e4455fdbb095a9c2c9a520f/cryptography-45.0.7-cp311-abi3-win_amd64.whl", hash = "sha256:3808e6b2e5f0b46d981c24d79648e5c25c35e59902ea4391a0dcb3e667bf7443", size = 3405400, upload-time = "2025-09-01T11:14:18.958Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/ff/026513ecad58dacd45d1d24ebe52b852165a26e287177de1d545325c0c25/cryptography-45.0.7-cp37-abi3-win_amd64.whl", hash = "sha256:7285a89df4900ed3bfaad5679b1e668cb4b38a8de1ccbfc84b05f34512da0a90", size = 3392742, upload-time = "2025-09-01T11:14:38.368Z" },
+    { url = "https://files.pythonhosted.org/packages/23/87/7ce86f3fa14bc11a5a48c30d8103c26e09b6465f8d8e9d74cf7a0714f043/cryptography-45.0.7-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:1f3d56f73595376f4244646dd5c5870c14c196949807be39e79e7bd9bac3da63", size = 3332908, upload-time = "2025-09-01T11:14:58.78Z" },
 ]
 
 [[package]]
