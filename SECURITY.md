@@ -135,6 +135,17 @@ to Microsoft Edge TTS, OpenAI, or ElevenLabs. Coding-agent permission covers
 starting a separately installed Codex or Qwen Code process and discloses that
 the agent has its own read-only local tools and cloud account.
 
+The explicit **Ask with screen + voice** action additionally uses microphone,
+cloud-speech and screen-sharing permissions together. Its dialog names the
+selected model before recording. One bounded, in-memory H.264/AAC MP4 is sent
+to the fixed OpenRouter endpoint; regular STT is not invoked. Capture checks
+permissions and the sensitive-window guard repeatedly, pins the display and
+model, excludes Clicky-owned windows, and discards the clip on cancellation.
+**Send clipboard** reads text or an image only after the menu action and previews
+a detached copy before sharing. It never follows clipboard file paths. These
+responses do not execute control markup, skills, or tools; Task Center keeps
+its existing action approvals. These media inputs are not written to the journal.
+
 Temporary local-transcription WAV files are created in a protected per-user directory, removed after use, and swept after a terminated-process crash. Deletion cannot guarantee forensic erasure from SSDs, backups, snapshots, or other same-user processes that read a file while it existed.
 
 Web search and journal logging are also off by default. After explicit activation, the setting persists in the non-secret preferences file. The journal can contain questions, answers, provider and model names, active-application identifiers, and window titles. It is a local plaintext SQLite database.

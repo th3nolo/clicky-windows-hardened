@@ -11,6 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+MUSE_VIDEO_MODELS = frozenset({
+    "meta/muse-spark-1.2-contributor",
+    "meta/muse-spark-1.3-contributor",
+})
+
+
+def supports_video(provider: str, model: str | None) -> bool:
+    # Embedded-audio support is owner-confirmed for these exact endpoints.
+    # Keep identities dependency-free for model discovery and the stdlib CI job.
+    return provider == "openrouter" and model in MUSE_VIDEO_MODELS
+
+
 @dataclass(frozen=True, slots=True)
 class OpenAICompatibleSpec:
     provider_id: str
@@ -20,6 +32,12 @@ class OpenAICompatibleSpec:
 
 
 OPENAI_COMPATIBLE_SPECS: dict[str, OpenAICompatibleSpec] = {
+    "openrouter": OpenAICompatibleSpec(
+        provider_id="openrouter",
+        label="OpenRouter",
+        base_url="https://openrouter.ai/api/v1",
+        credential_attribute="openrouter_api_key",
+    ),
     "kimi_code": OpenAICompatibleSpec(
         provider_id="kimi_code",
         label="Kimi Code",

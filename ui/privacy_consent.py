@@ -60,7 +60,9 @@ class PrivacyConsentDialog(QDialog):
         self.cloud_stt.setChecked(bool(cfg.cloud_stt_consent))
         self.cloud_stt.setToolTip(
             "When a cloud speech provider is selected, Clicky may send captured "
-            "microphone audio to that provider for transcription."
+            "microphone audio to that provider for transcription. The explicit "
+            "Ask with screen + voice action also shares audio inside the video "
+            "with the selected audiovisual model."
         )
         layout.addWidget(self.cloud_stt)
         stt_notice = QLabel(

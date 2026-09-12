@@ -28,6 +28,9 @@ EventKind = Literal["capabilities", "ack", "error", "state", "text_delta", "done
 
 class ReasoningProvider(Protocol):
     @property
+    def video_enabled(self) -> bool: ...
+
+    @property
     def name(self) -> str: ...
 
     def generate(self, command: Submit) -> AsyncGenerator[str, None]: ...
@@ -107,8 +110,8 @@ class Worker:
                     command.request_id,
                     "capabilities",
                     provider=self.provider.name,
-                    inputs=["text"],
-                    audio_in_video=False,
+                    inputs=["text", "video"] if self.provider.video_enabled else ["text"],
+                    audio_in_video=self.provider.video_enabled,
                     tts=False,
                 )
             case Shutdown():

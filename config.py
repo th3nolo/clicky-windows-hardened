@@ -23,6 +23,7 @@ _PREFERENCE_STRING_LIMITS = {
     "minimax_plan_model": 256,
     "deepseek_model": 256,
     "qwen_model": 256,
+    "openrouter_model": 256,
     "codex_agent_model": 256,
     "qwen_code_agent_model": 256,
     "ollama_model": 256,
@@ -319,6 +320,9 @@ class Config:
     dashscope_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("DASHSCOPE_API_KEY") or None
     )
+    openrouter_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENROUTER_API_KEY") or None
+    )
     qwen_coding_plan_api_key: Optional[str] = field(
         default_factory=lambda: (
             os.environ.get("BAILIAN_CODING_PLAN_API_KEY") or None
@@ -356,6 +360,9 @@ class Config:
     )
     qwen_model: str = field(
         default_factory=lambda: _preference("qwen_model", "")
+    )
+    openrouter_model: str = field(
+        default_factory=lambda: _preference("openrouter_model", "")
     )
     codex_agent_model: str = field(
         default_factory=lambda: _preference("codex_agent_model", "")
@@ -579,6 +586,8 @@ class Config:
             out.append("deepseek")
         if self.dashscope_api_key:
             out.append("qwen")
+        if self.openrouter_api_key:
+            out.append("openrouter")
         from privacy_controls import coding_agent_allowed
 
         if coding_agent_allowed(self):
@@ -610,6 +619,7 @@ class Config:
             "minimax_plan": "minimax_plan_model",
             "deepseek": "deepseek_model",
             "qwen": "qwen_model",
+            "openrouter": "openrouter_model",
             "codex_agent": "codex_agent_model",
             "qwen_code_agent": "qwen_code_agent_model",
             "ollama": "ollama_model",
@@ -634,6 +644,7 @@ class Config:
             "minimax_plan": ("minimax_plan_model", "minimax_plan_model"),
             "deepseek": ("deepseek_model", "deepseek_model"),
             "qwen": ("qwen_model", "qwen_model"),
+            "openrouter": ("openrouter_model", "openrouter_model"),
             "codex_agent": ("codex_agent_model", "codex_agent_model"),
             "qwen_code_agent": (
                 "qwen_code_agent_model",

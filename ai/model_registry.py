@@ -26,7 +26,7 @@ from typing import Optional
 
 import httpx
 
-from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
+from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS, MUSE_VIDEO_MODELS
 from config import cfg
 
 
@@ -38,6 +38,10 @@ MAX_MODEL_RESPONSE_BYTES = 1024 * 1024
 # the on-disk cache is empty. Reasonable defaults so Clicky still works
 # offline / on first run before refresh completes.
 _FALLBACKS: dict[str, list[dict]] = {
+    "openrouter": [
+        {"id": model, "label": model, "vision": True}
+        for model in sorted(MUSE_VIDEO_MODELS)
+    ],
     "claude": [
         {"id": "claude-sonnet-4-6",          "label": "Claude Sonnet 4.6", "vision": True},
         {"id": "claude-opus-4-7",            "label": "Claude Opus 4.7",   "vision": True},
@@ -251,6 +255,8 @@ async def _fetch_gemini() -> list[dict]:
 
 
 def _compatible_vision(provider: str, model_id: str) -> bool:
+    if provider == "openrouter":
+        return model_id in MUSE_VIDEO_MODELS
     if provider == "qwen":
         return model_id.startswith(("qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus"))
     return False
@@ -262,6 +268,7 @@ async def _fetch_openai_compatible(provider: str) -> list[dict]:
     if not api_key:
         return []
     url = f"{spec.base_url.rstrip('/')}/models"
+    response_limit = 8 * MAX_MODEL_RESPONSE_BYTES if provider == "openrouter" else MAX_MODEL_RESPONSE_BYTES
     async with httpx.AsyncClient(
         timeout=15,
         trust_env=False,
@@ -276,7 +283,7 @@ async def _fetch_openai_compatible(provider: str) -> list[dict]:
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
-                if len(body) > MAX_MODEL_RESPONSE_BYTES:
+                if len(body) > response_limit:
                     raise ValueError("Provider model response exceeds size limit")
     payload = json.loads(bytes(body))
     data = payload.get("data", []) if isinstance(payload, dict) else []
@@ -286,6 +293,8 @@ async def _fetch_openai_compatible(provider: str) -> list[dict]:
             continue
         model_id = record.get("id")
         if not isinstance(model_id, str):
+            continue
+        if provider == "openrouter" and model_id not in MUSE_VIDEO_MODELS:
             continue
         out.append({
             "id": model_id,
@@ -311,6 +320,10 @@ async def _fetch_qwen() -> list[dict]:
     return await _fetch_openai_compatible("qwen")
 
 
+async def _fetch_openrouter() -> list[dict]:
+    return await _fetch_openai_compatible("openrouter")
+
+
 _FETCHERS = {
     "claude":  _fetch_claude,
     "openai":  _fetch_openai,
@@ -319,6 +332,7 @@ _FETCHERS = {
     "minimax_plan": _fetch_minimax_plan,
     "deepseek": _fetch_deepseek,
     "qwen": _fetch_qwen,
+    "openrouter": _fetch_openrouter,
 }
 
 

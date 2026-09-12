@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator, List
+from contextlib import aclosing
 
 import httpx
 from openai import AsyncOpenAI
 
 from ai.base_provider import BaseLLMProvider, Message
 from ai.model_selection import valid_model_id
-from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
+from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS, supports_video
+from ai.video_input import VideoInput
 from config import cfg
 
 
@@ -110,20 +112,39 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         system_prompt: str,
         model: str | None = None,
     ) -> AsyncGenerator[str, None]:
+        messages = _messages(user_text, screenshots_b64, history, system_prompt)
+        async with aclosing(self._stream_messages(messages, model)) as stream:
+            async for delta in stream:
+                yield delta
+
+    async def stream_video_response(
+        self, user_text: str, video: VideoInput, history: List[Message],
+        system_prompt: str, model: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        if not supports_video(self._spec.provider_id, model):
+            raise ValueError("Select a supported Muse video-and-audio model")
+        messages = _messages(user_text, [], history, system_prompt)
+        messages[-1]["content"].append({
+            "type": "video_url", "video_url": {"url": video.data_url},
+        })
+        async with aclosing(self._stream_messages(messages, model)) as stream:
+            async for delta in stream:
+                yield delta
+
+    async def _stream_messages(
+        self, messages: list[dict], model: str | None,
+    ) -> AsyncGenerator[str, None]:
         if not model or not valid_model_id(model):
             raise ValueError(
                 f"Select a validated {self._spec.label} model before sending."
             )
         stream = await self._client.chat.completions.create(
             model=model,
-            messages=_messages(
-                user_text,
-                screenshots_b64,
-                history,
-                system_prompt,
-            ),
+            messages=messages,
             max_tokens=MAX_OUTPUT_TOKENS,
             stream=True,
+            **({"extra_body": {"provider": {"allow_fallbacks": False}}}
+               if self._spec.provider_id == "openrouter" else {}),
         )
         try:
             async for chunk in stream:

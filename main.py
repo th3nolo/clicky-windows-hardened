@@ -678,6 +678,23 @@ def main():
     )
     tray.on_select_region.connect(_start_region_handoff)
 
+    def _screen_voice():
+        from ui.media_input import record_screen_voice
+        record_screen_voice(
+            panel, f"{cfg.llm_provider()} / {cfg.selected_model(cfg.llm_provider())}",
+            manager.start_video_capture, manager.send_video_capture, manager.cancel_video_capture,
+        )
+
+    def _clipboard_input():
+        from ui.media_input import review_clipboard
+        review_clipboard(
+            panel, f"{cfg.llm_provider()} / {cfg.selected_model(cfg.llm_provider())}",
+            manager.submit_clipboard,
+        )
+
+    tray.on_screen_voice.connect(_screen_voice)
+    tray.on_clipboard_input.connect(_clipboard_input)
+
     # Lesson recording
     def _record_start():
         out = manager.start_recording()

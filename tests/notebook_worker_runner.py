@@ -9,6 +9,7 @@ from clicky_core.worker import run
 
 class TestProvider:
     name = "test"
+    video_enabled = False
 
     async def generate(self, command: Submit) -> AsyncGenerator[str, None]:
         await asyncio.sleep(0.1)

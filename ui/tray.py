@@ -76,6 +76,8 @@ class TrayManager(QObject):
     on_open_task_center = pyqtSignal()
     on_manage_connected_accounts = pyqtSignal()
     on_select_region = pyqtSignal()
+    on_screen_voice = pyqtSignal()
+    on_clipboard_input = pyqtSignal()
     on_diagnostics        = pyqtSignal()
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_test_microphone    = pyqtSignal()
@@ -161,6 +163,9 @@ class TrayManager(QObject):
 
         stop_action = menu.addAction("Stop (Esc)")
         stop_action.triggered.connect(self.on_stop)
+
+        menu.addAction("Ask with screen + voice…").triggered.connect(self.on_screen_voice)
+        menu.addAction("Send clipboard…").triggered.connect(self.on_clipboard_input)
 
         menu.addSeparator()
 

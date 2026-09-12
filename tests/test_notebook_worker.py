@@ -19,6 +19,7 @@ from ai.base_provider import BaseLLMProvider
 from clicky_core.commands import COMMANDS, Submit
 from clicky_core.provider import ClickyProvider
 from clicky_core.worker import Worker
+from clicky_core.transport import MAX_LINE_BYTES
 from tests.notebook_worker_runner import TestProvider
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -253,7 +254,7 @@ class NotebookWorkerTests(unittest.TestCase):
 
     def test_oversized_unterminated_line_is_bounded_and_fatal(self):
         # No newline: readline() without a bound would wait for more input.
-        self.worker.raw(b"x" * 65537)
+        self.worker.raw(b"x" * (MAX_LINE_BYTES + 1))
         event = self.worker.event()
         self.assertEqual(event["type"], "error", event)
         self.assertEqual(event.get("code"), "invalid_request", event)
@@ -296,6 +297,7 @@ class TypedWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         class Provider:
             name = "test"
+            video_enabled = False
 
             async def generate(self, request: Submit) -> AsyncGenerator[str, None]:
                 if request.turn_id == "turn-2":
@@ -330,6 +332,7 @@ class TypedWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         class Provider:
             name = "test"
+            video_enabled = False
 
             async def generate(self, request: Submit) -> AsyncGenerator[str, None]:
                 if request.turn_id == "turn-1":
