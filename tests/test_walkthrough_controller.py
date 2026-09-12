@@ -474,12 +474,8 @@ class WalkthroughUiAndWiringTests(unittest.TestCase):
             "if self._walkthrough.active:",
             source,
         )
-        self.assertIn(
-            "await self._advance_walkthrough(\n"
-            "                        session,\n"
-            "                        from_voice=True,",
-            source,
-        )
+        # Voice NEXT routing is exercised by TutorRoutingTests; its formatting
+        # and location within the manager are not part of this contract.
         self.assertGreaterEqual(
             source.count(
                 'self._walkthrough.cancel("voice_input_failed")'
