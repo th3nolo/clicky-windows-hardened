@@ -12,7 +12,7 @@ No API key is required for local use; LM Studio ignores the field.
 """
 
 import json
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 import httpx
 
@@ -42,7 +42,7 @@ class LMStudioProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         chosen = model or self._model or "local-model"
 
         messages = [{"role": "system", "content": system_prompt}]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 import httpx
 from openai import AsyncOpenAI
@@ -109,7 +109,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         if not model or not valid_model_id(model):
             raise ValueError(
                 f"Select a validated {self._spec.label} model before sending."

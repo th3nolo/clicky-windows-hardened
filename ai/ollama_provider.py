@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import json
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 import httpx
 
@@ -91,7 +91,7 @@ class OllamaProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         # Resolution order:
         #   1. explicit `model=` arg (panel override)
         #   2. cfg vision/text slot based on attachment kind

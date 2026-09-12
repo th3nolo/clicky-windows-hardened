@@ -1,110 +1,85 @@
-"""Versioned JSONL worker. The bundled provider is an explicit text-only demo."""
+"""Typed JSONL transport and turn ownership for injected reasoning providers."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
 import json
-import os
-import queue
-import sys
-import threading
-from typing import Any, Protocol
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
+from dataclasses import dataclass
+from typing import Literal, Protocol, assert_never
 
+from pydantic import JsonValue, ValidationError
+
+from clicky_core.commands import (
+    COMMANDS,
+    IDENTIFIERS,
+    Cancel,
+    Capabilities,
+    Command,
+    Shutdown,
+    Submit,
+)
+from clicky_core.transport import stdin_lines
 from turn_coordinator import TurnCoordinator, TurnSession
 
-MAX_LINE_BYTES = 65536
+EventKind = Literal["capabilities", "ack", "error", "state", "text_delta", "done"]
 
 
 class ReasoningProvider(Protocol):
-    def generate(self, text: str, context: dict[str, Any]) -> AsyncIterator[str]: ...
+    @property
+    def name(self) -> str: ...
+
+    def generate(self, command: Submit) -> AsyncGenerator[str, None]: ...
 
 
-class DemoProvider:
-    """Exercise transport and cancellation without pretending to provide AI."""
-
-    async def generate(self, text: str, context: dict[str, Any]) -> AsyncIterator[str]:
-        await asyncio.sleep(0.1)
-        yield f"[Demo] Received: {text}\nNo AI reasoning, video or speech is enabled."
-
-
-def _identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and len(value) <= 128
-
-
-def validate_command(raw: Any) -> dict[str, Any]:
-    """Validate the complete command before changing any state."""
-    if not isinstance(raw, dict):
-        raise ValueError("Command must be a JSON object")
-    if type(raw.get("protocol_version")) is not int or raw["protocol_version"] != 1:
-        raise ValueError("protocol_version must be 1")
-    if not _identifier(raw.get("request_id")):
-        raise ValueError("request_id must be a nonempty string of at most 128 characters")
-    kind = raw.get("type")
-    if kind not in ("capabilities", "submit", "cancel", "shutdown"):
-        raise ValueError("Unsupported command type")
-    fields = {"protocol_version", "request_id", "type"}
-    if kind in ("submit", "cancel"):
-        fields.add("turn_id")
-        if not _identifier(raw.get("turn_id")):
-            raise ValueError("turn_id must be a nonempty string of at most 128 characters")
-    if kind == "submit":
-        fields.update(("text", "context"))
-        text = raw.get("text")
-        if not isinstance(text, str) or not text.strip() or len(text) > 8000:
-            raise ValueError("text must be a nonempty string of at most 8000 characters")
-        context = raw.get("context")
-        if not isinstance(context, dict) or context.get("scope") not in ("notebook", "desktop"):
-            raise ValueError("context.scope must be notebook or desktop")
-        expected = {"scope"}
-        if context["scope"] == "notebook":
-            expected.update(("notebook_id", "page_id", "revision"))
-            if not all(_identifier(context.get(key)) for key in ("notebook_id", "page_id")):
-                raise ValueError("Notebook context requires notebook_id and page_id")
-            if type(context.get("revision")) is not int or context["revision"] < 0:
-                raise ValueError("revision must be a nonnegative integer")
-        if set(context) != expected:
-            raise ValueError("Unsupported or missing context fields")
-    if set(raw) != fields:
-        raise ValueError("Unsupported or missing command fields")
-    return raw
-
-
-def _write_event(event: dict[str, Any]) -> None:
+def _write_event(event: dict[str, JsonValue]) -> None:
     # ASCII escapes keep JSONL valid even on Windows consoles with legacy encodings.
     print(json.dumps(event, ensure_ascii=True), flush=True)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ActiveTurn:
     session: TurnSession
-    request_id: str
-    turn_id: str
-    context: dict[str, Any]
+    command: Submit
 
 
 class Worker:
     """Single-event-loop owner of provider tasks and their correlated events."""
 
-    def __init__(self, provider: ReasoningProvider | None = None,
-                 emit: Callable[[dict[str, Any]], None] | None = None) -> None:
-        self.provider = provider if provider is not None else DemoProvider()
+    def __init__(
+        self,
+        provider: ReasoningProvider,
+        emit: Callable[[dict[str, JsonValue]], None] | None = None,
+    ) -> None:
+        self.provider = provider
         self.emit = emit if emit is not None else _write_event
         self.coordinator = TurnCoordinator()
         self.active: ActiveTurn | None = None
-        self.tasks: set[asyncio.Task] = set()
+        self.tasks: set[asyncio.Task[None]] = set()
         self.stopped = False
 
-    def event(self, request_id: str | None, kind: str, **fields: Any) -> None:
-        self.emit({"protocol_version": 1, "request_id": request_id, "type": kind, **fields})
+    def event(
+        self, request_id: str | None, kind: EventKind, **fields: JsonValue
+    ) -> None:
+        self.emit(
+            {"protocol_version": 1, "request_id": request_id, "type": kind, **fields}
+        )
 
     def error(self, request_id: str | None, code: str, message: str) -> None:
         self.event(request_id, "error", code=code, message=message)
 
-    def turn_event(self, turn: ActiveTurn, kind: str, **fields: Any) -> None:
-        self.event(turn.request_id, kind, turn_id=turn.turn_id,
-                   context=dict(turn.context), **fields)
+    def turn_event(
+        self, turn: ActiveTurn, kind: EventKind, **fields: JsonValue
+    ) -> None:
+        command = turn.command
+        self.event(
+            command.request_id,
+            kind,
+            turn_id=command.turn_id,
+            context=command.context.model_dump(mode="json"),
+            **fields,
+        )
 
     def cancel_active(self) -> None:
         turn = self.active
@@ -113,98 +88,115 @@ class Worker:
             self.coordinator.cancel(turn.session)
             self.turn_event(turn, "done", status="cancelled")
 
-    def handle(self, raw: Any) -> None:
-        request_id = raw.get("request_id") if isinstance(raw, dict) else None
-        if not _identifier(request_id):
-            request_id = None
+    def receive(self, raw: object) -> None:
+        """Validate untrusted input before entering the typed command handler."""
         try:
-            command = validate_command(raw)
-        except ValueError as exc:
-            self.error(request_id, "invalid_request", str(exc))
+            command = COMMANDS.validate_python(raw)
+        except ValidationError:
+            self.error(_request_id(raw), "invalid_request", "Invalid command fields")
             return
-        if self.stopped:
-            self.error(request_id, "worker_stopped", "Worker has shut down")
-            return
-        kind = command["type"]
-        if kind == "capabilities":
-            self.event(request_id, "capabilities", provider="demo", inputs=["text"],
-                       audio_in_video=False, tts=False)
-        elif kind == "shutdown":
-            self.close()
-            self.event(request_id, "ack", status="shutdown")
-        elif kind == "cancel":
-            if self.active is None or self.active.turn_id != command["turn_id"]:
-                self.error(request_id, "turn_not_active", "Requested turn is not active")
-                return
-            self.cancel_active()
-            self.event(request_id, "ack", status="cancelled")
-        else:
-            session = self.coordinator.start_processing()
-            if session is None:
-                self.error(request_id, "busy", "Another turn is active")
-                return
-            turn = ActiveTurn(session, request_id, command["turn_id"], dict(command["context"]))
-            self.active = turn
-            self.turn_event(turn, "state", status="processing")
-            task = asyncio.create_task(self._respond(turn, command["text"]))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
-            self.coordinator.bind_task(session, task)
+        self.handle(command)
 
-    async def _respond(self, turn: ActiveTurn, text: str) -> None:
+    def handle(self, command: Command) -> None:
+        if self.stopped:
+            self.error(command.request_id, "worker_stopped", "Worker has shut down")
+            return
+        match command:
+            case Capabilities():
+                self.event(
+                    command.request_id,
+                    "capabilities",
+                    provider=self.provider.name,
+                    inputs=["text"],
+                    audio_in_video=False,
+                    tts=False,
+                )
+            case Shutdown():
+                self.close()
+                self.event(command.request_id, "ack", status="shutdown")
+            case Cancel():
+                self._cancel(command)
+            case Submit():
+                self._submit(command)
+            case _:
+                assert_never(command)
+
+    def _cancel(self, command: Cancel) -> None:
+        if self.active is None or self.active.command.turn_id != command.turn_id:
+            self.error(
+                command.request_id, "turn_not_active", "Requested turn is not active"
+            )
+            return
+        self.cancel_active()
+        self.event(command.request_id, "ack", status="cancelled")
+
+    def _submit(self, command: Submit) -> None:
+        session = self.coordinator.start_processing()
+        if session is None:
+            self.error(command.request_id, "busy", "Another turn is active")
+            return
+        turn = ActiveTurn(session, command)
+        self.active = turn
+        self.turn_event(turn, "state", status="processing")
+        task = asyncio.create_task(self._respond(turn))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        self.coordinator.bind_task(session, task)
+
+    async def _respond(self, turn: ActiveTurn) -> None:
         try:
-            async for delta in self.provider.generate(text, dict(turn.context)):
-                if not self.coordinator.is_current(turn.session):
-                    return
-                if not isinstance(delta, str):
-                    raise TypeError("Provider deltas must be text")
-                self.turn_event(turn, "text_delta", delta=delta)
-            if self.coordinator.complete(turn.session):
-                self.active = None
-                self.turn_event(turn, "done", status="completed")
-        except asyncio.CancelledError:
-            # The command handler emits the single cancellation event before any ack.
-            raise
+            async with aclosing(self.provider.generate(turn.command)) as stream:
+                async for delta in stream:
+                    if not self.coordinator.is_current(turn.session):
+                        return
+                    self.turn_event(turn, "text_delta", delta=delta)
         except Exception:
-            if self.coordinator.complete(turn.session):
-                self.active = None
-                self.turn_event(turn, "error", code="provider_error", message="Provider failed")
-                self.turn_event(turn, "done", status="failed")
+            # Unexpected provider failures are contained at this task boundary.
+            # CancelledError propagates; cancellation already owns its done event.
+            self._finish(turn, failed=True)
+        else:
+            self._finish(turn)
+
+    def _finish(self, turn: ActiveTurn, *, failed: bool = False) -> None:
+        if not self.coordinator.complete(turn.session):
+            return
+        self.active = None
+        if failed:
+            self.turn_event(
+                turn, "error", code="provider_error", message="Provider failed"
+            )
+        self.turn_event(turn, "done", status="failed" if failed else "completed")
+
+    def receive_line(self, line: bytes) -> None:
+        try:
+            raw: object = json.loads(
+                line.decode("utf-8"),
+                object_pairs_hook=_strict_object,
+                parse_constant=_reject_constant,
+            )
+        except (ValueError, UnicodeError, RecursionError):
+            self.error(None, "invalid_request", "Invalid JSON command")
+        else:
+            self.receive(raw)
 
     def close(self) -> None:
         self.stopped = True
         self.cancel_active()
 
 
-def _read_stdin(incoming: queue.Queue) -> None:
-    """A daemon reader can block on Windows stdin without preventing shutdown."""
-    try:
-        pending = bytearray()
-        while True:
-            # Avoid buffered stdin: its lock can abort Python during finalization
-            # when shutdown is requested while the parent still holds the pipe open.
-            chunk = os.read(sys.stdin.fileno(), min(4096, MAX_LINE_BYTES + 1 - len(pending)))
-            if not chunk:
-                if pending:
-                    incoming.put(bytes(pending))
-                incoming.put(b"")
-                return
-            pending.extend(chunk)
-            while (end := pending.find(b"\n")) >= 0:
-                if end + 1 > MAX_LINE_BYTES:
-                    incoming.put(ValueError("Input line exceeds 65536 bytes"))
-                    return
-                incoming.put(bytes(pending[:end + 1]))
-                del pending[:end + 1]
-            if len(pending) > MAX_LINE_BYTES:
-                incoming.put(ValueError("Input line exceeds 65536 bytes"))
-                return
-    except Exception:
-        incoming.put(ValueError("Failed to read stdin"))
+def _request_id(raw: object) -> str | None:
+    match raw:
+        case {"request_id": value}:
+            try:
+                return IDENTIFIERS.validate_python(value, strict=True)
+            except ValidationError:
+                return None
+        case _:
+            return None
 
 
-def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
+def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
             raise ValueError("Duplicate JSON field")
@@ -216,39 +208,16 @@ def _reject_constant(value: str) -> None:
     raise ValueError("Non-finite JSON number")
 
 
-async def run() -> None:
-    incoming: queue.Queue = queue.Queue(maxsize=16)
-    threading.Thread(target=_read_stdin, args=(incoming,), daemon=True).start()
-    worker = Worker()
+async def run(provider: ReasoningProvider) -> None:
+    worker = Worker(provider)
     try:
-        while not worker.stopped:
-            try:
-                line = incoming.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.01)
-                continue
-            if isinstance(line, Exception):
-                worker.error(None, "invalid_request", str(line))
-                break
-            if not line:
-                break
-            try:
-                raw = json.loads(line.decode("utf-8"), object_pairs_hook=_strict_object,
-                                 parse_constant=_reject_constant)
-            except (ValueError, UnicodeError, RecursionError):
-                worker.error(None, "invalid_request", "Invalid JSON command")
-            else:
-                worker.handle(raw)
-            # Give provider/cancellation tasks time even when commands arrive in bulk.
-            await asyncio.sleep(0)
+        async with aclosing(stdin_lines()) as lines:
+            async for line in lines:
+                worker.receive_line(line)
+                if worker.stopped:
+                    break
+    except ValueError as exc:
+        worker.error(None, "invalid_request", str(exc))
     finally:
         worker.close()
-        if worker.tasks:
-            await asyncio.gather(*worker.tasks, return_exceptions=True)
-
-
-def main() -> None:
-    try:
-        asyncio.run(run())
-    except (BrokenPipeError, KeyboardInterrupt):
-        pass
+        await asyncio.gather(*worker.tasks, return_exceptions=True)

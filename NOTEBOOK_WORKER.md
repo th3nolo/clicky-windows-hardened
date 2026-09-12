@@ -1,64 +1,56 @@
-# Notebook worker foundation
+# Notebook worker
 
-This is the first executable boundary between InkNotes and Clicky. It is a
-development worker with an explicit demo provider, not an AI tutor. It runs
-without Qt, a microphone, credentials, network access or third-party packages.
-The existing Clicky desktop entry point is unchanged.
+The worker reuses Clicky's existing inference providers and turn coordinator
+without importing the desktop UI. Production has no demo provider or fallback.
+It currently sends text only; InkNotes UI, audiovisual clips, OCR/LaTeX and
+TTS are still unimplemented. This is not an installed or packaged integration.
 
-The first milestone proves framing, context identity, cancellation and child
-process shutdown before adding audiovisual capture or an inference endpoint.
+## Run
 
-## Run and verify
-
-From this repository checkout, using the project's supported Python runtime:
+Use the repository's locked Windows environment, installed through `build.bat`.
+Select both the provider and model explicitly:
 
 ```console
-python -m clicky_core
+uv run --no-sync python -m clicky_core --provider openai --model gpt-4o-mini
 ```
 
-The worker reads one UTF-8 JSON command per line on stdin and writes JSON events
-to stdout. Diagnostics belong on stderr. The parent keeps stdin open while it
-waits for replies; EOF closes the worker and cancels active work.
+That example uses the existing OpenAI provider and its configured credentials.
+`--help` lists the supported provider IDs, including local Ollama and LM Studio.
+Local providers retain their existing endpoint/model configuration checks.
+There is no automatic model selection, provider fallback, capture, or upload of
+notebook identifiers. A valid-looking model ID is not proof of model access;
+provider errors surface as a failed turn. Provider initialization failures exit
+with a generic diagnostic on stderr. No live endpoint has been verified as
+part of this refactor.
 
-For example, send:
+Send one UTF-8 JSON command per line on stdin; read JSON events from stdout.
+Keep stdin open while waiting for a reply. EOF cancels active work.
 
 ```json
 {"protocol_version":1,"request_id":"caps-1","type":"capabilities"}
-{"protocol_version":1,"request_id":"ask-1","type":"submit","turn_id":"turn-1","text":"Review this step","context":{"scope":"notebook","notebook_id":"book-1","page_id":"page-1","revision":7}}
+{"protocol_version":1,"request_id":"ask-1","type":"submit","turn_id":"turn-1","text":"Help me understand x squared equals four","context":{"scope":"notebook","notebook_id":"book-1","page_id":"page-1","revision":7}}
 ```
 
-Wait for `done` before submitting another turn. The demo response is marked
-`[Demo]`; it echoes the request and does not evaluate the mathematics. To end
-the process, send:
+Wait for `done` before another submission. To stop:
 
 ```json
 {"protocol_version":1,"request_id":"stop-1","type":"shutdown"}
 ```
 
-Do not pipe a submit followed by immediate EOF when testing a completed reply:
-EOF intentionally cancels the in-flight turn.
+## Contract and ownership
 
-Run the offline tests:
-
-```console
-python -m unittest -v tests.test_notebook_worker tests.test_turn_coordinator
-```
-
-## Protocol v1
-
-Every command has `protocol_version: 1`, a non-empty `request_id` (at most 128
-characters), and `type`. Identifiers are host-generated opaque strings, not
-paths. All output events include `protocol_version`, `request_id`, and `type`.
+Every command requires integer `protocol_version: 1`, a nonblank `request_id`
+of at most 128 characters, and `type`. Unknown or missing fields are rejected.
 
 | Command | Additional fields | Result |
 | --- | --- | --- |
-| `capabilities` | None | `capabilities`, with `provider: "demo"`, `inputs: ["text"]`, `audio_in_video: false`, `tts: false` |
-| `submit` | `turn_id`, `text`, `context` | `state` / processing, `text_delta`, then `done` / completed |
-| `cancel` | `turn_id` | Active submit receives `done` / cancelled; cancellation request receives `ack` / cancelled |
-| `shutdown` | None | Cancel active work, `ack` / shutdown, then exit even if stdin is still open |
+| `capabilities` | None | Actual selected provider name; text input, no video/audio or TTS |
+| `submit` | `turn_id`, `text`, `context` | Processing event, streamed text, completion or failure |
+| `cancel` | `turn_id` | Matching turn completes as cancelled before the cancellation acknowledgement |
+| `shutdown` | None | Active turn cancelled, acknowledgement, exit without waiting for stdin EOF |
 
-`turn_id` is non-empty and at most 128 characters. `text` is non-empty and at
-most 8,000 characters. This version accepts exactly these context forms:
+`turn_id` follows the same identifier constraints as `request_id`; text is
+nonblank and at most 8,000 characters. Context is exactly one of:
 
 ```json
 {"scope":"notebook","notebook_id":"book-1","page_id":"page-1","revision":7}
@@ -68,55 +60,57 @@ most 8,000 characters. This version accepts exactly these context forms:
 {"scope":"desktop"}
 ```
 
-Notebook identifiers are non-empty and at most 128 characters; revision is a
-non-negative integer, not a JSON boolean. Unknown context fields are rejected.
-Desktop scope here is only context identity: it grants no screen access and
-does not trigger any capture.
+Notebook IDs follow the same identifier rules. Revision must be a nonnegative
+integer; booleans and floats are rejected. Context is validated, immutable and
+retained locally for response correlation. Desktop scope does not grant screen
+access or trigger capture. Every turn event carries its originating request,
+turn and context. The host should compare page/revision before displaying a
+result and reject events from an old worker instance.
 
-Every per-turn event preserves the originating submit's `request_id`,
-`turn_id`, and `context`. A cancel acknowledgement uses the cancellation
-command's own `request_id`. The host should generate fresh IDs, reject events
-from a prior worker instance, and compare the notebook/page/revision before
-displaying or applying a result.
+Only one turn runs at a time. Concurrent submission reports `busy`; mismatched
+cancellation reports `turn_not_active`. Cancellation invalidates the turn before
+another can start. Late provider output cannot complete or update a newer turn.
 
-Only one turn runs at a time. Another submit returns `error` with `code: busy`.
-A cancel for a different turn returns `turn_not_active` and leaves the active
-turn unchanged. Invalid input returns `invalid_request`; a missing or invalid
-request identifier is returned as `null`. Malformed JSON does not end the
-session. Lines over 65,536 bytes cause an error and terminate the session so
-input memory stays bounded. No media fields or implicit provider fallback are
-accepted in this version.
+Malformed requests report `invalid_request` without echoing payloads. A valid
+request ID is preserved on schema errors; otherwise it is null. Duplicate JSON
+fields and nonfinite constants are rejected. Input lines are bounded to 65,536
+bytes including newline; oversized input produces an error and ends the worker.
+The input queue is bounded and applies backpressure without polling.
 
-## Ownership and compatibility
+A private buffered stdin duplicate avoids holding Python's standard-input lock
+at interpreter shutdown. A daemon reader is necessary because Windows stdin
+cannot reliably use the POSIX asyncio pipe transport. It may remain blocked
+until process exit when the parent keeps the pipe open. The host must drain
+stdout/stderr concurrently and enforce a bounded child shutdown timeout.
 
-`clicky_core` reuses the existing `turn_coordinator.py`; it does not copy or
-move that implementation. The worker's reasoning provider is injectable for
-development and tests, but the CLI only selects the demo provider. A future
-packaged worker must include the existing coordinator module. This checkout
-is not yet a standalone wheel or an installed InkNotes integration.
+## Python conventions
 
-Cancellation invalidates the active turn before replacement work can start.
-The input loop remains responsive while a response is pending. Child exit
-must not affect notebook persistence. A host must drain stdout and stderr
-concurrently and terminate a non-responsive child after a bounded shutdown
-timeout; it must not automatically replay a request after a crash.
+- Schemas validate external data once; internal commands use immutable typed models.
+- `ReasoningProvider` is a small structural interface: a name and a stream of text
+  from a typed `Submit`. `ClickyProvider` adapts the existing backend contract.
+- Dispatch matches command types exhaustively. Separate methods own cancellation,
+  submission and completion. Runtime state guards remain where behavior needs them.
+- New code must not introduce `Any`, unparameterized containers, or type-check
+  suppression. `object` is for untrusted input before validation; `JsonValue`
+  is for serialized event payloads. Older modules still have typing debt.
+- Fake providers belong in tests. No generic plugin registry or inheritance tree
+  is needed to exchange a reasoning implementation.
 
-## Next increment: attach InkNotes
+Run from an environment containing Pydantic:
 
-Keep C# responsible for its UI, page state and persistence. Add a small worker
-client service with redirected stdio and a view-model-owned current request.
-Launch with an explicit executable/argument list rather than a shell command.
-Marshal display updates onto WPF's dispatcher. Expose send, cancel and worker
-status in a developer-only panel until the integration is validated.
+```console
+python -W error::ResourceWarning -m unittest tests.test_notebook_worker tests.test_turn_coordinator tests.test_dependency_policy
+mypy --config-file pyproject.toml
+```
 
-Acceptance: start the child, request capabilities, send a selected page's
-identity and typed question, display a demo reply, cancel a second turn, and
-close/restart the child without losing notebook edits. Windows build, native
-UI testing and the InkNotes repository's required checks remain necessary.
+Mypy configuration checks `clicky_core` strictly and rejects explicit `Any`.
+Its Pydantic plugin generates typed constructors. Mypy is an external development
+tool, not part of the locked runtime or an automated CI gate yet. The Windows
+locked-environment test job runs the worker tests; the standard-library-only
+job deliberately excludes them. Test subprocesses use a provider defined only
+in `tests/notebook_worker_runner.py` and make no external calls.
 
-The following increment replaces the demo with one tested multimodal provider
-and a finite audiovisual clip: activation -> selected source plus microphone
--> stop -> model text -> independent TTS. Both notebook and desktop hosts will
-use that same flow. Capturing video, preserving its audio timeline, local or
-remote TTS, OCR/LaTeX, exercise grading and packaged distribution are not
-implemented by this foundation.
+Next product increment: connect the WPF client on Windows, then implement the
+requested synchronized video/microphone input and independent TTS. Existing
+Clicky inference adapters accept text/JPEG; they do not establish Muse Spark
+video/audio API support.

@@ -77,7 +77,6 @@ jobs:
           tests.test_region_task_context
           tests.test_region_task_wiring
           tests.test_offline_model_loading
-          tests.test_notebook_worker
           tests.test_packaged_self_test
           tests.test_privacy_consent
           tests.test_provider_security

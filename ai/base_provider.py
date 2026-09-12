@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 from dataclasses import dataclass
 
 
@@ -13,14 +13,14 @@ class BaseLLMProvider(ABC):
     """All LLM providers implement this interface."""
 
     @abstractmethod
-    async def stream_response(
+    def stream_response(
         self,
         user_text: str,
         screenshots_b64: List[str],
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         """Yields text chunks as they stream in."""
         ...
 

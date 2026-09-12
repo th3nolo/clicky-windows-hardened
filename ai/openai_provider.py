@@ -1,4 +1,4 @@
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 from openai import AsyncOpenAI
 
@@ -27,7 +27,7 @@ class OpenAIProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         model = model or cfg.openai_default_model or DEFAULT_MODEL
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -50,10 +50,13 @@ class OpenAIProvider(BaseLLMProvider):
             max_tokens=MAX_TOKENS,
             stream=True,
         )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+        try:
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield delta.content
+        finally:
+            await stream.close()
 
     async def health_check(self) -> bool:
         try:

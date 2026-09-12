@@ -31,7 +31,7 @@ import tempfile
 import time
 import webbrowser
 from pathlib import Path
-from typing import AsyncIterator, List, Optional
+from typing import AsyncGenerator, List, Optional
 
 import httpx
 
@@ -556,7 +556,7 @@ class GitHubCopilotProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         # Dynamic default — picks the best free + vision-capable model from
         # whatever GitHub currently exposes for this seat.
         model = model or pick_default_free_model()

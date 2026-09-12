@@ -1,4 +1,4 @@
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 import anthropic
 
@@ -21,7 +21,7 @@ class ClaudeProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         model = model or DEFAULT_MODEL
 
         messages = []
