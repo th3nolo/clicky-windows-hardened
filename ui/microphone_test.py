@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import secrets
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
@@ -16,10 +16,23 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 
 TEST_DURATION_SECONDS = 10.0
+
+_STOP_MESSAGES = {
+    "timeout": ("Test complete", "The 10-second local test ended automatically."),
+    "permission_revoked": (
+        "Permission revoked", "Microphone permission was revoked; the test stopped."
+    ),
+    "device_changed": (
+        "Device changed", "The selected microphone changed; start a new test."
+    ),
+    "stopped": ("Stopped", "The local microphone test is stopped."),
+}
+_STOP_MESSAGES["device_reset"] = _STOP_MESSAGES["device_changed"]
 
 
 class MicrophoneTestDialog(QDialog):
@@ -30,7 +43,7 @@ class MicrophoneTestDialog(QDialog):
         selected_device: str,
         start_test: Callable[[str, float], bool],
         stop_test: Callable[[str | None, str], bool],
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         if not callable(start_test) or not callable(stop_test):
@@ -148,24 +161,9 @@ class MicrophoneTestDialog(QDialog):
         self.stop_button.setEnabled(False)
         if test_id is not None:
             self._stop_test(test_id, reason)
-        if reason == "timeout":
-            self.meter.setFormat("Test complete")
-            self.status.setText(
-                "The 10-second local test ended automatically."
-            )
-        elif reason == "permission_revoked":
-            self.meter.setFormat("Permission revoked")
-            self.status.setText(
-                "Microphone permission was revoked; the test stopped."
-            )
-        elif reason in ("device_changed", "device_reset"):
-            self.meter.setFormat("Device changed")
-            self.status.setText(
-                "The selected microphone changed; start a new test."
-            )
-        else:
-            self.meter.setFormat("Stopped")
-            self.status.setText("The local microphone test is stopped.")
+        label, message = _STOP_MESSAGES.get(reason, _STOP_MESSAGES["stopped"])
+        self.meter.setFormat(label)
+        self.status.setText(message)
 
     @pyqtSlot(str, float)
     def receive_level(self, test_id: str, rms: float) -> None:
@@ -202,6 +200,6 @@ class MicrophoneTestDialog(QDialog):
         level = "Waiting for audio" if dbfs is None else f"{dbfs:.0f} dBFS"
         self.meter.setFormat(f"{level}  •  {remaining:.1f}s")
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent | None) -> None:
         self._finish("closed")
         super().closeEvent(event)

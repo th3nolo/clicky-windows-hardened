@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from audio.tts.voice_catalog import ReviewedVoice
@@ -35,7 +36,7 @@ class VoicePickerDialog(QDialog):
         save_voice: Callable[[str, str], bool],
         start_preview: Callable[[str, str, str], bool],
         stop_preview: Callable[[str | None, str], bool],
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         if (
@@ -106,12 +107,9 @@ class VoicePickerDialog(QDialog):
         layout.addWidget(self.provider)
 
         self.voice_combo = QComboBox()
-        selected_index = 0
-        for index, voice in enumerate(reviewed):
+        for voice in reviewed:
             self.voice_combo.addItem(voice.label, voice.voice_id)
-            if voice.voice_id == selected_voice_id:
-                selected_index = index
-        self.voice_combo.setCurrentIndex(selected_index)
+        self.voice_combo.setCurrentIndex(self.voice_combo.findData(selected_voice_id))
         self.voice_combo.currentIndexChanged.connect(self._selection_changed)
         layout.addWidget(self.voice_combo)
 
@@ -162,7 +160,7 @@ class VoicePickerDialog(QDialog):
         layout.addLayout(buttons)
 
     def selected_voice_id(self) -> str:
-        return str(self.voice_combo.currentData())
+        return self._voices[self.voice_combo.currentIndex()].voice_id
 
     @pyqtSlot()
     def _selection_changed(self) -> None:
@@ -238,7 +236,7 @@ class VoicePickerDialog(QDialog):
             )
         )
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent | None) -> None:
         preview_id = self._active_preview_id
         self._active_preview_id = None
         if preview_id is not None:

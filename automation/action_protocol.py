@@ -6,8 +6,8 @@ import hashlib
 import hmac
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from automation.action_models import (
     DesktopActionReceipt,
@@ -34,11 +34,7 @@ class UiaWorkerCommand:
 
     def __post_init__(self) -> None:
         _hex_digest(self.nonce, "UIA worker nonce")
-        if (
-            not isinstance(self.authentication_key, bytes)
-            or len(self.authentication_key) != WORKER_AUTH_KEY_BYTES
-        ):
-            raise ValueError("UIA worker authentication key is invalid")
+        _validate_key(self.authentication_key)
         if not isinstance(self.target, DesktopTarget):
             raise TypeError("UIA worker target is invalid")
         if not isinstance(self.request, DesktopActionRequest):
@@ -93,11 +89,7 @@ def encode_worker_receipt(
     receipt: DesktopActionReceipt,
 ) -> bytes:
     _hex_digest(nonce, "UIA worker nonce")
-    if (
-        not isinstance(authentication_key, bytes)
-        or len(authentication_key) != WORKER_AUTH_KEY_BYTES
-    ):
-        raise ValueError("UIA worker authentication key is invalid")
+    _validate_key(authentication_key)
     if not isinstance(receipt, DesktopActionReceipt):
         raise TypeError("UIA worker receipt is invalid")
     body = {
@@ -120,11 +112,7 @@ def decode_worker_receipt(
     authentication_key: bytes,
 ) -> DesktopActionReceipt:
     _hex_digest(nonce, "UIA worker nonce")
-    if (
-        not isinstance(authentication_key, bytes)
-        or len(authentication_key) != WORKER_AUTH_KEY_BYTES
-    ):
-        raise ValueError("UIA worker authentication key is invalid")
+    _validate_key(authentication_key)
     payload = _unframe(frame)
     if set(payload) != {
         "mac",
@@ -299,8 +287,8 @@ def _unframe(frame: bytes) -> dict[str, object]:
     return value
 
 
-def _unique_object(pairs):
-    value = {}
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
     for key, item in pairs:
         if key in value:
             raise ValueError("UIA worker JSON has a duplicate key")
@@ -313,6 +301,11 @@ def _decode_hex_key(value: object) -> bytes:
     if not _HEX_32_BYTES.fullmatch(text):
         raise ValueError("UIA worker authentication key is invalid")
     return bytes.fromhex(text)
+
+
+def _validate_key(value: object) -> None:
+    if not isinstance(value, bytes) or len(value) != WORKER_AUTH_KEY_BYTES:
+        raise ValueError("UIA worker authentication key is invalid")
 
 
 def _hex_digest(value: object, label: str) -> str:

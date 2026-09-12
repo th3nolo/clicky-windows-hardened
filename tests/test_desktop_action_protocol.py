@@ -215,6 +215,23 @@ class DesktopActionProtocolTests(unittest.TestCase):
                         authentication_key=candidate_key,
                     )
 
+    def test_all_protocol_entrypoints_reject_invalid_key_lengths(self) -> None:
+        nonce = "d" * 64
+        current_target, current_request, current_receipt = target(), request(), receipt()
+        frame = encode_worker_receipt(
+            nonce=nonce, authentication_key=b"k" * 32, receipt=current_receipt
+        )
+        for key in (b"", b"k" * 31, b"k" * 33):
+            with self.subTest(length=len(key)):
+                with self.assertRaisesRegex(ValueError, "authentication key"):
+                    UiaWorkerCommand(nonce, key, current_target, current_request)
+                with self.assertRaisesRegex(ValueError, "authentication key"):
+                    encode_worker_receipt(
+                        nonce=nonce, authentication_key=key, receipt=current_receipt
+                    )
+                with self.assertRaisesRegex(ValueError, "authentication key"):
+                    decode_worker_receipt(frame, nonce=nonce, authentication_key=key)
+
     def test_protocol_rejects_duplicate_keys_multiple_frames_and_oversize(self):
         with self.assertRaises(ValueError):
             decode_worker_command(

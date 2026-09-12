@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from audio.tts.base_tts import BaseTTS
 from audio.tts.voice_catalog import reviewed_voice
 
 
-def create_tts_provider(provider: str, voice_id: str):
+def create_tts_provider(provider: str, voice_id: str) -> BaseTTS:
     """Build exactly ``provider`` with one catalog-approved voice ID."""
 
     voice = reviewed_voice(provider, voice_id)

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Iterable, Mapping
 
 
 CAPABILITY_SCHEMA_VERSION = 1
@@ -124,6 +124,7 @@ class CapabilityDefinition:
     user_permission: UserPermissionId
     connector: ConnectorId | None = None
     action_approval_required: bool = False
+    oauth_scope: OAuthScopeId | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.capability_id, CapabilityId):
@@ -144,219 +145,217 @@ class CapabilityDefinition:
             ConnectorId,
         ):
             raise TypeError("Capability connector category is invalid")
+        if self.oauth_scope is not None and not isinstance(
+            self.oauth_scope, OAuthScopeId
+        ):
+            raise TypeError("Capability OAuth scope is invalid")
         if type(self.action_approval_required) is not bool:
             raise TypeError("Action approval requirement must be explicit")
 
 
-def _definition(
-    capability_id: CapabilityId,
-    label: str,
-    feature: FeatureCapability,
-    permission: UserPermissionId,
-    *,
-    connector: ConnectorId | None = None,
-    approval: bool = False,
-) -> CapabilityDefinition:
-    return CapabilityDefinition(
-        capability_id=capability_id,
-        label=label,
-        feature=feature,
-        user_permission=permission,
-        connector=connector,
-        action_approval_required=approval,
-    )
-
-
 _DEFINITIONS = (
-    _definition(
+    CapabilityDefinition(
         CapabilityId.DICTATION_INSERT_TEXT,
         "Insert dictated text",
         FeatureCapability.GLOBAL_DICTATION,
         UserPermissionId.GLOBAL_DICTATION,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.COMPOSE_SCREEN_CONTEXT,
         "Use approved screen context to create a draft",
         FeatureCapability.SCREEN_AWARE_COMPOSE,
         UserPermissionId.SCREEN_AWARE_COMPOSE,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.STYLE_PROFILE_USE,
         "Use one selected writing-style profile",
         FeatureCapability.SCREEN_AWARE_COMPOSE,
         UserPermissionId.SCREEN_AWARE_COMPOSE,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.LOCAL_ARTIFACT_READ,
         "Read an approved local artifact",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.LOCAL_ARTIFACT_WRITE,
         "Write an approved local artifact",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WEB_SEARCH_BOUNDED,
         "Run a bounded web search",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WEB_FETCH_BOUNDED,
         "Fetch an approved bounded web resource",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.TASK_AGENT_RUN,
         "Run a brokered background task",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.TASK_REGION_CONTEXT,
         "Use one explicitly reviewed screen region in a new task",
         FeatureCapability.TASK_AGENT,
         UserPermissionId.TASK_AGENT,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.GMAIL_MESSAGE_READ,
         "Read approved Gmail messages",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GMAIL,
+        oauth_scope=OAuthScopeId.GMAIL_MESSAGES_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.GMAIL_DRAFT_WRITE,
         "Create or update an approved Gmail draft",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.GMAIL,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.GMAIL_DRAFTS_WRITE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.CALENDAR_EVENT_READ,
         "Read selected Google Calendar availability",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_CALENDAR,
+        oauth_scope=OAuthScopeId.CALENDAR_EVENTS_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.CALENDAR_EVENT_WRITE,
         "Create or update an approved Google Calendar event",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.GOOGLE_CALENDAR,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.CALENDAR_EVENTS_WRITE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.DOCS_DOCUMENT_READ,
         "Read one explicitly selected Google Docs document",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_DOCS,
+        oauth_scope=OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.DOCS_DOCUMENT_CREATE,
         "Create one reviewed Google Docs document",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.GOOGLE_DOCS,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.DOCS_DOCUMENT_CREATE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.DRIVE_SELECTED_FILE_READ,
         "Read one explicitly selected Google Drive file",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_DRIVE,
+        oauth_scope=OAuthScopeId.DRIVE_SELECTED_FILE_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.NOTION_PAGE_READ,
         "Read approved Notion pages",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.NOTION,
+        oauth_scope=OAuthScopeId.NOTION_PAGES_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.NOTION_PAGE_WRITE,
         "Create or update an approved Notion page",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.NOTION,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.NOTION_PAGES_WRITE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.SHEETS_VALUES_READ,
         "Read approved Google Sheets values",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_SHEETS,
+        oauth_scope=OAuthScopeId.SHEETS_VALUES_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.SHEETS_VALUES_WRITE,
         "Write approved Google Sheets values",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.GOOGLE_SHEETS,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.SHEETS_VALUES_WRITE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.SLIDES_PRESENTATION_READ,
         "Read an approved Google Slides presentation",
         FeatureCapability.CONNECTOR_READ,
         UserPermissionId.CONNECTOR_READ,
         connector=ConnectorId.GOOGLE_SLIDES,
+        oauth_scope=OAuthScopeId.SLIDES_PRESENTATIONS_READ,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.SLIDES_PRESENTATION_WRITE,
         "Write an approved Google Slides presentation",
         FeatureCapability.CONNECTOR_WRITE,
         UserPermissionId.CONNECTOR_WRITE,
         connector=ConnectorId.GOOGLE_SLIDES,
-        approval=True,
+        action_approval_required=True,
+        oauth_scope=OAuthScopeId.SLIDES_PRESENTATIONS_WRITE,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WORKSPACE_READ,
         "Read within one approved coding workspace",
         FeatureCapability.WORKSPACE_CODING,
         UserPermissionId.WORKSPACE_CODING,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WORKSPACE_WRITE,
         "Write within one approved coding workspace",
         FeatureCapability.WORKSPACE_CODING,
         UserPermissionId.WORKSPACE_CODING,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WORKSPACE_COMMAND,
         "Run an allowlisted command in one approved coding workspace",
         FeatureCapability.WORKSPACE_CODING,
         UserPermissionId.WORKSPACE_CODING,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.WORKSPACE_APPLY,
         "Apply one exact reviewed workspace change set",
         FeatureCapability.WORKSPACE_CODING,
         UserPermissionId.WORKSPACE_CODING,
-        approval=True,
+        action_approval_required=True,
     ),
-    _definition(
+    CapabilityDefinition(
         CapabilityId.DESKTOP_UIA_ACTION,
         "Perform one allowlisted UI Automation action",
         FeatureCapability.DESKTOP_AUTOMATION,
         UserPermissionId.DESKTOP_AUTOMATION,
-        approval=True,
+        action_approval_required=True,
     ),
 )
 
@@ -366,33 +365,11 @@ CAPABILITY_REGISTRY: Mapping[
     {definition.capability_id: definition for definition in _DEFINITIONS}
 )
 
-CAPABILITY_OAUTH_SCOPES: Mapping[
-    CapabilityId, OAuthScopeId
-] = MappingProxyType(
+CAPABILITY_OAUTH_SCOPES: Mapping[CapabilityId, OAuthScopeId] = MappingProxyType(
     {
-        CapabilityId.GMAIL_MESSAGE_READ: OAuthScopeId.GMAIL_MESSAGES_READ,
-        CapabilityId.GMAIL_DRAFT_WRITE: OAuthScopeId.GMAIL_DRAFTS_WRITE,
-        CapabilityId.CALENDAR_EVENT_READ: OAuthScopeId.CALENDAR_EVENTS_READ,
-        CapabilityId.CALENDAR_EVENT_WRITE: OAuthScopeId.CALENDAR_EVENTS_WRITE,
-        CapabilityId.DOCS_DOCUMENT_READ: (
-            OAuthScopeId.DOCS_SELECTED_DOCUMENT_READ
-        ),
-        CapabilityId.DOCS_DOCUMENT_CREATE: (
-            OAuthScopeId.DOCS_DOCUMENT_CREATE
-        ),
-        CapabilityId.DRIVE_SELECTED_FILE_READ: (
-            OAuthScopeId.DRIVE_SELECTED_FILE_READ
-        ),
-        CapabilityId.NOTION_PAGE_READ: OAuthScopeId.NOTION_PAGES_READ,
-        CapabilityId.NOTION_PAGE_WRITE: OAuthScopeId.NOTION_PAGES_WRITE,
-        CapabilityId.SHEETS_VALUES_READ: OAuthScopeId.SHEETS_VALUES_READ,
-        CapabilityId.SHEETS_VALUES_WRITE: OAuthScopeId.SHEETS_VALUES_WRITE,
-        CapabilityId.SLIDES_PRESENTATION_READ: (
-            OAuthScopeId.SLIDES_PRESENTATIONS_READ
-        ),
-        CapabilityId.SLIDES_PRESENTATION_WRITE: (
-            OAuthScopeId.SLIDES_PRESENTATIONS_WRITE
-        ),
+        definition.capability_id: definition.oauth_scope
+        for definition in _DEFINITIONS
+        if definition.oauth_scope is not None
     }
 )
 

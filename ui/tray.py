@@ -1,8 +1,10 @@
+from collections.abc import Callable
+
 from PyQt6.QtWidgets import (
     QSystemTrayIcon, QMenu, QDialog, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QHBoxLayout,
 )
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QBrush
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject
 
 from config import cfg
@@ -21,6 +23,18 @@ def _make_tray_icon(color: QColor) -> QIcon:
     painter.drawEllipse(3, 3, 16, 16)
     painter.end()
     return QIcon(px)
+
+
+def _add_toggle(
+    menu: QMenu, label: str, checked: bool, on_trigger: Callable[[bool], None]
+) -> QAction:
+    action = QAction(
+        f"{label}: {'ON' if checked else 'OFF'}",
+        menu, checkable=True, checked=checked,
+    )
+    action.triggered.connect(on_trigger)
+    menu.addAction(action)
+    return action
 
 
 class TrayManager(QObject):
@@ -175,21 +189,13 @@ class TrayManager(QObject):
 
         menu.addSeparator()
 
-        search_action = menu.addAction(
-            "Web Search: ON" if self._search_enabled else "Web Search: OFF"
+        self._search_action = _add_toggle(
+            menu, "Web Search", self._search_enabled, self._toggle_search
         )
-        search_action.setCheckable(True)
-        search_action.setChecked(self._search_enabled)
-        search_action.triggered.connect(self._toggle_search)
-        self._search_action = search_action
 
-        wake_action = menu.addAction(
-            "Wake word 'Clicky': ON" if self._wake_enabled else "Wake word 'Clicky': OFF"
+        self._wake_action = _add_toggle(
+            menu, "Wake word 'Clicky'", self._wake_enabled, self._toggle_wake
         )
-        wake_action.setCheckable(True)
-        wake_action.setChecked(self._wake_enabled)
-        wake_action.triggered.connect(self._toggle_wake)
-        self._wake_action = wake_action
 
         self._build_language_submenu(menu)
 
@@ -228,67 +234,37 @@ class TrayManager(QObject):
         menu.addSeparator()
         tutor_menu = menu.addMenu("Tutor Mode")
 
-        slow_action = tutor_menu.addAction(
-            "Slow Mode (teacher pace): ON" if self._slow_enabled
-            else "Slow Mode (teacher pace): OFF"
+        self._slow_action = _add_toggle(
+            tutor_menu, "Slow Mode (teacher pace)", self._slow_enabled, self._toggle_slow
         )
-        slow_action.setCheckable(True)
-        slow_action.setChecked(self._slow_enabled)
-        slow_action.triggered.connect(self._toggle_slow)
-        self._slow_action = slow_action
 
-        quiz_action = tutor_menu.addAction(
-            "Quiz Mode: ON" if self._quiz_enabled else "Quiz Mode: OFF"
+        self._quiz_action = _add_toggle(
+            tutor_menu, "Quiz Mode", self._quiz_enabled, self._toggle_quiz
         )
-        quiz_action.setCheckable(True)
-        quiz_action.setChecked(self._quiz_enabled)
-        quiz_action.triggered.connect(self._toggle_quiz)
-        self._quiz_action = quiz_action
 
-        privacy_action = tutor_menu.addAction(
-            "Privacy Guard: ON" if self._privacy_enabled
-            else "Privacy Guard: OFF"
+        self._privacy_action = _add_toggle(
+            tutor_menu, "Privacy Guard", self._privacy_enabled, self._toggle_privacy
         )
-        privacy_action.setCheckable(True)
-        privacy_action.setChecked(self._privacy_enabled)
-        privacy_action.triggered.connect(self._toggle_privacy)
-        self._privacy_action = privacy_action
 
-        code_action = tutor_menu.addAction(
-            "Code Mode (auto): ON" if self._code_enabled else "Code Mode (auto): OFF"
+        self._code_action = _add_toggle(
+            tutor_menu, "Code Mode (auto)", self._code_enabled, self._toggle_code
         )
-        code_action.setCheckable(True)
-        code_action.setChecked(self._code_enabled)
-        code_action.triggered.connect(self._toggle_code)
-        self._code_action = code_action
 
-        ml_action = tutor_menu.addAction(
-            "Multilingual: ON" if self._multilang_enabled else "Multilingual: OFF"
+        self._ml_action = _add_toggle(
+            tutor_menu, "Multilingual", self._multilang_enabled, self._toggle_multilang
         )
-        ml_action.setCheckable(True)
-        ml_action.setChecked(self._multilang_enabled)
-        ml_action.triggered.connect(self._toggle_multilang)
-        self._ml_action = ml_action
 
-        ocr_action = tutor_menu.addAction(
-            "OCR Fallback: ON" if self._ocr_enabled else "OCR Fallback: OFF"
+        self._ocr_action = _add_toggle(
+            tutor_menu, "OCR Fallback", self._ocr_enabled, self._toggle_ocr
         )
-        ocr_action.setCheckable(True)
-        ocr_action.setChecked(self._ocr_enabled)
-        ocr_action.triggered.connect(self._toggle_ocr)
-        self._ocr_action = ocr_action
 
         # ── Journal ──
         menu.addSeparator()
         journal_menu = menu.addMenu("Journal")
 
-        journal_action = journal_menu.addAction(
-            "Logging: ON" if self._journal_enabled else "Logging: OFF"
+        self._journal_action = _add_toggle(
+            journal_menu, "Logging", self._journal_enabled, self._toggle_journal
         )
-        journal_action.setCheckable(True)
-        journal_action.setChecked(self._journal_enabled)
-        journal_action.triggered.connect(self._toggle_journal)
-        self._journal_action = journal_action
 
         open_journal = journal_menu.addAction("Open journal folder")
         open_journal.triggered.connect(self.on_journal_open)
@@ -734,68 +710,49 @@ class TrayManager(QObject):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.on_show_panel.emit()
 
-    def _toggle_search(self, checked: bool):
+    def _toggle_search(self, checked: bool) -> None:
         self._search_enabled = checked
-        self._search_action.setText(
-            "Web Search: ON" if checked else "Web Search: OFF"
-        )
+        self._search_action.setText(f"Web Search: {'ON' if checked else 'OFF'}")
         self.on_toggle_search.emit(checked)
 
-    def _toggle_wake(self, checked: bool):
+    def _toggle_wake(self, checked: bool) -> None:
         self._wake_enabled = checked
-        self._wake_action.setText(
-            "Wake word 'Clicky': ON" if checked else "Wake word 'Clicky': OFF"
-        )
+        self._wake_action.setText(f"Wake word 'Clicky': {'ON' if checked else 'OFF'}")
         self.on_toggle_wake_word.emit(checked)
 
-    def _toggle_slow(self, checked: bool):
+    def _toggle_slow(self, checked: bool) -> None:
         self._slow_enabled = checked
-        self._slow_action.setText(
-            "Slow Mode (teacher pace): ON" if checked
-            else "Slow Mode (teacher pace): OFF"
-        )
+        self._slow_action.setText(f"Slow Mode (teacher pace): {'ON' if checked else 'OFF'}")
         self.on_toggle_slow_mode.emit(checked)
 
-    def _toggle_quiz(self, checked: bool):
+    def _toggle_quiz(self, checked: bool) -> None:
         self._quiz_enabled = checked
-        self._quiz_action.setText(
-            "Quiz Mode: ON" if checked else "Quiz Mode: OFF"
-        )
+        self._quiz_action.setText(f"Quiz Mode: {'ON' if checked else 'OFF'}")
         self.on_toggle_quiz_mode.emit(checked)
 
-    def _toggle_privacy(self, checked: bool):
+    def _toggle_privacy(self, checked: bool) -> None:
         self._privacy_enabled = checked
-        self._privacy_action.setText(
-            "Privacy Guard: ON" if checked else "Privacy Guard: OFF"
-        )
+        self._privacy_action.setText(f"Privacy Guard: {'ON' if checked else 'OFF'}")
         self.on_toggle_privacy.emit(checked)
 
-    def _toggle_code(self, checked: bool):
+    def _toggle_code(self, checked: bool) -> None:
         self._code_enabled = checked
-        self._code_action.setText(
-            "Code Mode (auto): ON" if checked else "Code Mode (auto): OFF"
-        )
+        self._code_action.setText(f"Code Mode (auto): {'ON' if checked else 'OFF'}")
         self.on_toggle_code_mode.emit(checked)
 
-    def _toggle_multilang(self, checked: bool):
+    def _toggle_multilang(self, checked: bool) -> None:
         self._multilang_enabled = checked
-        self._ml_action.setText(
-            "Multilingual: ON" if checked else "Multilingual: OFF"
-        )
+        self._ml_action.setText(f"Multilingual: {'ON' if checked else 'OFF'}")
         self.on_toggle_multilang.emit(checked)
 
-    def _toggle_ocr(self, checked: bool):
+    def _toggle_ocr(self, checked: bool) -> None:
         self._ocr_enabled = checked
-        self._ocr_action.setText(
-            "OCR Fallback: ON" if checked else "OCR Fallback: OFF"
-        )
+        self._ocr_action.setText(f"OCR Fallback: {'ON' if checked else 'OFF'}")
         self.on_toggle_ocr.emit(checked)
 
-    def _toggle_journal(self, checked: bool):
+    def _toggle_journal(self, checked: bool) -> None:
         self._journal_enabled = checked
-        self._journal_action.setText(
-            "Logging: ON" if checked else "Logging: OFF"
-        )
+        self._journal_action.setText(f"Logging: {'ON' if checked else 'OFF'}")
         self.on_toggle_journal.emit(checked)
 
     def set_recording_state(self, on: bool):

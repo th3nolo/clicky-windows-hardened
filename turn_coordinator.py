@@ -12,11 +12,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 import threading
-from typing import Callable, Protocol, TypeVar
+from typing import Callable, ParamSpec, Protocol, TypeVar
 
 
 class Cancellable(Protocol):
     def cancel(self) -> object: ...
+
+
+class AppState(Enum):
+    """Application status shared by orchestration and UI adapters."""
+
+    IDLE = auto()
+    LISTENING = auto()
+    THINKING = auto()
+    SPEAKING = auto()
 
 
 class TurnPhase(Enum):
@@ -32,6 +41,7 @@ class TurnSession:
 
 
 T = TypeVar("T")
+P = ParamSpec("P")
 CancelCallback = Callable[[], object]
 
 
@@ -135,9 +145,9 @@ class TurnCoordinator:
     def run_if_current(
         self,
         session: TurnSession,
-        callback: Callable[..., T],
-        *args,
-        **kwargs,
+        callback: Callable[P, T],
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> tuple[bool, T | None]:
         """Run a UI/state mutation while replacement turns are excluded."""
 

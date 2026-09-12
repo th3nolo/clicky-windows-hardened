@@ -1,5 +1,4 @@
 import asyncio
-from enum import Enum, auto
 from typing import Callable, Optional
 
 from PyQt6.QtWidgets import (
@@ -18,12 +17,7 @@ from ui.design import (
 from ai.provider_catalog import PROVIDER_LABELS, REGISTRY_MODEL_PROVIDERS
 from config import cfg
 
-
-class AppState(Enum):
-    IDLE      = auto()
-    LISTENING = auto()
-    THINKING  = auto()
-    SPEAKING  = auto()
+from turn_coordinator import AppState as AppState
 
 
 def _hotkey_label() -> str:

@@ -213,6 +213,36 @@ class VoicePreviewBoundaryTests(unittest.TestCase):
                     )
                 )
 
+    def test_cancellation_reaches_provider_and_does_not_complete_preview(self):
+        async def scenario():
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+            spoken: list[str] = []
+
+            class Speaker:
+                async def speak(self, text: str) -> None:
+                    spoken.append(text)
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cancelled.set()
+
+            task = asyncio.create_task(
+                speak_voice_preview(
+                    "openai", "coral", cloud_tts_permission=True,
+                    provider_factory=lambda _provider, _voice: Speaker(),
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual(spoken, [VOICE_PREVIEW_TEXT])
+
+        asyncio.run(scenario())
+
     def test_preview_source_has_no_fallback_or_user_text_parameter(self):
         source = (ROOT / "audio" / "tts" / "voice_preview.py").read_text(
             encoding="utf-8"

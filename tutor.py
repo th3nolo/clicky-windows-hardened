@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import re
 from ctypes import wintypes
+from enum import StrEnum
 
 
 # ── Active-window title (for per-app context memory) ─────────────────────────
@@ -103,6 +104,34 @@ QUIZ_REVIEW_RE = re.compile(
     r"\b(quiz\s+me|review\s+me|test\s+me)(\s+on\s+(what\s+i\s+learned|my\s+notes))?\b",
     re.IGNORECASE,
 )
+
+
+class VoiceCommand(StrEnum):
+    STOP = "stop"
+    NEXT = "next"
+    REPEAT = "repeat"
+    JOURNAL_TODAY = "journal_today"
+    JOURNAL_WEEK = "journal_week"
+    QUIZ_REVIEW = "quiz_review"
+
+
+_VOICE_COMMAND_PATTERNS = (
+    (VoiceCommand.STOP, STOP_RE),
+    (VoiceCommand.NEXT, NEXT_RE),
+    (VoiceCommand.REPEAT, REPEAT_RE),
+    (VoiceCommand.JOURNAL_TODAY, JOURNAL_TODAY_RE),
+    (VoiceCommand.JOURNAL_WEEK, JOURNAL_WEEK_RE),
+    (VoiceCommand.QUIZ_REVIEW, QUIZ_REVIEW_RE),
+)
+
+
+def classify_voice_command(text: str) -> VoiceCommand | None:
+    """Classify once in dispatch priority order; ordinary questions return None."""
+    return next(
+        (command for command, pattern in _VOICE_COMMAND_PATTERNS if pattern.search(text)),
+        None,
+    )
+
 
 # ── Identity questions ────────────────────────────────────────────────────────
 # OpenAI / Claude refuse to identify people in images even when the answer is

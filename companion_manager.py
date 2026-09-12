@@ -8,6 +8,7 @@ Orchestrates:
 
 import asyncio
 import concurrent.futures
+from contextlib import aclosing
 import logging
 import math
 import re
@@ -22,6 +23,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import cfg
 from ai.base_provider import BaseLLMProvider, Message
+from ai.response_text import ANY_TAG_RE, ResponseText
 from audio.ambient_listener import AmbientListener
 from audio.tts.base_tts import DisabledTTSProvider
 from audio.tts.local_status_tts import LocalStatusTTS
@@ -54,15 +56,14 @@ from privacy_controls import (
     realtime_voice_allowed,
     screen_capture_allowed,
 )
-from screen.capture import capture_all_screens
+from screen.capture import ScreenShot, capture_all_screens
 from screen.topology import (
     MonitorTopologyError,
     format_screen_context,
     requested_screen_index,
     select_monitor,
 )
-from ui.panel import AppState
-from turn_coordinator import TurnCoordinator, TurnPhase, TurnSession
+from turn_coordinator import AppState, TurnCoordinator, TurnPhase, TurnSession
 from walkthrough.controller import (
     RejectingTargetGuard,
     RenderPlan,
@@ -77,8 +78,8 @@ from walkthrough.protocol import (
 )
 from tutor import (
     active_window_title, app_key,
-    is_locate, is_multistep, is_next, is_stop, is_sensitive_window,
-    is_repeat, is_journal_today, is_journal_week, is_quiz_review,
+    is_locate, is_multistep, is_stop, is_sensitive_window,
+    VoiceCommand, classify_voice_command,
     is_identity_question,
 )
 from tutor_features import (
@@ -271,19 +272,7 @@ CLEAR_RE     = re.compile(r'\[CLEAR\]')
 CIRCLE_AT_RE    = re.compile(r'\[CIRCLE:@([^:\]]+?)' + _C + r'\]')
 UNDERLINE_AT_RE = re.compile(r'\[UNDERLINE:@([^:\]]+?)' + _C + r'\]')
 
-ANY_TAG_RE   = re.compile(
-    r'\[(?:POINT|ARROW|CIRCLE|UNDERLINE|LABEL|LINE|RECT|POLY|TEXT|ANGLE|CLEAR)'
-    r'(?::[^\]]*)?\]'
-)
-ANY_PARTIAL_RE = re.compile(r'\[[A-Z]{0,9}(?::[^\]]*)?$')
 
-# Questions that ask Clicky to locate / click UI elements — triggers the
-# Computer Use element locator when Claude is the provider.
-POINT_TRIGGER_RE = re.compile(
-    r"\b(where\s+(is|do|can)|how\s+do\s+i\s+(click|find|open|access|use)|"
-    r"point\s+(at|to)|show\s+me\s+(the|where)|click\s+(the|on)|find\s+the)\b",
-    re.IGNORECASE,
-)
 
 
 class CompanionManager(QObject):
@@ -797,46 +786,36 @@ class CompanionManager(QObject):
                 context.image_content
             ).decode("ascii")
             full_response = ""
-            display_buffer = ""
-            async for chunk in self._get_llm().stream_response(
+            display = ResponseText()
+            stream = self._get_llm().stream_response(
                 user_text=context.purpose,
                 screenshots_b64=[encoded],
                 history=[],
                 system_prompt=system,
                 model=model,
-            ):
-                if not self._turns.is_current(session):
-                    return
-                if not isinstance(chunk, str):
-                    raise RuntimeError(
-                        "The selected provider returned invalid data."
-                    )
-                full_response += chunk
-                if len(full_response) > 32_768:
-                    raise RuntimeError(
-                        "The selected provider exceeded the response limit."
-                    )
-                display_buffer += chunk
-                display_buffer = ANY_TAG_RE.sub("", display_buffer)
-                partial = ANY_PARTIAL_RE.search(display_buffer)
-                if partial:
-                    flush = display_buffer[: partial.start()]
-                    display_buffer = display_buffer[partial.start():]
-                else:
-                    flush = display_buffer
-                    display_buffer = ""
-                if flush:
-                    self._emit_turn_signal(
-                        session,
-                        self.sig_response_chunk,
-                        flush,
-                    )
-            if display_buffer:
-                self._emit_turn_signal(
-                    session,
-                    self.sig_response_chunk,
-                    ANY_TAG_RE.sub("", display_buffer),
-                )
+            )
+            async with aclosing(stream):
+                async for chunk in stream:
+                    if not self._turns.is_current(session):
+                        return
+                    if not isinstance(chunk, str):
+                        raise RuntimeError(
+                            "The selected provider returned invalid data."
+                        )
+                    full_response += chunk
+                    if len(full_response) > 32_768:
+                        raise RuntimeError(
+                            "The selected provider exceeded the response limit."
+                        )
+                    flush = display.feed(chunk)
+                    if flush:
+                        self._emit_turn_signal(
+                            session,
+                            self.sig_response_chunk,
+                            flush,
+                        )
+            if remainder := display.finish():
+                self._emit_turn_signal(session, self.sig_response_chunk, remainder)
             clean = ANY_TAG_RE.sub("", full_response).strip()
             if not clean:
                 raise RuntimeError(
@@ -1668,62 +1647,13 @@ class CompanionManager(QObject):
                 transcript,
             )
 
-            # ── Voice commands — short-circuit before LLM ──
-            if is_stop(transcript):
+            command = classify_voice_command(transcript)
+            if command is VoiceCommand.STOP:
                 self.stop()
                 return
-
             title = active_window_title()
             ak = app_key(title)
-
-            if self._walkthrough.active:
-                if is_next(transcript):
-                    self._turns.bind_cancel(
-                        session,
-                        "walkthrough",
-                        lambda: self._walkthrough.cancel(
-                            "turn_superseded"
-                        ),
-                    )
-                    await self._advance_walkthrough(
-                        session,
-                        from_voice=True,
-                    )
-                    return
-                self._walkthrough.cancel("turn_superseded")
-
-            if is_next(transcript) and self._lesson_steps:
-                await self._advance_lesson_step(ak, session)
-                return
-
-            # "say it again" — replay the last response without a new LLM call
-            if is_repeat(transcript) and self._last_response:
-                self._emit_turn_signal(
-                    session, self.sig_response_chunk, self._last_response
-                )
-                self._emit_turn_signal(
-                    session, self.sig_response_done, self._last_response
-                )
-                self._emit_state(AppState.SPEAKING, session)
-                await self._speak_with_failure_fallback(
-                    self._last_response,
-                    session,
-                )
-                return
-
-            # Journal voice queries — answered locally, no LLM call needed
-            if is_journal_today(transcript):
-                msg = journal.summarise(journal.entries_today(),
-                                        "Here's what you asked about today:\n")
-                await self._reply_local(msg, session)
-                return
-            if is_journal_week(transcript):
-                msg = journal.summarise(journal.entries_this_week(),
-                                        "Here's the past week:\n")
-                await self._reply_local(msg, session)
-                return
-            if is_quiz_review(transcript):
-                await self._spaced_review(session)
+            if await self._handle_voice_command(command, ak, session):
                 return
 
             # User-created skills (run BEFORE the LLM, like built-ins above)
@@ -1762,7 +1692,6 @@ class CompanionManager(QObject):
             screen_permission = screen_capture_allowed(cfg)
             if sensitive or identity_q or not screen_permission:
                 screenshots = []
-                images_b64 = []
             else:
                 screenshots = capture_all_screens()
             if not self._turns.is_current(session):
@@ -1782,8 +1711,7 @@ class CompanionManager(QObject):
                 self._active_screen_index = active_shot.index
             else:
                 self._active_screen_index = None
-            if not (sensitive or identity_q or not screen_permission):
-                images_b64 = [s.base64_jpeg for s in screenshots]
+            images_b64 = [shot.base64_jpeg for shot in screenshots]
             # Fresh question → wipe the previous lesson's drawings and remember
             # this turn's screenshots for coordinate mapping.
             self._screens_ctx = screenshots
@@ -1829,81 +1757,10 @@ class CompanionManager(QObject):
                 side_tasks.append(search_task)
 
             if active_shot is not None and locate_triggered:
-                shot = active_shot
-                # Pointing accuracy upgrade: try the hybrid pointer first.
-                # Tier 1 (UIA tree) is ~5ms and pixel-perfect; tier 2 (OCR)
-                # handles canvas apps. Falls through to the vision LLM grid
-                # below only when both whiff.
-                try:
-                    from ai.hybrid_pointer import find_target as _hybrid_find
-                    target = _hybrid_find(
-                        transcript,
-                        screenshot=shot,
-                        llm_provider=self._get_llm(),
-                        # The manager owns the non-blocking async vision fallback.
-                        skip_vision=True,
-                    )
-                except Exception:
-                    target = None
-
-                if not self._turns.is_current(session):
-                    return
-                if target is not None and target.source in ("uia", "ocr"):
-                    # The hybrid pointer returns Qt logical coordinates for the
-                    # explicitly selected monitor.
-                    from types import SimpleNamespace
-                    _pt = SimpleNamespace(x=target.x, y=target.y)
-                    async def _ready(pt=_pt):
-                        return pt
-                    locate_task = asyncio.create_task(_ready())
-                    side_tasks.append(locate_task)
-                elif cfg.anthropic_api_key:
-                    # Path A — Anthropic Computer Use (best accuracy)
-                    from ai.element_locator import detect_element
-                    locate_task = asyncio.create_task(detect_element(
-                        screenshot_jpeg_b64=shot.base64_jpeg,
-                        original_width=shot.width,
-                        original_height=shot.height,
-                        physical_width=shot.physical_width,
-                        physical_height=shot.physical_height,
-                        physical_left=shot.physical_left,
-                        physical_top=shot.physical_top,
-                        dpi_scale=shot.dpi_scale,
-                        logical_left=shot.logical_left,
-                        logical_top=shot.logical_top,
-                        logical_width=shot.logical_width,
-                        logical_height=shot.logical_height,
-                        screen_index=shot.index,
-                        user_question=transcript,
-                    ))
-                    side_tasks.append(locate_task)
-                else:
-                    # Path B — Universal grid locator (any vision LLM)
-                    try:
-                        from ai.universal_locator import detect_element_universal
-                        llm = self._get_llm()
-                        locate_task = asyncio.create_task(detect_element_universal(
-                            llm=llm,
-                            screenshot_jpeg_b64=shot.base64_jpeg,
-                            original_width=shot.width,
-                            original_height=shot.height,
-                            physical_width=shot.physical_width,
-                            physical_height=shot.physical_height,
-                            physical_left=shot.physical_left,
-                            physical_top=shot.physical_top,
-                            dpi_scale=shot.dpi_scale,
-                            logical_left=shot.logical_left,
-                            logical_top=shot.logical_top,
-                            logical_width=shot.logical_width,
-                            logical_height=shot.logical_height,
-                            screen_index=shot.index,
-                            user_question=transcript,
-                            model=self._current_model,
-                        ))
-                        side_tasks.append(locate_task)
-                    except Exception:
-                        # Universal locator should never crash the main flow
-                        locate_task = None
+                locate_task = asyncio.create_task(
+                    self._locate_question_target(transcript, active_shot, session)
+                )
+                side_tasks.append(locate_task)
 
             search_results = ""
             if search_task:
@@ -1929,7 +1786,7 @@ class CompanionManager(QObject):
                 # Prompt wants NORMALIZED 0-1000 coords (the model echoes them
                 # into [POINT:...] which _parse_points denormalizes back).
                 ndx, ndy = self._norm(
-                    detected.x, detected.y, active_shot.index
+                    detected[0], detected[1], active_shot.index
                 )
                 detected_coord = (
                     ndx,
@@ -1943,7 +1800,7 @@ class CompanionManager(QObject):
                 pointing_held = True
                 self._emit_turn_signal(
                     session, self.sig_point_at,
-                    float(detected.x), float(detected.y), label
+                    detected[0], detected[1], label
                 )
 
             # ── Per-turn enrichment: code mode, language, OCR, attached docs ──
@@ -1971,9 +1828,10 @@ class CompanionManager(QObject):
                     pass
 
             # Attached documents (drag-dropped PDFs etc.)
-            doc_extra = ""
-            for fname, text in self._attached_docs:
-                doc_extra += pdf_context.format_for_prompt(fname, text)
+            doc_extra = "".join(
+                pdf_context.format_for_prompt(name, text)
+                for name, text in self._attached_docs
+            )
 
             # 4. Build system prompt with all context
             system = _build_system_prompt(
@@ -2059,56 +1917,9 @@ class CompanionManager(QObject):
                     )
                 )
 
-            # 5. Stream LLM — buffer partial [POINT:...] tags so they never leak
-            full_response = ""
-            display_buf = ""
-            walkthrough_bytes = 0
-            walkthrough_overflow = False
-            async for chunk in self._get_llm().stream_response(
-                user_text=transcript,
-                screenshots_b64=provider_images,
-                history=history,
-                system_prompt=system,
-                model=self._current_model,
-            ):
-                if not self._turns.is_current(session):
-                    return
-                if walkthrough_requested:
-                    if not isinstance(chunk, str):
-                        walkthrough_overflow = True
-                        full_response = ""
-                        continue
-                    chunk_size = len(chunk.encode("utf-8"))
-                    if (
-                        walkthrough_overflow
-                        or walkthrough_bytes + chunk_size
-                        > MAX_PAYLOAD_BYTES
-                    ):
-                        walkthrough_overflow = True
-                        full_response = ""
-                        continue
-                    walkthrough_bytes += chunk_size
-                    full_response += chunk
-                    continue
-                full_response += chunk
-                display_buf += chunk
-                self._parse_points(display_buf, session)
-                display_buf = ANY_TAG_RE.sub("", display_buf)
-                m = ANY_PARTIAL_RE.search(display_buf)
-                if m:
-                    flush = display_buf[: m.start()]
-                    display_buf = display_buf[m.start():]
-                else:
-                    flush = display_buf
-                    display_buf = ""
-                if flush:
-                    self._emit_turn_signal(session, self.sig_response_chunk, flush)
-            if display_buf and not walkthrough_requested:
-                self._emit_turn_signal(
-                    session,
-                    self.sig_response_chunk,
-                    ANY_TAG_RE.sub("", display_buf),
-                )
+            full_response, walkthrough_overflow = await self._stream_tutor_response(
+                transcript, provider_images, history, system, session, walkthrough_requested,
+            )
             if not self._turns.is_current(session):
                 return
 
@@ -2251,10 +2062,7 @@ class CompanionManager(QObject):
                     )
             self._turns.set_phase(session, TurnPhase.SPEAKING)
             self._emit_state(AppState.SPEAKING, session)
-            try:
-                await self._play_lesson(full_response, clean, session)
-            except asyncio.CancelledError:
-                raise
+            await self._play_lesson(full_response, clean, session)
 
         except Exception as e:
             self._emit_turn_signal(session, self.sig_error, str(e))
@@ -2270,6 +2078,131 @@ class CompanionManager(QObject):
             if pointing_held:
                 self._emit_turn_signal(session, self.sig_point_release)
             self._finish_turn(session)
+
+    async def _locate_question_target(
+        self, question: str, shot: ScreenShot, session: TurnSession,
+    ) -> tuple[float, float] | None:
+        """Resolve one target in logical screen coordinates, using existing fallbacks."""
+        try:
+            from ai.hybrid_pointer import find_target
+
+            target = find_target(
+                question, screenshot=shot, llm_provider=self._get_llm(), skip_vision=True,
+            )
+        except Exception:
+            target = None
+        if not self._turns.is_current(session):
+            return None
+        if target is not None and target.source in ("uia", "ocr"):
+            return float(target.x), float(target.y)
+        if cfg.anthropic_api_key:
+            from ai.element_locator import detect_element
+
+            detected = await detect_element(
+                screenshot_jpeg_b64=shot.base64_jpeg,
+                original_width=shot.width, original_height=shot.height,
+                physical_width=shot.physical_width, physical_height=shot.physical_height,
+                physical_left=shot.physical_left, physical_top=shot.physical_top,
+                dpi_scale=shot.dpi_scale,
+                logical_left=shot.logical_left, logical_top=shot.logical_top,
+                logical_width=shot.logical_width, logical_height=shot.logical_height,
+                screen_index=shot.index, user_question=question,
+            )
+        else:
+            from ai.universal_locator import detect_element_universal
+
+            detected = await detect_element_universal(
+                llm=self._get_llm(), model=self._current_model,
+                screenshot_jpeg_b64=shot.base64_jpeg,
+                original_width=shot.width, original_height=shot.height,
+                physical_width=shot.physical_width, physical_height=shot.physical_height,
+                physical_left=shot.physical_left, physical_top=shot.physical_top,
+                dpi_scale=shot.dpi_scale,
+                logical_left=shot.logical_left, logical_top=shot.logical_top,
+                logical_width=shot.logical_width, logical_height=shot.logical_height,
+                screen_index=shot.index, user_question=question,
+            )
+        return (float(detected.x), float(detected.y)) if detected is not None else None
+
+    async def _stream_tutor_response(
+        self, transcript: str, provider_images: list[str], history: list[Message],
+        system: str, session: TurnSession, walkthrough_requested: bool,
+    ) -> tuple[str, bool]:
+        """Stream narration or a bounded walkthrough payload for the current turn."""
+        full_response = ""
+        display = ResponseText()
+        walkthrough_bytes = 0
+        walkthrough_overflow = False
+        stream = self._get_llm().stream_response(
+            user_text=transcript,
+            screenshots_b64=provider_images,
+            history=history,
+            system_prompt=system,
+            model=self._current_model,
+        )
+        async with aclosing(stream):
+            async for chunk in stream:
+                if not self._turns.is_current(session):
+                    return "", False
+                if walkthrough_requested:
+                    if not isinstance(chunk, str):
+                        walkthrough_overflow = True
+                        full_response = ""
+                        continue
+                    chunk_size = len(chunk.encode("utf-8"))
+                    if (
+                        walkthrough_overflow
+                        or walkthrough_bytes + chunk_size
+                        > MAX_PAYLOAD_BYTES
+                    ):
+                        walkthrough_overflow = True
+                        full_response = ""
+                        continue
+                    walkthrough_bytes += chunk_size
+                    full_response += chunk
+                    continue
+                full_response += chunk
+                self._parse_points(display.pending + chunk, session)
+                flush = display.feed(chunk)
+                if flush:
+                    self._emit_turn_signal(session, self.sig_response_chunk, flush)
+        if not walkthrough_requested and (remainder := display.finish()):
+            self._emit_turn_signal(session, self.sig_response_chunk, remainder)
+        return full_response, walkthrough_overflow
+
+    async def _handle_voice_command(
+        self, command: VoiceCommand | None, app: str, session: TurnSession
+    ) -> bool:
+        """Handle local commands before skills, capture or provider calls."""
+        if self._walkthrough.active and command is not VoiceCommand.NEXT:
+            self._walkthrough.cancel("turn_superseded")
+        match command:
+            case VoiceCommand.NEXT if self._walkthrough.active:
+                self._turns.bind_cancel(
+                    session, "walkthrough",
+                    lambda: self._walkthrough.cancel("turn_superseded"),
+                )
+                await self._advance_walkthrough(session, from_voice=True)
+            case VoiceCommand.NEXT if self._lesson_steps:
+                await self._advance_lesson_step(app, session)
+            case VoiceCommand.REPEAT if self._last_response:
+                self._emit_turn_signal(session, self.sig_response_chunk, self._last_response)
+                self._emit_turn_signal(session, self.sig_response_done, self._last_response)
+                self._emit_state(AppState.SPEAKING, session)
+                await self._speak_with_failure_fallback(self._last_response, session)
+            case VoiceCommand.JOURNAL_TODAY:
+                await self._reply_local(journal.summarise(
+                    journal.entries_today(), "Here's what you asked about today:\n"
+                ), session)
+            case VoiceCommand.JOURNAL_WEEK:
+                await self._reply_local(journal.summarise(
+                    journal.entries_this_week(), "Here's the past week:\n"
+                ), session)
+            case VoiceCommand.QUIZ_REVIEW:
+                await self._spaced_review(session)
+            case _:
+                return False
+        return True
 
     async def _transcribe_with_configured_fallback(
         self,

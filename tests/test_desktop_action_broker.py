@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from unittest import mock
 
 from automation.action_approval import build_desktop_action_approval
 from automation.action_broker import DesktopActionBroker
@@ -336,6 +337,32 @@ class DesktopActionBrokerTests(unittest.TestCase):
                 )
                 self.assertTrue(receipt.action_started)
                 self.assertEqual(launcher.handle.closed, 1)
+
+    def test_transport_failure_before_send_is_cancelled_and_cleans_up(self) -> None:
+        launcher = Launcher()
+        with mock.patch.object(
+            launcher.handle, "exchange", side_effect=UiaWorkerError("not sent")
+        ):
+            receipt = self.execute(launcher)
+        self.assertEqual(receipt.status, DesktopActionStatus.CANCELLED_BEFORE_ACTION)
+        self.assertFalse(receipt.action_started)
+        self.assertEqual(launcher.calls, 1)
+        self.assertEqual(launcher.handle.closed, 1)
+        self.assertNotIn(self.review.request.review_id, self.highlighter.active)
+        self.stops.stop()
+        self.assertEqual(launcher.handle.cancelled, 0)
+
+    def test_close_failure_preserves_verified_receipt_and_clears_review(self) -> None:
+        launcher = Launcher()
+        with mock.patch.object(
+            launcher.handle, "close", side_effect=UiaWorkerError("close failed")
+        ) as close:
+            receipt = self.execute(launcher)
+        self.assertTrue(receipt.verified)
+        close.assert_called_once_with()
+        self.assertNotIn(self.review.request.review_id, self.highlighter.active)
+        self.stops.stop()
+        self.assertEqual(launcher.handle.cancelled, 0)
 
     def test_stop_during_exchange_cancels_worker_and_never_retries(self):
         handle = Handle("transport", callback=self.stops.stop)
