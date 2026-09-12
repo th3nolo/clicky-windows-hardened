@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from ai.video_input import VideoInput
 
 Identifier = Annotated[str, Field(max_length=128, pattern=r"\S")]
 Text = Annotated[str, Field(max_length=8000, pattern=r"\S")]
@@ -50,6 +51,7 @@ class Submit(CommandBase):
     turn_id: Identifier
     text: Text
     context: Context
+    video: VideoInput | None = None
 
 
 Command = Annotated[

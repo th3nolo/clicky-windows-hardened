@@ -87,6 +87,7 @@ class AmbientListener:
         self._recording_lock = threading.RLock()
         self._recording_id: object = _NO_CAPTURE
         self._frame_callback: Optional[Callable[[bytes], None]] = None
+        self._timed_frame_callback: Callable[[bytes, float], None] | None = None
         self._level_test_id: object = _NO_LEVEL_TEST
         self._level_test_callback: Optional[Callable[[float], None]] = None
         self._level_test_expires_at = 0.0
@@ -148,6 +149,7 @@ class AmbientListener:
         self,
         capture_id: object | None = None,
         on_frame: Optional[Callable[[bytes], None]] = None,
+        on_timed_frame: Callable[[bytes, float], None] | None = None,
     ) -> bool:
         """Start one identified recording and optionally forward live frames.
 
@@ -167,6 +169,7 @@ class AmbientListener:
             self._rec_buffer = []
             self._recording_id = token
             self._frame_callback = on_frame
+            self._timed_frame_callback = on_timed_frame
             self._mode = Mode.RECORDING
             return True
 
@@ -186,6 +189,7 @@ class AmbientListener:
             self._rec_buffer = []
             self._recording_id = _NO_CAPTURE
             self._frame_callback = None
+            self._timed_frame_callback = None
             self._mode = Mode.STANDBY
             self._reset_segment()
             return pcm
@@ -201,6 +205,7 @@ class AmbientListener:
             self._rec_buffer = []
             self._recording_id = _NO_CAPTURE
             self._frame_callback = None
+            self._timed_frame_callback = None
             self._mode = Mode.STANDBY
             self._reset_segment()
             return True
@@ -282,6 +287,7 @@ class AmbientListener:
     def _callback(self, indata: np.ndarray, frames: int, time_info, status):
         if not self._running:
             return
+        callback_time = time.monotonic()
 
         pcm_int16 = indata[:, 0] if indata.ndim == 2 else indata
         if self._stream_rate != SAMPLE_RATE:
@@ -315,12 +321,27 @@ class AmbientListener:
         self._on_level(rms)
 
         frame_callback = None
+        timed_frame_callback = None
         frame = pcm_int16.tobytes()
         with self._recording_lock:
             is_recording = self._recording_id is not _NO_CAPTURE
             if is_recording:
-                self._rec_buffer.append(frame)
+                timed_frame_callback = self._timed_frame_callback
+                if timed_frame_callback is None:
+                    self._rec_buffer.append(frame)
                 frame_callback = self._frame_callback
+        if timed_frame_callback is not None:
+            try:
+                # ADC and callback times share a PortAudio clock. Translate
+                # their difference without changing ordinary STT capture.
+                delay = (
+                    max(0.0, float(time_info.currentTime - time_info.inputBufferAdcTime))
+                    if time_info is not None else len(frame) / (2 * SAMPLE_RATE)
+                )
+                first_sample_time = callback_time - delay
+                timed_frame_callback(frame, first_sample_time)
+            except Exception:
+                pass
         if frame_callback is not None:
             try:
                 frame_callback(frame)

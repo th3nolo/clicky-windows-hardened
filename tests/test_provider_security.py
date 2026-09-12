@@ -140,6 +140,7 @@ class GeminiKeyTransportTests(unittest.TestCase):
         config.cfg = cfg
         provider_catalog = types.ModuleType("ai.provider_catalog")
         provider_catalog.OPENAI_COMPATIBLE_SPECS = {}
+        provider_catalog.MUSE_VIDEO_MODELS = frozenset()
         modules = {
             "config": config,
             "httpx": fake_httpx(),

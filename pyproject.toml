@@ -69,6 +69,9 @@ plugins = ["pydantic.mypy"]
 files = [
     "clicky_core",
     "ai/response_text.py",
+    "ai/video_input.py",
+    "screen/voice_clip.py",
+    "ui/media_input.py",
     "turn_coordinator.py",
     "audio/tts/base_tts.py",
     "audio/tts/factory.py",

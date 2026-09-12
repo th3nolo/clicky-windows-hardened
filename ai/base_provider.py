@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, TYPE_CHECKING
 from dataclasses import dataclass
+if TYPE_CHECKING:
+    from ai.video_input import VideoInput
 
 
 @dataclass
@@ -11,6 +15,12 @@ class Message:
 
 class BaseLLMProvider(ABC):
     """All LLM providers implement this interface."""
+
+    def stream_video_response(
+        self, user_text: str, video: VideoInput, history: List[Message],
+        system_prompt: str, model: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        raise ValueError("The selected provider does not support video input")
 
     @abstractmethod
     def stream_response(

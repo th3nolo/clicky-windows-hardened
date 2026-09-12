@@ -42,6 +42,7 @@ class ProviderCatalogTests(unittest.TestCase):
                 "minimax_plan": "https://api.minimax.io/v1",
                 "deepseek": "https://api.deepseek.com",
                 "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                "openrouter": "https://openrouter.ai/api/v1",
             },
         )
 
@@ -244,7 +245,10 @@ class OpenAICompatibleTransportTests(unittest.TestCase):
                     models = asyncio.run(
                         model_registry._fetch_openai_compatible(provider_id)
                     )
-                self.assertEqual(models[0]["id"], "provider-model")
+                if provider_id == "openrouter":
+                    self.assertEqual(models, [])  # The fixture model has no reviewed video support.
+                else:
+                    self.assertEqual(models[0]["id"], "provider-model")
 
         for spec, (_method, url, kwargs) in zip(
             OPENAI_COMPATIBLE_SPECS.values(),

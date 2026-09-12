@@ -12,8 +12,10 @@ There are no releases yet. The repository contains source and CI configuration f
 
 The [notebook worker foundation](NOTEBOOK_WORKER.md) is a separate development
 entry point for the planned InkNotes integration. Its typed JSON protocol
-streams text through an explicitly selected existing Clicky provider. It does
-not yet connect InkNotes, capture audiovisual clips, or synthesize speech.
+accepts text and optional audiovisual MP4 input with a supported Muse model.
+The [screen + voice and clipboard guide](VIDEO_INPUT.md) covers the new desktop
+capture actions and provider setup. Connecting the InkNotes WPF client and
+validating native Windows hardware remain separate steps.
 
 No codebase can be guaranteed completely safe. This derivative reduces the specific source, dependency, network, secret-storage, model-loading, and packaging risks documented in [SECURITY.md](SECURITY.md).
 

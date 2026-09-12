@@ -4,11 +4,12 @@ import asyncio
 import os
 import sys
 import threading
+from ai.video_input import MAX_VIDEO_B64
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import CancelledError
 from contextlib import suppress
 
-MAX_LINE_BYTES = 65536
+MAX_LINE_BYTES = MAX_VIDEO_B64 + 65536
 InputItem = bytes | ValueError | None
 
 
@@ -20,17 +21,17 @@ def _read_stdin(deliver: Callable[[InputItem], None]) -> None:
         with os.fdopen(os.dup(sys.stdin.fileno()), "rb") as source:
             while line := source.readline(MAX_LINE_BYTES + 1):
                 if len(line) > MAX_LINE_BYTES:
-                    raise ValueError("Input line exceeds 65536 bytes")
+                    raise ValueError("Input line exceeds the video request limit")
                 deliver(line)
     except (OSError, ValueError):
-        deliver(ValueError("Input could not be read within the 65536-byte line limit"))
+        deliver(ValueError("Input could not be read within the video request limit"))
     else:
         deliver(None)
 
 
 async def stdin_lines() -> AsyncGenerator[bytes, None]:
     loop = asyncio.get_running_loop()
-    incoming: asyncio.Queue[InputItem] = asyncio.Queue(maxsize=16)
+    incoming: asyncio.Queue[InputItem] = asyncio.Queue(maxsize=2)
     stopped = threading.Event()
 
     def deliver(item: InputItem) -> None:

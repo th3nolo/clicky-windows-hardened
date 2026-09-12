@@ -2,7 +2,7 @@
 
 The worker reuses Clicky's existing inference providers and turn coordinator
 without importing the desktop UI. Production has no demo provider or fallback.
-It currently sends text only; InkNotes UI, audiovisual clips, OCR/LaTeX and
+It supports text and optional MP4 input through the [video adapter](VIDEO_INPUT.md); InkNotes UI, OCR/LaTeX and
 TTS are still unimplemented. This is not an installed or packaged integration.
 
 ## Run
@@ -44,8 +44,8 @@ of at most 128 characters, and `type`. Unknown or missing fields are rejected.
 
 | Command | Additional fields | Result |
 | --- | --- | --- |
-| `capabilities` | None | Actual selected provider name; text input, no video/audio or TTS |
-| `submit` | `turn_id`, `text`, `context` | Processing event, streamed text, completion or failure |
+| `capabilities` | None | Actual selected provider name; text plus video/audio for supported Muse models; no worker TTS |
+| `submit` | `turn_id`, `text`, `context`, optional `video` | Processing event, streamed text, completion or failure |
 | `cancel` | `turn_id` | Matching turn completes as cancelled before the cancellation acknowledgement |
 | `shutdown` | None | Active turn cancelled, acknowledgement, exit without waiting for stdin EOF |
 
@@ -110,7 +110,8 @@ locked-environment test job runs the worker tests; the standard-library-only
 job deliberately excludes them. Test subprocesses use a provider defined only
 in `tests/notebook_worker_runner.py` and make no external calls.
 
-Next product increment: connect the WPF client on Windows, then implement the
-requested synchronized video/microphone input and independent TTS. Existing
-Clicky inference adapters accept text/JPEG; they do not establish Muse Spark
-video/audio API support.
+Next product increment: connect the WPF client on Windows and add independent
+worker TTS. The desktop app now records synchronized screen/microphone clips;
+the worker accepts inline MP4 for the supported Muse selections. See
+[VIDEO_INPUT.md](VIDEO_INPUT.md) for the request limits and remaining live
+Windows/provider checks.

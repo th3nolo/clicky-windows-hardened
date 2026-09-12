@@ -46,6 +46,9 @@ hidden = [
     "ai.openai_provider",
     "ai.gemini_provider",
     "ai.openai_compatible_provider",
+    "ai.video_input",
+    "screen.voice_clip",
+    "ui.media_input",
     "ai.provider_catalog",
     "ai.provider_factory",
     "ai.agent_cli_provider",
@@ -208,6 +211,7 @@ for pkg in (
     # Web search + misc runtime deps added since 1.1.x
     "imageio",
     "imageio_ffmpeg",
+    "av",
     "pypdf",
     "docx",
     "pywhispercpp",
