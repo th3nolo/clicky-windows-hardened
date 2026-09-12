@@ -10,6 +10,11 @@ The upstream MIT license permits modification and redistribution. The original c
 
 There are no releases yet. The repository contains source and CI configuration for review. Do not treat a local build as a trusted release artifact.
 
+The [notebook worker foundation](NOTEBOOK_WORKER.md) is a separate development
+entry point for the planned InkNotes integration. It exercises a headless
+JSON protocol with a demo provider; it does not yet capture audiovisual clips,
+call AI models, or change the desktop application.
+
 No codebase can be guaranteed completely safe. This derivative reduces the specific source, dependency, network, secret-storage, model-loading, and packaging risks documented in [SECURITY.md](SECURITY.md).
 
 ## Supported environment
