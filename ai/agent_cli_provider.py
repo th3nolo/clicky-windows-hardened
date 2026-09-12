@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 from ai.base_provider import BaseLLMProvider, Message
 from ai.model_selection import valid_model_id
@@ -307,7 +307,7 @@ class AgentCLIProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         if not model or not valid_model_id(model):
             raise ValueError(
                 "Select a validated read-only response-provider model first"

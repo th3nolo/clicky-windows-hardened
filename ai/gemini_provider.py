@@ -4,7 +4,7 @@ Default model: gemini-2.5-flash (fast, cheap, vision-capable).
 """
 
 import json
-from typing import AsyncIterator, List
+from typing import AsyncGenerator, List
 
 import httpx
 
@@ -29,7 +29,7 @@ class GeminiProvider(BaseLLMProvider):
         history: List[Message],
         system_prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         model = model or DEFAULT_MODEL
 
         contents = []
