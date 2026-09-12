@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from contextlib import suppress
 
 from automation.action_approval import (
     desktop_action_preview,
@@ -20,6 +21,7 @@ from automation.action_process import (
     WindowsUiaWorkerLauncher,
 )
 from automation.action_protocol import (
+    WORKER_AUTH_KEY_BYTES,
     UiaWorkerCommand,
     decode_worker_receipt,
     encode_worker_command,
@@ -113,7 +115,7 @@ class DesktopActionBroker:
             if not self._stops.is_active(self._automation_run):
                 return _cancelled_receipt(request)
 
-            authentication_key = secrets.token_bytes(32)
+            authentication_key = secrets.token_bytes(WORKER_AUTH_KEY_BYTES)
             nonce = secrets.token_hex(32)
             frame = encode_worker_command(
                 UiaWorkerCommand(
@@ -140,12 +142,6 @@ class DesktopActionBroker:
                     return _cancelled_receipt(request)
                 try:
                     response = handle.exchange(frame)
-                except Exception:
-                    return _transport_failure_receipt(
-                        request,
-                        request_sent=handle.request_sent,
-                    )
-                try:
                     receipt = decode_worker_receipt(
                         response,
                         nonce=nonce,
@@ -170,10 +166,8 @@ class DesktopActionBroker:
                     self._automation_run,
                     cancel_name,
                 )
-                try:
+                with suppress(Exception):
                     handle.close()
-                except Exception:
-                    pass
         finally:
             self._reviews.clear(review)
 

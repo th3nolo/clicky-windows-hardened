@@ -377,55 +377,67 @@ class OAuthAuthorizationSessionTests(unittest.TestCase):
                 )
             session.close()
 
-    def test_actual_bound_loopback_callback_returns_static_safe_page(self):
-        try:
-            session = prepare_authorization(
-                _registration(),
-                ConnectorId.GMAIL,
-                _CAPABILITIES,
-            )
-        except OAuthError as exc:
-            if isinstance(exc.__cause__, PermissionError):
-                self.skipTest("Loopback sockets unavailable in this sandbox")
-            raise
-        opened: list[str] = []
-        session.open_system_browser(
-            lambda url: opened.append(url) or True
-        )
-        state = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(opened[0]).query
-        )["state"][0]
-        parsed = urllib.parse.urlsplit(session.redirect_uri)
-        observed: list[tuple[int, bytes]] = []
+    def test_loopback_accepts_only_get_and_returns_static_safe_pages(self):
+        for method in ("GET", "POST", "PUT", "DELETE"):
+            with self.subTest(method=method):
+                try:
+                    session = prepare_authorization(
+                        _registration(),
+                        ConnectorId.GMAIL,
+                        _CAPABILITIES,
+                    )
+                except OAuthError as exc:
+                    if isinstance(exc.__cause__, PermissionError):
+                        self.skipTest("Loopback sockets unavailable in this sandbox")
+                    raise
+                opened: list[str] = []
+                session.open_system_browser(
+                    lambda url: opened.append(url) or True
+                )
+                state = urllib.parse.parse_qs(
+                    urllib.parse.urlsplit(opened[0]).query
+                )["state"][0]
+                parsed = urllib.parse.urlsplit(session.redirect_uri)
+                observed: list[tuple[int, bytes]] = []
 
-        def callback():
-            connection = http.client.HTTPConnection(
-                "127.0.0.1",
-                parsed.port,
-                timeout=2,
-            )
-            connection.request(
-                "GET",
-                f"{CALLBACK_PATH}?code=loopback-code&state={state}",
-                headers={"Host": parsed.netloc},
-            )
-            response = connection.getresponse()
-            observed.append((response.status, response.read()))
-            connection.close()
+                def callback():
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1",
+                        parsed.port,
+                        timeout=2,
+                    )
+                    connection.request(
+                        method,
+                        f"{CALLBACK_PATH}?code=loopback-code&state={state}",
+                        headers={"Host": parsed.netloc},
+                    )
+                    response = connection.getresponse()
+                    observed.append((response.status, response.read()))
+                    connection.close()
 
-        thread = threading.Thread(target=callback)
-        thread.start()
-        result = session.wait_for_callback(timeout_seconds=2)
-        thread.join(timeout=2)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(
-            observed,
-            [(200, b"Authorization received. Return to Clicky.")],
-        )
-        self.assertNotIn(b"loopback-code", observed[0][1])
-        self.assertNotIn(state.encode(), observed[0][1])
-        self.assertFalse(result.consumed)
-        result.close()
+                thread = threading.Thread(target=callback)
+                thread.start()
+                result = None
+                if method == "GET":
+                    result = session.wait_for_callback(timeout_seconds=2)
+                else:
+                    with self.assertRaises(OAuthCallbackError):
+                        session.wait_for_callback(timeout_seconds=2)
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(
+                    observed,
+                    [(200, b"Authorization received. Return to Clicky.")]
+                    if method == "GET"
+                    else [(405, b"OAuth callback requires GET.")],
+                )
+                self.assertNotIn(b"loopback-code", observed[0][1])
+                self.assertNotIn(state.encode(), observed[0][1])
+                if result is not None:
+                    self.assertFalse(result.consumed)
+                    result.close()
+                else:
+                    self.assertEqual(session.state, OAuthSessionState.CLOSED)
 
     def test_browser_failure_and_timeout_close_all_session_authority(self):
         session = prepare_authorization(

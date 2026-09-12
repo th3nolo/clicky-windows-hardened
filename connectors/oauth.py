@@ -21,11 +21,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol
+from typing import Protocol
 
 from capability_registry import (
     CAPABILITY_REGISTRY,
@@ -233,11 +234,9 @@ GOOGLE_PROVIDER_SCOPES: Mapping[OAuthScopeId, str] = MappingProxyType(
 )
 
 _GOOGLE_SEMANTIC_SCOPES = frozenset(
-    scope
-    for connector in PROVIDER_CONNECTORS[ConnectorProviderId.GOOGLE]
+    require_oauth_scope(capability)
     for capability, definition in CAPABILITY_REGISTRY.items()
-    if definition.connector is connector
-    for scope in (require_oauth_scope(capability),)
+    if definition.connector in PROVIDER_CONNECTORS[ConnectorProviderId.GOOGLE]
 )
 if set(GOOGLE_PROVIDER_SCOPES) != set(_GOOGLE_SEMANTIC_SCOPES):
     raise RuntimeError(
@@ -686,15 +685,6 @@ class _CallbackHandler(BaseHTTPRequestHandler):
                 b"Authorization failed. Return to Clicky.",
             )
 
-    def do_POST(self) -> None:
-        self._reject_method()
-
-    def do_PUT(self) -> None:
-        self._reject_method()
-
-    def do_DELETE(self) -> None:
-        self._reject_method()
-
     def _reject_method(self) -> None:
         session = self.server.authorization_session
         try:
@@ -706,6 +696,8 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         except OAuthError:
             pass
         self._reply(405, b"OAuth callback requires GET.")
+
+    do_POST = do_PUT = do_DELETE = _reject_method
 
     def _reply(self, status: int, body: bytes) -> None:
         self.send_response(status)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from audio.tts.base_tts import BaseTTS
 from audio.tts.factory import create_tts_provider
 from audio.tts.voice_catalog import ReviewedVoice, reviewed_voice
 
@@ -18,7 +19,7 @@ async def speak_voice_preview(
     voice_id: str,
     *,
     cloud_tts_permission: bool,
-    provider_factory: Callable[[str, str], object] = create_tts_provider,
+    provider_factory: Callable[[str, str], BaseTTS] = create_tts_provider,
     timeout_seconds: float = VOICE_PREVIEW_TIMEOUT_SECONDS,
 ) -> ReviewedVoice:
     """Speak fixed synthetic text through exactly one reviewed provider.
@@ -39,11 +40,8 @@ async def speak_voice_preview(
         raise ValueError("Voice preview timeout is invalid")
     voice = reviewed_voice(provider, voice_id)
     speaker = provider_factory(provider, voice.voice_id)
-    speak = getattr(speaker, "speak", None)
-    if not callable(speak):
-        raise TypeError("TTS preview provider is invalid")
     await asyncio.wait_for(
-        speak(VOICE_PREVIEW_TEXT),
+        speaker.speak(VOICE_PREVIEW_TEXT),
         timeout=float(timeout_seconds),
     )
     return voice
