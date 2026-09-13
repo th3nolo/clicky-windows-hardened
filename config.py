@@ -9,6 +9,7 @@ from typing import Optional
 
 from feature_gates import ACTION_PERMISSION_SCHEMA_VERSION
 from privacy_controls import PRIVACY_NOTICE_VERSION
+from ai.provider_endpoints import provider_endpoint
 
 
 _PREFERENCES_VERSION = 1
@@ -43,6 +44,7 @@ _PREFERENCE_STRING_LIMITS = {
     "stt_fallback_provider": 32,
 }
 _PREFERENCE_BOOL_KEYS = {
+    "openrouter_private_routing",
     "journal_enabled",
     "web_search_enabled",
     "microphone_consent",
@@ -69,6 +71,15 @@ _PREFERENCE_STRING_LIST_LIMITS = {
     "transcription_vocabulary": (63, 64),
 }
 _PREFERENCES_LOCK = threading.Lock()
+
+
+def _configured_router_vision_models() -> dict[str, tuple[str, ...]]:
+    from ai.provider_endpoints import router_vision_models
+
+    return router_vision_models(
+        os.environ.get("CLICKY_OPENAI_BASE_URL", ""),
+        os.environ.get("CLICKY_OPENAI_VISION_MODELS", ""),
+    )
 
 
 def _canonical_hotkey(hotkey: str) -> str:
@@ -286,6 +297,9 @@ class Config:
     openai_api_key: Optional[str] = field(
         default_factory=lambda: os.environ.get("OPENAI_API_KEY") or None
     )
+    openai_speech_api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get("OPENAI_SPEECH_API_KEY") or None
+    )
     google_api_key: Optional[str] = field(default_factory=lambda: (
         os.environ.get("GOOGLE_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
@@ -329,9 +343,17 @@ class Config:
         )
     )
 
-    # Network endpoints are fixed in the hardened build. In particular, an
-    # editable local file cannot redirect a provider API key to another host.
-    openai_base_url: str = ""
+    # Custom chat routers require explicit Clicky-owned process configuration.
+    # Shared SDK endpoint variables and editable preference files cannot route keys.
+    openai_base_url: str = field(default_factory=lambda: provider_endpoint(
+        os.environ.get("CLICKY_OPENAI_BASE_URL", ""), default="",
+    ))
+    anthropic_base_url: str = field(default_factory=lambda: provider_endpoint(
+        os.environ.get("CLICKY_ANTHROPIC_BASE_URL", ""), default="https://api.anthropic.com",
+    ))
+    openai_router_vision_models: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: _configured_router_vision_models()
+    )
     ollama_host: str = "http://127.0.0.1:11434"
     lmstudio_host: str = "http://127.0.0.1:1234/v1"
 
@@ -363,6 +385,9 @@ class Config:
     )
     openrouter_model: str = field(
         default_factory=lambda: _preference("openrouter_model", "")
+    )
+    openrouter_private_routing: bool = field(
+        default_factory=lambda: bool(_preference("openrouter_private_routing", False))
     )
     codex_agent_model: str = field(
         default_factory=lambda: _preference("codex_agent_model", "")
@@ -662,6 +687,19 @@ class Config:
         setattr(self, attribute, model_id)
         _save_preferences(**{preference: model_id})
 
+    def has_openai_speech_credentials(self) -> bool:
+        from audio.openai_credentials import openai_speech_api_key
+
+        try:
+            openai_speech_api_key(
+                speech_key=self.openai_speech_api_key,
+                chat_key=self.openai_api_key,
+                chat_base_url=self.openai_base_url,
+            )
+        except RuntimeError:
+            return False
+        return True
+
     def stt_provider(self) -> str:
         forced = self.stt_provider_preference.strip().lower()
         if forced in (
@@ -674,7 +712,7 @@ class Config:
             return forced
         if self.deepgram_api_key:
             return "deepgram"
-        if self.openai_api_key:
+        if self.has_openai_speech_credentials():
             return "openai"
         # Prefer whisper.cpp (GPU-accelerated, same engine as Handy) when the
         # pywhispercpp package is installed; otherwise fall back to faster-whisper.
@@ -689,7 +727,7 @@ class Config:
         providers: list[str] = []
         if self.deepgram_api_key:
             providers.extend(("deepgram", "deepgram_batch"))
-        if self.openai_api_key:
+        if self.has_openai_speech_credentials():
             providers.append("openai")
         providers.extend(("whisper_cpp", "faster_whisper"))
         return providers
@@ -752,7 +790,7 @@ class Config:
     def tts_provider(self) -> str:
         if self.elevenlabs_api_key:
             return "elevenlabs"
-        if self.openai_api_key:
+        if self.has_openai_speech_credentials():
             return "openai"
         return "edge_tts"
 
@@ -934,6 +972,7 @@ class Config:
         notice_version: int,
         global_dictation: bool | None = None,
         screen_compose: bool | None = None,
+        openrouter_private_routing: bool | None = None,
     ) -> None:
         """Atomically persist privacy and any exposed action permission."""
         if notice_version != PRIVACY_NOTICE_VERSION:
@@ -961,6 +1000,11 @@ class Config:
             and type(screen_compose) is not bool
         ):
             raise TypeError("Screen-Aware Compose permission must be boolean")
+        if (
+            openrouter_private_routing is not None
+            and type(openrouter_private_routing) is not bool
+        ):
+            raise TypeError("OpenRouter private routing must be boolean")
         updates = dict(
             privacy_consent_version=notice_version,
             microphone_consent=microphone,
@@ -981,6 +1025,8 @@ class Config:
             updates["global_dictation_permission"] = global_dictation
         if screen_compose is not None:
             updates["screen_compose_permission"] = screen_compose
+        if openrouter_private_routing is not None:
+            updates["openrouter_private_routing"] = openrouter_private_routing
         _save_preferences(**updates)
         for name, value in updates.items():
             setattr(self, name, value)

@@ -1,8 +1,7 @@
 from typing import AsyncGenerator, List
 
-from openai import AsyncOpenAI
-
 from ai.base_provider import BaseLLMProvider, Message
+from ai.sdk_isolation import create_openai_client
 from config import cfg
 
 DEFAULT_MODEL = "gpt-4o"
@@ -12,13 +11,13 @@ MAX_TOKENS = 1024
 class OpenAIProvider(BaseLLMProvider):
 
     def __init__(self):
-        # OPENAI_BASE_URL turns this into a generic OpenAI-compatible client:
-        # DeepSeek (https://api.deepseek.com), Alibaba DashScope/Qwen,
-        # SiliconFlow, OpenRouter, etc. Set OPENAI_DEFAULT_MODEL to match.
-        kwargs = {"api_key": cfg.openai_api_key}
-        if cfg.openai_base_url:
-            kwargs["base_url"] = cfg.openai_base_url
-        self._client = AsyncOpenAI(**kwargs)
+        # Keep explicitly configured compatible routers; SDK environment alone
+        # must not redirect this provider or add another provider's headers.
+        self._client = create_openai_client(
+            api_key=cfg.openai_api_key,
+            base_url=cfg.openai_base_url or "https://api.openai.com/v1",
+            timeout=600.0, max_retries=2,
+        )
 
     async def stream_response(
         self,

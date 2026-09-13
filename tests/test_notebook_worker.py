@@ -363,10 +363,8 @@ class TypedWorkerTests(unittest.IsolatedAsyncioTestCase):
             "notebook_openai_provider", ROOT / "ai" / "openai_provider.py"
         )
         module = importlib.util.module_from_spec(spec)
-        sdk = types.ModuleType("openai")
-        sdk.AsyncOpenAI = Mock()
-        with patch.dict(sys.modules, {"openai": sdk}):
-            spec.loader.exec_module(module)
+        spec.loader.exec_module(module)
+        module.create_openai_client = Mock()
         stream = MagicMock()
         stream.__aiter__.return_value = iter(
             [

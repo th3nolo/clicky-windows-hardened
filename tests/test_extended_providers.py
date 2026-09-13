@@ -186,6 +186,11 @@ class OpenAICompatibleTransportTests(unittest.TestCase):
                 provider_module.cfg,
                 spec.credential_attribute,
                 "provider-secret",
+            ), mock.patch.dict(sys.modules, {"openai": fake_openai}), mock.patch(
+                "ai.sdk_isolation._http_client",
+                side_effect=lambda timeout: FakeHTTPClient(
+                    timeout=timeout, trust_env=False, follow_redirects=False,
+                ),
             ):
                 chunks, provider = asyncio.run(exercise(provider_id))
             self.assertEqual(chunks, ["hello"])

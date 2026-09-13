@@ -6,11 +6,11 @@ from typing import AsyncGenerator, List
 from contextlib import aclosing
 
 import httpx
-from openai import AsyncOpenAI
 
 from ai.base_provider import BaseLLMProvider, Message
 from ai.model_selection import valid_model_id
 from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS, supports_video
+from ai.sdk_isolation import create_openai_client
 from ai.video_input import VideoInput
 from config import cfg
 
@@ -92,15 +92,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 f"{self._spec.label} is unavailable because its process "
                 "environment API key is missing."
             )
-        http_client = httpx.AsyncClient(
-            trust_env=False,
-            follow_redirects=False,
-            timeout=httpx.Timeout(120.0, connect=15.0),
-        )
-        self._client = AsyncOpenAI(
+        self._client = create_openai_client(
             api_key=api_key,
             base_url=self._spec.base_url,
-            http_client=http_client,
+            timeout=httpx.Timeout(120.0, connect=15.0),
             max_retries=0,
         )
 
@@ -138,13 +133,18 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             raise ValueError(
                 f"Select a validated {self._spec.label} model before sending."
             )
+        routing: dict = {}
+        if self._spec.provider_id == "openrouter":
+            provider_options: dict[str, bool | str] = {"allow_fallbacks": False}
+            if getattr(cfg, "openrouter_private_routing", False) is True:
+                provider_options.update(zdr=True, data_collection="deny")
+            routing = {"extra_body": {"provider": provider_options}}
         stream = await self._client.chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=MAX_OUTPUT_TOKENS,
             stream=True,
-            **({"extra_body": {"provider": {"allow_fallbacks": False}}}
-               if self._spec.provider_id == "openrouter" else {}),
+            **routing,
         )
         try:
             async for chunk in stream:

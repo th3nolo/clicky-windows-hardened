@@ -170,7 +170,11 @@ class VocabularyProviderTests(unittest.TestCase):
 
         async def exercise():
             with mock.patch.object(
-                openai_stt, "AsyncOpenAI", FakeOpenAIClient
+                openai_stt, "create_openai_client", FakeOpenAIClient
+            ), mock.patch.object(
+                openai_stt.cfg, "openai_api_key", "synthetic-openai-key"
+            ), mock.patch.object(
+                openai_stt.cfg, "openai_base_url", ""
             ), mock.patch.object(
                 openai_stt, "pcm16_to_wav", return_value=b"synthetic-wav"
             ):

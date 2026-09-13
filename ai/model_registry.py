@@ -18,6 +18,7 @@ github_copilot_provider.py because its flow is more complex.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -27,6 +28,7 @@ from typing import Optional
 import httpx
 
 from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS, MUSE_VIDEO_MODELS
+from ai.model_selection import valid_model_id
 from config import cfg
 
 
@@ -140,8 +142,47 @@ def _data_dir() -> Path:
     return d
 
 
+def _custom_endpoint(provider: str) -> str:
+    defaults = {
+        "openai": ("openai_base_url", "https://api.openai.com/v1"),
+        "claude": ("anthropic_base_url", "https://api.anthropic.com"),
+    }
+    if provider not in defaults:
+        return ""
+    attribute, default = defaults[provider]
+    endpoint = (getattr(cfg, attribute, "") or default).rstrip("/")
+    return endpoint if endpoint != default else ""
+
+
 def _cache_path(provider: str) -> Path:
-    return _data_dir() / f"models_{provider}.json"
+    endpoint = _custom_endpoint(provider)
+    suffix = "_" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
+    return _data_dir() / f"models_{provider}{suffix}.json"
+
+
+def _declares_image_input(record: dict) -> bool:
+    """Recognize explicit metadata; a model's name alone is not a capability."""
+    capabilities = record.get("capabilities")
+    architecture = record.get("architecture")
+    modalities = record.get("input_modalities")
+    return (
+        record.get("vision") is True
+        or (isinstance(capabilities, dict) and capabilities.get("vision") is True)
+        or (isinstance(modalities, list) and "image" in modalities)
+        or (isinstance(architecture, dict)
+            and isinstance(architecture.get("input_modalities"), list)
+            and "image" in architecture["input_modalities"])
+    )
+
+
+def _with_router_vision_overrides(provider: str, models: list[dict]) -> list[dict]:
+    endpoint = _custom_endpoint(provider)
+    if provider != "openai" or not endpoint:
+        return models
+    declarations = getattr(cfg, "openai_router_vision_models", {})
+    allowed = declarations.get(endpoint, ())
+    return [dict(model, vision=model.get("vision") is True or model["id"] in allowed)
+            for model in models]
 
 
 # ─── Per-provider live fetchers ───────────────────────────────────────────────
@@ -149,9 +190,12 @@ def _cache_path(provider: str) -> Path:
 async def _fetch_claude() -> list[dict]:
     if not cfg.anthropic_api_key:
         return []
-    async with httpx.AsyncClient(timeout=15) as client:
+    base_url = (
+        getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com"
+    ).rstrip("/")
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
-            "https://api.anthropic.com/v1/models",
+            f"{base_url}/v1/models",
             headers={
                 "x-api-key": cfg.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
@@ -178,9 +222,13 @@ async def _fetch_claude() -> list[dict]:
 async def _fetch_openai() -> list[dict]:
     if not cfg.openai_api_key:
         return []
-    async with httpx.AsyncClient(timeout=15) as client:
+    base_url = (
+        getattr(cfg, "openai_base_url", "") or "https://api.openai.com/v1"
+    ).rstrip("/")
+    custom_endpoint = base_url != "https://api.openai.com/v1"
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
-            "https://api.openai.com/v1/models",
+            f"{base_url}/models",
             headers={"Authorization": f"Bearer {cfg.openai_api_key}"},
         )
     r.raise_for_status()
@@ -199,8 +247,16 @@ async def _fetch_openai() -> list[dict]:
                        "o1-", "o3-", "o4-")
     seen = set()
     for m in data:
+        if not isinstance(m, dict):
+            continue
         mid = m.get("id")
-        if not mid or mid in seen:
+        if not valid_model_id(mid) or mid in seen:
+            continue
+        # An explicitly selected compatible router may serve non-OpenAI IDs.
+        # Do not infer its vision support from an OpenAI-looking alias.
+        if custom_endpoint:
+            seen.add(mid)
+            out.append({"id": mid, "label": mid, "vision": _declares_image_input(m)})
             continue
         if not mid.startswith(chat_prefixes):
             continue
@@ -225,7 +281,7 @@ async def _fetch_openai() -> list[dict]:
 async def _fetch_gemini() -> list[dict]:
     if not cfg.google_api_key:
         return []
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
             "https://generativelanguage.googleapis.com/v1beta/models",
             headers={"x-goog-api-key": cfg.google_api_key},
@@ -348,10 +404,12 @@ def cached_models(provider: str) -> list[dict]:
             blob = json.loads(p.read_text())
             ms = normalized_model_records(blob.get("models", []))
             if ms:
-                return ms
+                return _with_router_vision_overrides(provider, ms)
         except Exception:
             pass
-    return normalized_model_records(_FALLBACKS.get(provider, []))
+    return normalized_model_records(
+        [] if _custom_endpoint(provider) else _FALLBACKS.get(provider, [])
+    )
 
 
 def cache_is_stale(provider: str, ttl: int = CACHE_TTL_SECONDS) -> bool:
@@ -370,13 +428,16 @@ async def refresh(provider: str) -> list[dict]:
     fetcher = _FETCHERS.get(provider)
     if not fetcher:
         raise ValueError(f"No live model fetcher for provider '{provider}'")
+    destination_cache = _cache_path(provider)
     models = await fetcher()
+    if destination_cache != _cache_path(provider):
+        raise ValueError("Model discovery endpoint changed during refresh")
     if not models:
         # No key → no models. Don't overwrite cache with empty list.
         return cached_models(provider)
     blob = {"fetched_at": time.time(), "models": models}
-    _cache_path(provider).write_text(json.dumps(blob, indent=2))
-    return models
+    destination_cache.write_text(json.dumps(blob, indent=2))
+    return _with_router_vision_overrides(provider, models)
 
 
 async def refresh_all_stale() -> dict[str, int]:

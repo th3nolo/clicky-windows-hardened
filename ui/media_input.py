@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from screen.voice_clip import MAX_SECONDS
+from ai.provider_catalog import video_model_notices
 from turn_coordinator import TurnSession
 
 
@@ -100,15 +101,29 @@ def record_screen_voice(
     parent: QWidget, destination: str,
     start: Callable[[], TurnSession | None],
     send: Callable[[TurnSession], None], cancel: Callable[[TurnSession], None],
+    *, provider: str = "", model: str | None = None,
 ) -> None:
     dialog = QDialog(parent)
     dialog.setWindowTitle("Ask with screen + voice")
     layout = QVBoxLayout(dialog)
-    status = QLabel(
-        f"Record the display containing this window and your microphone.\n"
+    disclosure = QLabel(
+        "Record the entire display containing this window and your microphone. "
+        "Other visible apps and notifications are included.\n"
         f"When you send, the video and voice go together to {destination}.\n"
-        f"Click Start, then speak and show what you mean. Sends automatically after {MAX_SECONDS} seconds."
+        "If cloud speech output is enabled, your answer also goes to the "
+        "separately selected speech service.\n"
+        f"Sends automatically after {MAX_SECONDS} seconds. Cancel discards an "
+        "unsent recording."
     )
+    disclosure.setTextFormat(Qt.TextFormat.PlainText)
+    disclosure.setWordWrap(True)
+    layout.addWidget(disclosure)
+    for notice in video_model_notices(provider, model):
+        label = QLabel(notice)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+    status = QLabel("Click Start, then speak and show what you mean.")
     status.setTextFormat(Qt.TextFormat.PlainText)
     status.setWordWrap(True)
     layout.addWidget(status)

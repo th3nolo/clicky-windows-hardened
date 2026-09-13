@@ -680,9 +680,12 @@ def main():
 
     def _screen_voice():
         from ui.media_input import record_screen_voice
+        provider = cfg.llm_provider()
+        model = cfg.selected_model(provider)
         record_screen_voice(
-            panel, f"{cfg.llm_provider()} / {cfg.selected_model(cfg.llm_provider())}",
+            panel, f"{provider} / {model}",
             manager.start_video_capture, manager.send_video_capture, manager.cancel_video_capture,
+            provider=provider, model=model,
         )
 
     def _clipboard_input():
