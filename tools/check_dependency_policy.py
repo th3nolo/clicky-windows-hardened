@@ -900,6 +900,10 @@ def _require_authoritative_pypi_step(text: str) -> None:
         for line in lines
         if line.strip() and not line.lstrip().startswith("#")
     ]
+    if [line for line in effective if line == line.lstrip()] != [
+        "name: Dependency policy", "on:", "permissions:", "jobs:",
+    ]:
+        fail("CI must retain the exact reviewed workflow envelope")
     try:
         jobs_index = effective.index("jobs:")
     except ValueError:

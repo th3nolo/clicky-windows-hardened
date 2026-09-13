@@ -922,6 +922,22 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
                 workflow_text=workflow,
             )
 
+    def test_trailing_workflow_overrides_are_rejected(self) -> None:
+        workflow = VALID_WORKFLOW + (
+            "\n  another_job:\n    runs-on: windows-2022\n    steps: []\n"
+        )
+        for suffix in (
+            "\nenv:\n  PYTHONPATH: attacker\n",
+            "\ndefaults:\n  run:\n    working-directory: attacker\n",
+            "\njobs:\n  replacement: {}\n",
+        ):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(
+                AssertionError, "exact reviewed workflow envelope"
+            ):
+                policy.check_build_script(
+                    build_text=VALID_BUILD, workflow_text=workflow + suffix
+                )
+
 
 class SecurityUpdatePolicyTests(unittest.TestCase):
     def test_reviewed_project_and_lock_are_accepted(self):
