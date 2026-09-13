@@ -314,11 +314,19 @@ class TypedWorkerTests(unittest.IsolatedAsyncioTestCase):
                     closed.set()
 
         worker = Worker(Provider(), events.append)
+        self.addCleanup(worker.close)
         worker.receive(submit())
-        await asyncio.wait_for(started.wait(), timeout=1)
+        # This in-memory provider has no suspension before setting started.
+        # Hand off to the already queued worker instead of timing CI scheduling.
+        await asyncio.sleep(0)
+        self.assertTrue(started.is_set(), events)
         worker.receive(command("cancel", "cancel-1", turn_id="turn-1"))
         worker.receive(submit("turn-2", "submit-2"))
-        await asyncio.wait_for(asyncio.gather(*worker.tasks), timeout=1)
+        tasks = tuple(worker.tasks)
+        await asyncio.sleep(0)
+        self.assertTrue(all(task.done() for task in tasks), events)
+        for task in tasks:
+            task.result()
         self.assertTrue(closed.is_set())
         self.assertNotIn("stale response", json.dumps(events))
         done = [event for event in events if event["type"] == "done"]
