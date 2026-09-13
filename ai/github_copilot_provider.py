@@ -209,7 +209,7 @@ async def device_login(open_browser: bool = True,
     the code in the panel instead of (or in addition to) the terminal.
     """
     _log_login("=== device_login() started ===")
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.post(
             DEVICE_CODE_URL,
             data={"client_id": VSCODE_CLIENT_ID, "scope": "read:user"},
@@ -248,7 +248,7 @@ async def device_login(open_browser: bool = True,
 
     deadline = time.time() + expires_in
     poll_count = 0
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         while time.time() < deadline:
             await asyncio.sleep(interval)
             poll_count += 1
@@ -344,7 +344,7 @@ async def fetch_copilot_token_only() -> str:
     gh = load_github_token()
     if not gh:
         raise RuntimeError("Not signed in to GitHub Copilot.")
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
             COPILOT_TOKEN_URL,
             headers={
@@ -372,7 +372,7 @@ async def fetch_copilot_token_only() -> str:
 async def fetch_models_live() -> list[dict]:
     """Hit /models on api.githubcopilot.com and return the raw model list."""
     tok = await fetch_copilot_token_only()
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
             COPILOT_MODELS_URL,
             headers={
@@ -576,7 +576,7 @@ class GitHubCopilotProvider(BaseLLMProvider):
         content_parts.append({"type": "text", "text": user_text})
         messages.append({"role": "user", "content": content_parts if screenshots_b64 else user_text})
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, trust_env=False, follow_redirects=False) as client:
             tok = await self._get_copilot_token(client)
             headers = {
                 "Authorization": f"Bearer {tok}",
@@ -634,7 +634,7 @@ class GitHubCopilotProvider(BaseLLMProvider):
 
     async def health_check(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=8) as client:
+            async with httpx.AsyncClient(timeout=8, trust_env=False, follow_redirects=False) as client:
                 await self._get_copilot_token(client)
             return True
         except Exception:

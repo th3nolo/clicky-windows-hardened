@@ -1,8 +1,7 @@
 from typing import AsyncGenerator, List
 
-import anthropic
-
 from ai.base_provider import BaseLLMProvider, Message
+from ai.sdk_isolation import create_anthropic_client
 from config import cfg
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -12,7 +11,11 @@ MAX_TOKENS = 1024
 class ClaudeProvider(BaseLLMProvider):
 
     def __init__(self):
-        self._client = anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key)
+        self._client = create_anthropic_client(
+            api_key=cfg.anthropic_api_key,
+            base_url=getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com",
+            timeout=600.0, max_retries=2,
+        )
 
     async def stream_response(
         self,

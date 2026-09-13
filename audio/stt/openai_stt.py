@@ -1,10 +1,11 @@
 import io
 from collections.abc import Sequence
 
-from openai import AsyncOpenAI
+from ai.sdk_isolation import create_openai_client
 
 from audio.stt.base_stt import BaseSTT
 from audio.capture import pcm16_to_wav
+from audio.openai_credentials import openai_speech_api_key
 from audio.stt.vocabulary import approved_vocabulary
 from config import cfg
 
@@ -13,7 +14,16 @@ class OpenAISTT(BaseSTT):
     """OpenAI Whisper API — upload-based, high accuracy."""
 
     def __init__(self, vocabulary: Sequence[str] = ()) -> None:
-        self._client = AsyncOpenAI(api_key=cfg.openai_api_key)
+        self._client = create_openai_client(
+            api_key=openai_speech_api_key(
+                speech_key=getattr(cfg, "openai_speech_api_key", None),
+                chat_key=cfg.openai_api_key,
+                chat_base_url=getattr(cfg, "openai_base_url", ""),
+            ),
+            base_url="https://api.openai.com/v1",
+            timeout=600.0,
+            max_retries=2,
+        )
         self._vocabulary = approved_vocabulary(vocabulary)
 
     async def transcribe(self, pcm_bytes: bytes, sample_rate: int = 16000) -> str:

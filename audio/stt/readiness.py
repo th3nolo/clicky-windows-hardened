@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib.util
 
+from audio.openai_credentials import openai_speech_api_key
 from audio.stt.local_models import (
     LocalModelUnavailable,
     resolve_faster_whisper_model,
@@ -69,18 +70,22 @@ def fallback_label(provider: str) -> str:
 
 def _cloud_readiness(config, provider: str) -> STTReadiness:
     label, mode, destination = STT_PROVIDER_DETAILS[provider]
-    key_present = (
-        bool(config.deepgram_api_key)
-        if provider.startswith("deepgram")
-        else bool(config.openai_api_key)
-    )
+    key_error = "DEEPGRAM_API_KEY is absent from this process."
+    if provider.startswith("deepgram"):
+        key_present = bool(config.deepgram_api_key)
+    else:
+        try:
+            openai_speech_api_key(
+                speech_key=getattr(config, "openai_speech_api_key", None),
+                chat_key=config.openai_api_key,
+                chat_base_url=getattr(config, "openai_base_url", ""),
+            )
+            key_present = True
+        except RuntimeError as exc:
+            key_present = False
+            key_error = str(exc)
     if not key_present:
-        key_name = (
-            "DEEPGRAM_API_KEY"
-            if provider.startswith("deepgram")
-            else "OPENAI_API_KEY"
-        )
-        detail = f"Not ready: {key_name} is absent from this process."
+        detail = f"Not ready: {key_error}"
         ready = False
     elif not microphone_allowed(config):
         detail = "Not ready: microphone permission is off."

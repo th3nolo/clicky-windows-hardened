@@ -142,6 +142,21 @@ class PrivacyConsentDialog(QDialog):
         screen_notice.setWordWrap(True)
         layout.addWidget(screen_notice)
 
+        self.openrouter_private_routing = QCheckBox(
+            "OpenRouter only: require no data collection and zero-retention policies"
+        )
+        self.openrouter_private_routing.setChecked(cfg.openrouter_private_routing)
+        layout.addWidget(self.openrouter_private_routing)
+        private_routing_notice = QLabel(
+            "Optional; off by default. Applies to OpenRouter model requests, "
+            "not speech services or other providers. Some models, including "
+            "Contributor tiers, may become unavailable. Clicky will not retry "
+            "with weaker privacy restrictions. Your OpenRouter account may "
+            "already enforce restrictions; this does not change them."
+        )
+        private_routing_notice.setWordWrap(True)
+        layout.addWidget(private_routing_notice)
+
         self.coding_agent = QCheckBox(
             "Allow Codex and Qwen Code read-only response providers"
         )
@@ -236,6 +251,7 @@ class PrivacyConsentDialog(QDialog):
             screen_capture=screen,
             coding_agent=coding_agent,
             notice_version=PRIVACY_NOTICE_VERSION,
+            openrouter_private_routing=self.openrouter_private_routing.isChecked(),
             global_dictation=(
                 self.global_dictation.isChecked()
                 if self.global_dictation is not None

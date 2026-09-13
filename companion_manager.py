@@ -2276,7 +2276,7 @@ class CompanionManager(QObject):
             return None
         if target is not None and target.source in ("uia", "ocr"):
             return float(target.x), float(target.y)
-        if cfg.anthropic_api_key:
+        if cfg.llm_provider() == "claude" and cfg.anthropic_api_key:
             from ai.element_locator import detect_element
 
             detected = await detect_element(
@@ -2288,6 +2288,7 @@ class CompanionManager(QObject):
                 logical_left=shot.logical_left, logical_top=shot.logical_top,
                 logical_width=shot.logical_width, logical_height=shot.logical_height,
                 screen_index=shot.index, user_question=question,
+                model=self._current_model or "claude-sonnet-4-6",
             )
         else:
             from ai.universal_locator import detect_element_universal
@@ -2980,6 +2981,7 @@ class CompanionManager(QObject):
 
     def start_realtime_voice(self) -> bool:
         """Claim selected audio devices and open one reviewed duplex session."""
+        from audio.openai_credentials import openai_speech_api_key
         from audio.realtime.controller import RealtimeVoiceController
 
         if not realtime_voice_allowed(cfg):
@@ -2988,10 +2990,14 @@ class CompanionManager(QObject):
                 "speech-to-text, and cloud text-to-speech permissions."
             )
             return False
-        if not cfg.openai_api_key:
-            self.sig_error.emit(
-                "Realtime voice needs OPENAI_API_KEY in the process environment."
+        try:
+            openai_speech_api_key(
+                speech_key=getattr(cfg, "openai_speech_api_key", None),
+                chat_key=cfg.openai_api_key,
+                chat_base_url=getattr(cfg, "openai_base_url", ""),
             )
+        except RuntimeError as exc:
+            self.sig_error.emit(str(exc))
             return False
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -3030,9 +3036,15 @@ class CompanionManager(QObject):
         return True
 
     async def _start_realtime_voice(self, controller) -> None:
+        from audio.openai_credentials import openai_speech_api_key
+
         try:
             await controller.start(
-                api_key=cfg.openai_api_key or "",
+                api_key=openai_speech_api_key(
+                    speech_key=getattr(cfg, "openai_speech_api_key", None),
+                    chat_key=cfg.openai_api_key,
+                    chat_base_url=getattr(cfg, "openai_base_url", ""),
+                ),
                 feature_enabled=cfg.realtime_voice_enabled,
                 microphone_consent=cfg.microphone_consent,
                 cloud_stt_consent=cfg.cloud_stt_consent,

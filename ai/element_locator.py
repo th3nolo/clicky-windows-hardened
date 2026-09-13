@@ -27,7 +27,6 @@ _CU_RESOLUTIONS = (
     (1366, 768,  1366 / 768),   # 16:9
 )
 
-_API_URL = "https://api.anthropic.com/v1/messages"
 _BETA_HEADER = "computer-use-2025-11-24"
 
 
@@ -89,6 +88,9 @@ async def detect_element(
     api_key = cfg.anthropic_api_key
     if not api_key:
         return None
+    base_url = (
+        getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com"
+    ).rstrip("/")
 
     # Default: assume the JPEG is at native physical resolution
     if physical_width is None:
@@ -144,8 +146,10 @@ async def detect_element(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(_API_URL, json=body, headers=headers)
+        async with httpx.AsyncClient(
+            timeout=15, trust_env=False, follow_redirects=False,
+        ) as client:
+            r = await client.post(f"{base_url}/v1/messages", json=body, headers=headers)
             if r.status_code >= 400:
                 return None
             data = r.json()

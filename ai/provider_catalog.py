@@ -18,9 +18,26 @@ MUSE_VIDEO_MODELS = frozenset({
 
 
 def supports_video(provider: str, model: str | None) -> bool:
-    # Embedded-audio support is owner-confirmed for these exact endpoints.
+    # These identities accept our video request format; this is not an audio
+    # comprehension guarantee. See video_model_notices for known limitations.
     # Keep identities dependency-free for model discovery and the stdlib CI job.
     return provider == "openrouter" and model in MUSE_VIDEO_MODELS
+
+
+def video_model_notices(provider: str, model: str | None) -> tuple[str, ...]:
+    """Exact-model disclosures checked against OpenRouter on 2026-09-13."""
+    if not supports_video(provider, model):
+        return ()
+    notices = (
+        "This Contributor model may use your prompts and responses to improve "
+        "Meta's products.",
+    )
+    if model == "meta/muse-spark-1.3-contributor":
+        notices += (
+            "Muse 1.3 audio understanding is currently limited; answers may "
+            "miss or misunderstand what you say.",
+        )
+    return notices
 
 
 @dataclass(frozen=True, slots=True)

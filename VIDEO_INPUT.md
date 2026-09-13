@@ -12,9 +12,25 @@ Continues merged PR #75. Runtime validation is tracked in [issue #76](https://gi
 
 The microphone and screen capture share a monotonic timeline. This is one recorded request, not a continuous live connection. It starts at the explicit recording action; it does not record the wake-word pre-roll. Ordinary push-to-talk and global dictation retain their STT behavior.
 
+The entire selected display is recorded, including other visible apps and notifications; this is not limited to the InkNotes window or notebook. The dialog keeps the destination, automatic-send limit and model notices visible during recording. If cloud speech output is enabled, the response text also goes to the separately selected speech service. It does not receive the original MP4 through this path.
+
+## Model privacy and audio limitations
+
+Checked against the official pages on 2026-09-13: both [Muse Spark 1.2 Contributor](https://openrouter.ai/meta/muse-spark-1.2-contributor) and [Muse Spark 1.3 Contributor](https://openrouter.ai/meta/muse-spark-1.3-contributor) disclose that prompts and outputs may be used to improve Meta products. The 1.3 page also warns that audio understanding is not fully supported and audio-containing requests may produce degraded answers. The recording dialog shows these notices for the exact selected model; accepting a video request is not a guarantee that the model understood the audio. Both selections remain available.
+
+An optional **OpenRouter only: require no data collection and zero-retention policies** choice is available in Privacy permissions. It starts off to preserve existing model compatibility. When enabled, Clicky requests `provider.zdr: true` and `provider.data_collection: "deny"` for OpenRouter model requests. A selected model may become unavailable under those restrictions; Clicky does not retry with weaker restrictions or substitute another model. Other model providers and speech services are unaffected.
+
+This local choice does not inspect or modify account settings. [OpenRouter documents](https://openrouter.ai/docs/guides/features/zdr) that account or guardrail rules may already enforce ZDR even when the request flag is absent. Its ZDR definition permits implicit in-memory prompt caching and does not cover separate third-party tools/plugins or Clicky's speech services. Verify the actual model/endpoint policy and account restrictions before sending confidential material; enabling the option does not establish that a Contributor endpoint remains eligible.
+
 **Send clipboard…** snapshots text or an image only when selected. Review the copy, optionally enter a question, then click **Send**. Later clipboard changes do not change that request. File paths, HTML and clipboard history are not ingested. Image sharing requires screen/model sharing permission and an image-capable model.
 
 ## Provider contract
+
+Custom OpenAI-compatible chat routers and Anthropic-compatible routers remain available through explicit Clicky-owned process variables: `CLICKY_OPENAI_BASE_URL` (include the API prefix such as `/v1`) and `CLICKY_ANTHROPIC_BASE_URL` (the SDK adds `/v1` itself). Configure the matching `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` intentionally for that destination. Defaults remain the official provider endpoints; the direct OpenRouter provider remains fixed. Local HTTP endpoints are allowed for explicit local services. Embedded URL credentials, queries, fragments, control characters and missing hosts are rejected. Endpoints are not persisted in preferences.
+
+Shared SDK variables such as `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` and `OPENAI_CUSTOM_HEADERS` do not select Clicky's endpoint or authentication. With a custom chat router, provide a separate `OPENAI_SPEECH_API_KEY` if using official OpenAI speech; the chat-router credential is not reused for it. This preserves intentional routing while separating unrelated process configuration. No account setting is changed by configuring these process inputs.
+
+For custom OpenAI routers, discovery recognizes explicit image capability metadata: boolean `vision: true`, boolean `capabilities.vision: true`, or an `image` entry in `input_modalities` / `architecture.input_modalities`. If a router omits this metadata, declare verified image-capable model IDs with `CLICKY_OPENAI_VISION_MODELS`, a comma-separated list used together with `CLICKY_OPENAI_BASE_URL`. This declaration is bound to that exact endpoint, does not persist to preferences or become cached capability evidence, and can be removed without clearing the cache. Unknown models remain text-only; OpenAI-looking aliases alone do not enable images. This setting does not enable MP4 input or promise live model comprehension.
 
 The adapter uses the existing OpenAI-compatible transport at the fixed `https://openrouter.ai/api/v1` endpoint. It sends the MP4 as a `video_url` content part with a `data:video/mp4;base64,...` URL and streams text back. Redirects, SDK retries and OpenRouter provider fallback are disabled.
 
@@ -43,9 +59,25 @@ The protocol retains version 1 and adds an optional `video` object to `submit`: 
 
 JSONL lines are bounded at the maximum base64 clip size plus 64 KiB for the command envelope. The input queue holds at most two lines. Media and credentials are never echoed in worker events; invalid commands and provider failures retain content-free errors.
 
-This changes the Python worker and the Clicky desktop app. The InkNotes WPF client still needs its own connection to the worker; meanwhile the desktop recording action can capture InkNotes on screen.
+The intended InkNotes workflow runs the apps separately and uses Clicky's desktop recording action. A direct WPF-to-worker connection and automatic notebook editing are separate, unimplemented features; they are not prerequisites for screen-and-voice capture.
+
+## Native and packaged readiness checklist
+
+The following are acceptance steps, not claims that this revision has executed them:
+
+- [ ] Review the selected model's current data-use policy and applicable account/guardrail restrictions locally without exposing keys. If strict routing is enabled, verify eligibility or a clear failure without a weaker retry.
+- [ ] Use a disposable notebook and non-sensitive display content. Confirm the intended microphone and display, legible handwriting and synchronized audio. Other visible apps/notifications must be suitable to share.
+- [ ] For **each** Muse model separately, write `2 + 2`, erase it, write `3 + 3`, and say a word never shown onscreen. Record whether the response correctly distinguishes the earlier writing, replacement and spoken-only word. An HTTP success is insufficient.
+- [ ] Cancel before sending with Cancel, Escape and window close; verify no cancelled recording later produces a response. Test microphone disconnection and display changes. Cancellation cannot retract bytes already transmitted.
+- [ ] Confirm the visible model notices and 60-second automatic-send behavior. Test text/image clipboard preview consistency after changing the clipboard.
+- [ ] Record the built package's identity and repeat a short audiovisual/cancellation test in that package. Source test success and a packaged build alone do not verify packaged codecs or the physical workflow.
+- [ ] If spoken answers are desired, verify the separate speech provider/key and permission. Otherwise leave cloud speech output disabled. With a custom OpenAI-compatible chat endpoint, OpenAI STT/TTS and realtime speech require a separate `OPENAI_SPEECH_API_KEY` for the fixed OpenAI speech endpoint; keys remain process inputs, not preferences. A normal OpenAI chat key remains usable for OpenAI speech when chat uses the default official endpoint.
 
 ## Verification
+
+### Earlier feature-validation record
+
+The following results describe the earlier screen-and-voice implementation, including its Linux offscreen run; they are not new physical, packaged or live-provider validation of the current credential-isolation revision.
 
 Focused tests cover a real encoded MP4 with both tracks, decoded audio amplitude, start offset and timestamp gaps; provider payload and stream closure; worker routing; capture ownership, stale sends, cancellation, permission/model changes; clipboard snapshots and rejected files. Existing microphone, routing, barge-in, tray, privacy, capture-exclusion and dependency checks also pass locally.
 
@@ -58,3 +90,7 @@ test was skipped. The full standard-library CI selection also exposed two
 Windows PowerShell path assertions that fail on Linux; both failures were
 reproduced on unchanged base commit `a2f3188`. The new provider metadata remains
 dependency-free so that this CI job does not need Pydantic installed.
+
+### Credential-isolation revision: focused local checks
+
+On 2026-09-13, the focused notice/configuration suite passed **24/24** tests (`tests.test_media_privacy_notice` and `tests.test_privacy_consent`) in the existing Windows Python environment, with disposable preferences and synthetic credentials/endpoints. It checks default-preserving private routing, exact-model notices, separate speech credentials, and explicit local/custom router URL validation. This is neither a physical UI/recording test nor live account/provider or installed-package acceptance; the checklist above remains necessary. Provider request serialization and speech client isolation have separate focused transport tests.
