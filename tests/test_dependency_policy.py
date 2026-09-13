@@ -485,6 +485,10 @@ jobs:
       - name: Validate dependency policy
         shell: pwsh
         run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
+
+      - name: Check current dependency advisories
+        shell: pwsh
+        run: python -m tools.check_advisories
 '''
 
 
@@ -760,6 +764,26 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
                 workflow_text=VALID_WORKFLOW,
             )
 
+    def test_advisory_gate_cannot_be_removed_or_bypassed(self) -> None:
+        step = (
+            "      - name: Check current dependency advisories\n"
+            "        shell: pwsh\n"
+            "        run: python -m tools.check_advisories\n"
+        )
+        variants = (
+            VALID_WORKFLOW.replace(step, ""),
+            VALID_WORKFLOW.replace(step, step + step),
+            VALID_WORKFLOW.replace(step, "\n".join("#" + line for line in step.splitlines())),
+            VALID_WORKFLOW.replace("run: python -m tools.check_advisories", "run: echo python -m tools.check_advisories"),
+            VALID_WORKFLOW.replace("run: python -m tools.check_advisories", "run: python -m tools.check_advisories; exit 0"),
+            VALID_WORKFLOW.replace(step, step + "        continue-on-error: true\n"),
+            VALID_WORKFLOW.replace(step, step + "        if: false\n"),
+            VALID_WORKFLOW.replace(step, "      - name: Interposed command\n        run: echo unexpected\n" + step),
+        )
+        for workflow in variants:
+            with self.subTest(workflow=workflow), self.assertRaises(AssertionError):
+                policy.check_build_script(build_text=VALID_BUILD, workflow_text=workflow)
+
     def test_commented_pypi_check_cannot_satisfy_workflow(self) -> None:
         workflow = VALID_WORKFLOW.replace(
             "        run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem",
@@ -897,6 +921,80 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
                 build_text=VALID_BUILD,
                 workflow_text=workflow,
             )
+
+    def test_trailing_workflow_overrides_are_rejected(self) -> None:
+        workflow = VALID_WORKFLOW + (
+            "\n  another_job:\n    runs-on: windows-2022\n    steps: []\n"
+        )
+        for suffix in (
+            "\nenv:\n  PYTHONPATH: attacker\n",
+            "\ndefaults:\n  run:\n    working-directory: attacker\n",
+            "\njobs:\n  replacement: {}\n",
+        ):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(
+                AssertionError, "exact reviewed workflow envelope"
+            ):
+                policy.check_build_script(
+                    build_text=VALID_BUILD, workflow_text=workflow + suffix
+                )
+
+
+class SecurityUpdatePolicyTests(unittest.TestCase):
+    def test_reviewed_project_and_lock_are_accepted(self):
+        runtime, build = policy.check_pyproject()
+        policy.check_lock(runtime | build)
+
+    def test_project_rejects_unreviewed_cutoffs_and_pins(self):
+        source = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        variants = [
+            source.replace('aiohttp==3.14.3', 'aiohttp==3.14.4'),
+            source.replace('2026-07-24T00:00:00Z', '2026-09-10T00:00:00Z'),
+            source.replace('exclude-newer-package = {', 'exclude-newer-package = { httpx = "2026-08-01T00:00:00Z",'),
+            source.replace('2026-07-22T00:00:00Z', '2026-09-10T00:00:00Z'),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for changed in variants:
+                with self.subTest(changed=changed), mock.patch.object(policy, "ROOT", root):
+                    (root / "pyproject.toml").write_text(changed, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        policy.check_pyproject()
+
+    def test_lock_rejects_broader_cutoffs_and_prereleases(self):
+        runtime, build = policy.check_pyproject()
+        source = (ROOT / "uv.lock").read_text(encoding="utf-8")
+        variants = [
+            source.replace('2026-07-24T00:00:00Z', '2026-09-10T00:00:00Z'),
+            source.replace('2026-07-22T00:00:00Z', '2026-09-10T00:00:00Z'),
+            source.replace('prerelease-mode = "disallow"', 'prerelease-mode = "allow"'),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for changed in variants:
+                with self.subTest(changed=changed), mock.patch.object(policy, "ROOT", root):
+                    (root / "uv.lock").write_text(changed, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        policy.check_lock(runtime | build)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows batch behavior")
+    def test_early_build_failure_preserves_inherited_environment(self):
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "build.bat"
+            script.write_bytes((ROOT / "build.bat").read_bytes())
+            environment = root / "caller-environment"
+            environment.mkdir()
+            sentinel = environment / "keep.txt"
+            sentinel.write_text("preserve", encoding="utf-8")
+            env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(environment))
+            result = subprocess.run(
+                [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "build.bat", "installer"],
+                cwd=root, env=env, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve")
 
 
 if __name__ == "__main__":

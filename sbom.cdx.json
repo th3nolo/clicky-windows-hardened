@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:216eb944-de52-4464-9aa1-e5bc560aa3d1",
+  "serialNumber": "urn:uuid:804ac187-193c-4a8a-abc9-859dfb045bc0",
   "metadata": {
-    "timestamp": "2026-07-29T01:16:23.930627500Z",
+    "timestamp": "2026-09-13T08:13:52.221169500Z",
     "tools": [
       {
         "vendor": "Astral Software Inc.",
@@ -41,10 +41,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "aiohttp-3@3.14.2",
+      "bom-ref": "aiohttp-3@3.14.3",
       "name": "aiohttp",
-      "version": "3.14.2",
-      "purl": "pkg:pypi/aiohttp@3.14.2",
+      "version": "3.14.3",
+      "purl": "pkg:pypi/aiohttp@3.14.3",
       "properties": [
         {
           "name": "uv:package:marker",
@@ -210,10 +210,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "cryptography-16@45.0.7",
+      "bom-ref": "cryptography-16@50.0.0",
       "name": "cryptography",
-      "version": "45.0.7",
-      "purl": "pkg:pypi/cryptography@45.0.7",
+      "version": "50.0.0",
+      "purl": "pkg:pypi/cryptography@50.0.0",
       "properties": [
         {
           "name": "uv:package:marker",
@@ -678,10 +678,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pypdf-52@6.14.2",
+      "bom-ref": "pypdf-52@6.16.1",
       "name": "pypdf",
-      "version": "6.14.2",
-      "purl": "pkg:pypi/pypdf@6.14.2",
+      "version": "6.16.1",
+      "purl": "pkg:pypi/pypdf@6.16.1",
       "properties": [
         {
           "name": "uv:package:marker",
@@ -981,7 +981,7 @@
       "ref": "aiohappyeyeballs-2@2.7.1"
     },
     {
-      "ref": "aiohttp-3@3.14.2",
+      "ref": "aiohttp-3@3.14.3",
       "dependsOn": [
         "aiohappyeyeballs-2@2.7.1",
         "aiosignal-4@1.4.0",
@@ -1054,7 +1054,7 @@
       "ref": "comtypes-15@1.4.16"
     },
     {
-      "ref": "cryptography-16@45.0.7",
+      "ref": "cryptography-16@50.0.0",
       "dependsOn": [
         "cffi-11@2.1.0"
       ]
@@ -1076,7 +1076,7 @@
     {
       "ref": "edge-tts-20@7.2.8",
       "dependsOn": [
-        "aiohttp-3@3.14.2",
+        "aiohttp-3@3.14.3",
         "certifi-10@2026.6.17",
         "tabulate-67@0.10.0",
         "typing-extensions-70@4.16.0"
@@ -1237,7 +1237,7 @@
       ]
     },
     {
-      "ref": "pypdf-52@6.14.2"
+      "ref": "pypdf-52@6.16.1"
     },
     {
       "ref": "pyqt6-53@6.11.0",
