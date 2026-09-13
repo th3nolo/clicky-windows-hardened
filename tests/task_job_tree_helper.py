@@ -35,7 +35,10 @@ def main() -> int:
         stderr=subprocess.DEVNULL,
         close_fds=True,
     )
-    child_pid.write_text(str(child.pid), encoding="ascii")
+    # File existence is the parent's readiness signal: publish only complete data.
+    pending_pid = child_pid.with_suffix(".pending")
+    pending_pid.write_text(str(child.pid), encoding="ascii")
+    pending_pid.replace(child_pid)
     time.sleep(30)
     return 0
 

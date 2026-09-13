@@ -401,6 +401,33 @@ class TaskWorkerCoordinatorTests(unittest.TestCase):
         )
 
 
+class TaskJobPidPublicationTests(unittest.TestCase):
+    def test_pid_is_not_visible_until_its_contents_are_complete(self):
+        from tests import task_job_tree_helper as helper
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "spawn-now"
+            marker.write_text("go", encoding="ascii")
+            child_pid = root / "child.pid"
+
+            def observe_incomplete_write(path, text, *, encoding):
+                with path.open("w", encoding=encoding) as stream:
+                    # Simulate the reader observing the writer after creation
+                    # but before data reaches the file.
+                    self.assertFalse(child_pid.exists())
+                    return stream.write(text)
+
+            with (
+                mock.patch.object(sys, "argv", ["helper", "parent", str(marker), str(child_pid)]),
+                mock.patch.object(helper.subprocess, "Popen", return_value=mock.Mock(pid=12345)),
+                mock.patch.object(helper.time, "sleep"),
+                mock.patch.object(Path, "write_text", observe_incomplete_write),
+            ):
+                self.assertEqual(helper.main(), 0)
+            self.assertEqual(child_pid.read_text(encoding="ascii"), "12345")
+
+
 @unittest.skipUnless(os.name == "nt", "Windows Job Object test")
 class WindowsTaskJobTests(unittest.TestCase):
     def test_job_termination_kills_the_complete_process_tree(self):
