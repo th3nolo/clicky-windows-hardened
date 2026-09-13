@@ -893,7 +893,7 @@ def _workflow_run_commands(text: str) -> tuple[str, ...]:
 
 
 def _require_authoritative_pypi_step(text: str) -> None:
-    """Require one unconditional, unmasked PyPI policy step in validate."""
+    """Require unconditional, unmasked provenance and advisory steps in validate."""
     lines = text.splitlines()
     effective = [
         line.rstrip()
@@ -1036,6 +1036,32 @@ def _require_authoritative_pypi_step(text: str) -> None:
             "CI validate job must begin with the exact reviewed checkout, "
             "Python setup, and dependency-policy steps"
         )
+
+    advisory_marker = "      - name: Check current dependency advisories"
+    advisory_indexes = [
+        index for index in range(job_start, job_end)
+        if lines[index].rstrip() == advisory_marker
+    ]
+    if advisory_indexes != [step_end]:
+        fail("CI advisory step must appear exactly once immediately after provenance")
+    advisory_end = job_end
+    for index in range(step_end + 1, job_end):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= 6:
+            advisory_end = index
+            break
+    actual_advisory = [
+        line.strip() for line in lines[step_end:advisory_end]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if actual_advisory != [
+        "- name: Check current dependency advisories",
+        "shell: pwsh",
+        "run: python -m tools.check_advisories",
+    ]:
+        fail("CI advisory step must retain the exact unconditional, unmasked command")
 
 
 def _batch_command_tokens(command: str) -> tuple[str, ...]:

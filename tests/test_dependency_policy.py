@@ -485,6 +485,10 @@ jobs:
       - name: Validate dependency policy
         shell: pwsh
         run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
+
+      - name: Check current dependency advisories
+        shell: pwsh
+        run: python -m tools.check_advisories
 '''
 
 
@@ -759,6 +763,26 @@ class BatchAndWorkflowPolicyTests(unittest.TestCase):
                 build_text=VALID_BUILD + '\nset "CLICKY_ISCC=disabled"',
                 workflow_text=VALID_WORKFLOW,
             )
+
+    def test_advisory_gate_cannot_be_removed_or_bypassed(self) -> None:
+        step = (
+            "      - name: Check current dependency advisories\n"
+            "        shell: pwsh\n"
+            "        run: python -m tools.check_advisories\n"
+        )
+        variants = (
+            VALID_WORKFLOW.replace(step, ""),
+            VALID_WORKFLOW.replace(step, step + step),
+            VALID_WORKFLOW.replace(step, "\n".join("#" + line for line in step.splitlines())),
+            VALID_WORKFLOW.replace("run: python -m tools.check_advisories", "run: echo python -m tools.check_advisories"),
+            VALID_WORKFLOW.replace("run: python -m tools.check_advisories", "run: python -m tools.check_advisories; exit 0"),
+            VALID_WORKFLOW.replace(step, step + "        continue-on-error: true\n"),
+            VALID_WORKFLOW.replace(step, step + "        if: false\n"),
+            VALID_WORKFLOW.replace(step, "      - name: Interposed command\n        run: echo unexpected\n" + step),
+        )
+        for workflow in variants:
+            with self.subTest(workflow=workflow), self.assertRaises(AssertionError):
+                policy.check_build_script(build_text=VALID_BUILD, workflow_text=workflow)
 
     def test_commented_pypi_check_cannot_satisfy_workflow(self) -> None:
         workflow = VALID_WORKFLOW.replace(
