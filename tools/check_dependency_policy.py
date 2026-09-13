@@ -29,6 +29,14 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_CUTOFF = "2026-07-22T00:00:00Z"
+REVIEWED_SECURITY_UPDATES = {
+    "aiohttp": ("3.14.3", "2026-07-24T00:00:00Z"),
+    "cryptography": ("50.0.0", "2026-08-01T00:00:00Z"),
+    "pypdf": ("6.16.1", "2026-08-15T00:00:00Z"),
+}
+EXPECTED_PACKAGE_CUTOFFS = {
+    name: cutoff for name, (_, cutoff) in REVIEWED_SECURITY_UPDATES.items()
+}
 EXPECTED_INDEX = "https://pypi.org/simple"
 PYPI_JSON_BASE = "https://pypi.org/pypi"
 EXPECTED_PYTHON = "3.12.10"
@@ -143,10 +151,14 @@ def check_pyproject() -> tuple[dict[str, str], dict[str, str]]:
     for name, expected_version in CONSERVATIVE_PINS.items():
         if runtime.get(name) != expected_version:
             fail(f"{name} must remain on reviewed stable pin {expected_version}")
+    for name, (version, _) in REVIEWED_SECURITY_UPDATES.items():
+        if runtime.get(name) != version:
+            fail(f"{name} must use reviewed security pin {version}")
 
     uv = data["tool"]["uv"]
     required_uv_settings = {
         "exclude-newer": EXPECTED_CUTOFF,
+        "exclude-newer-package": EXPECTED_PACKAGE_CUTOFFS,
         "required-version": f"=={EXPECTED_UV}",
         "prerelease": "disallow",
         "resolution": "highest",
@@ -173,6 +185,13 @@ def check_pyproject() -> tuple[dict[str, str], dict[str, str]]:
 
 def check_lock(expected: dict[str, str]) -> tuple[LockedRelease, ...]:
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    options = lock.get("options", {})
+    if options.get("exclude-newer") != EXPECTED_CUTOFF:
+        fail("uv.lock must retain the reviewed global cutoff")
+    if options.get("exclude-newer-package") != EXPECTED_PACKAGE_CUTOFFS:
+        fail("uv.lock must contain only the exact reviewed security cutoffs")
+    if options.get("prerelease-mode") != "disallow":
+        fail("uv.lock must disallow prereleases")
     if lock.get("requires-python") != ">=3.11, <3.13":
         fail("uv.lock Python range does not match the reviewed range")
     packages = lock.get("package", [])
@@ -733,7 +752,7 @@ class BatchCommand:
 # security review of the complete diff. Update this digest in the same reviewed
 # commit; never change it only to make CI pass.
 EXPECTED_BUILD_SCRIPT_SHA256 = (
-    "6c28f0292aa98487a853e201c38d0556466f804c237d7e0dacf51528afbcb5f7"
+    "81499f6bc319f9a48478a17e172b67f5371d799ea16f2fbb2dc1db2d65a47b34"
 )
 EXPECTED_STORE_MARKER_SHA256 = (
     "313db1ba95e3dd039f63f7e786c3de6e1090499f53051515893781d36652191d"

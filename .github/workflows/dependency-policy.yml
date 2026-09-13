@@ -28,10 +28,15 @@ jobs:
         shell: pwsh
         run: python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
 
+      - name: Check current dependency advisories
+        shell: pwsh
+        run: python -m tools.check_advisories
+
       - name: Run standard-library security tests
         shell: pwsh
         run: >-
           python -m unittest -v
+          tests.test_advisories
           tests.test_action_feature_gates
           tests.test_audio_temp_privacy
           tests.test_capability_registry

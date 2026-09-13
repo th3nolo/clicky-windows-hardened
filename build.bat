@@ -18,6 +18,8 @@ set "FOUND_UV_VERSION="
 set "SOURCE_COMMIT="
 set "UNTRACKED_SOURCE="
 set "CLICKY_SHA256="
+REM Never let an inherited environment become build-owned cleanup state.
+set "UV_PROJECT_ENVIRONMENT="
 
 if /I "%~1"=="installer" (
     echo [ERROR] Installer builds are disabled.
@@ -215,7 +217,7 @@ echo Output: dist\Clicky\Clicky.exe
 echo SHA-256: !CLICKY_SHA256!
 goto :cleanup
 :cleanup
-if defined UV_PROJECT_ENVIRONMENT if exist "!UV_PROJECT_ENVIRONMENT!" (
-    rmdir /s /q "!UV_PROJECT_ENVIRONMENT!"
-)
+REM Preserve environments on success and failure for inspection. In particular,
+REM a refused pre-existing path must never be removed by this script.
+if defined UV_PROJECT_ENVIRONMENT echo Build environment preserved: !UV_PROJECT_ENVIRONMENT!
 exit /b !RESULT!

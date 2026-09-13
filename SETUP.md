@@ -33,6 +33,30 @@ The output must be `Python 3.12.10` and `uv 0.11.19`. Stop if either version dif
 
 ## Verify and create the frozen environment
 
+The reviewed security refresh pins aiohttp 3.14.3, pypdf 6.16.1 and
+cryptography 50.0.0. Only those packages have explicit later resolution
+cutoffs; all other packages retain the July 22, 2026 cutoff. The checker
+rejects changes to those exceptions and still verifies every artifact's
+identity, hash, size, yank state and minimum 72-hour publication age.
+
+Before installation, run both independent checks:
+
+~~~powershell
+python tools/check_dependency_policy.py --verify-pypi --ca-bundle tools/trust/certifi-2026.6.17.pem
+python -m tools.check_advisories
+~~~
+
+The advisory check sends only public package names and versions from the lock
+to OSV. It rejects redirects, does not inherit proxies, and fails on an
+unavailable, malformed or incomplete response. No advisory matches means no
+matches in that database at check time, not that the packages are guaranteed
+safe. CI runs both checks. Do not suppress a finding to make a build pass.
+
+`build.bat` preserves its temporary build environment on both success and
+failure and prints its path for inspection. It never removes an inherited
+environment or a pre-existing temporary-path collision. Preserved environments
+consume disk space; cleanup is a separate reviewed local operation.
+
 First verify that the checked-in lock matches the project without contacting a package index:
 
 ~~~powershell

@@ -7,7 +7,7 @@ requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "aiohttp==3.14.2",
+    "aiohttp==3.14.3",
     "anthropic==0.112.0",
     "av==17.1.0",
     "edge-tts==7.2.8",
@@ -22,7 +22,7 @@ dependencies = [
     "opencv-python==4.13.0.92",
     "pillow==12.3.0",
     "pydantic==2.13.4",
-    "pypdf==6.14.2",
+    "pypdf==6.16.1",
     "pytesseract==0.3.13",
     "pyqt6==6.11.0",
     "python-docx==1.2.0",
@@ -30,7 +30,7 @@ dependencies = [
     "rapidocr-onnxruntime==1.4.4",
     "sounddevice==0.5.5",
     "uiautomation==2.0.29",
-    "cryptography==45.0.7",
+    "cryptography==50.0.0",
 ]
 
 # `langdetect` and `pynput` are intentionally not part of the locked build.
@@ -47,6 +47,7 @@ build = [
 package = false
 required-version = "==0.11.19"
 exclude-newer = "2026-07-22T00:00:00Z"
+exclude-newer-package = { aiohttp = "2026-07-24T00:00:00Z", cryptography = "2026-08-01T00:00:00Z", pypdf = "2026-08-15T00:00:00Z" }
 prerelease = "disallow"
 resolution = "highest"
 no-build = true
