@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 import threading
 import time
+import tempfile
 from typing import Protocol
 
 import mss
@@ -103,8 +104,9 @@ class LessonRecorder:
             with mss.mss() as sct:
                 monitor = select_monitor(discover_monitor_topology(sct.monitors[1:]))
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-            directory = Path.home() / "Documents" / "Clicky Lessons" / timestamp
-            directory.mkdir(parents=True, exist_ok=False)
+            lessons = Path.home() / "Documents" / "Clicky Lessons"
+            lessons.mkdir(parents=True, exist_ok=True)
+            directory = Path(tempfile.mkdtemp(prefix=timestamp + "-", dir=lessons))
             writer = imageio.get_writer(
                 str(directory / "lesson.mp4"), fps=FPS, codec="libx264",
                 quality=7, macro_block_size=None,

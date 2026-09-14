@@ -59,6 +59,9 @@ class LessonRecorderLifecycleTests(unittest.TestCase):
         return directory
 
     def test_slow_capture_retains_writer_rejects_restart_and_discards_late_frame(self):
+        # Windows wall-clock resolution may return the same timestamp on restart.
+        fixed_clock = self.stack.enter_context(patch.object(module, "datetime"))
+        fixed_clock.now.return_value.strftime.return_value = "2026-09-13_12-00-00_000000"
         directory = self.start_blocked()
         self.recorder.log_question("Question")
         self.recorder.log_answer("Answer")
