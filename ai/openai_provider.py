@@ -1,6 +1,7 @@
 from typing import AsyncGenerator, List
 
 from ai.base_provider import BaseLLMProvider, Message
+from ai.provider_endpoints import OPENAI_BASE_URL
 from ai.sdk_isolation import create_openai_client
 from config import cfg
 
@@ -15,7 +16,7 @@ class OpenAIProvider(BaseLLMProvider):
         # must not redirect this provider or add another provider's headers.
         self._client = create_openai_client(
             api_key=cfg.openai_api_key,
-            base_url=cfg.openai_base_url or "https://api.openai.com/v1",
+            base_url=cfg.openai_base_url or OPENAI_BASE_URL,
             timeout=600.0, max_retries=2,
         )
 

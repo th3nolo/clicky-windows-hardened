@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 import httpx
 from PIL import Image
 
+from ai.provider_endpoints import anthropic_endpoint
 from config import cfg
 
 
@@ -88,9 +89,7 @@ async def detect_element(
     api_key = cfg.anthropic_api_key
     if not api_key:
         return None
-    base_url = (
-        getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com"
-    ).rstrip("/")
+    base_url = anthropic_endpoint(getattr(cfg, "anthropic_base_url", ""))
 
     # Default: assume the JPEG is at native physical resolution
     if physical_width is None:

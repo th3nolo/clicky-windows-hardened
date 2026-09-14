@@ -28,6 +28,13 @@ from typing import Optional
 import httpx
 
 from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS, MUSE_VIDEO_MODELS
+from ai.provider_endpoints import (
+    ANTHROPIC_BASE_URL,
+    OPENAI_BASE_URL,
+    anthropic_endpoint,
+    is_custom_openai_endpoint,
+    openai_endpoint,
+)
 from ai.model_selection import valid_model_id
 from config import cfg
 
@@ -143,14 +150,14 @@ def _data_dir() -> Path:
 
 
 def _custom_endpoint(provider: str) -> str:
-    defaults = {
-        "openai": ("openai_base_url", "https://api.openai.com/v1"),
-        "claude": ("anthropic_base_url", "https://api.anthropic.com"),
-    }
-    if provider not in defaults:
+    if provider == "openai":
+        endpoint = openai_endpoint(getattr(cfg, "openai_base_url", ""))
+        default = OPENAI_BASE_URL
+    elif provider == "claude":
+        endpoint = anthropic_endpoint(getattr(cfg, "anthropic_base_url", ""))
+        default = ANTHROPIC_BASE_URL
+    else:
         return ""
-    attribute, default = defaults[provider]
-    endpoint = (getattr(cfg, attribute, "") or default).rstrip("/")
     return endpoint if endpoint != default else ""
 
 
@@ -190,9 +197,7 @@ def _with_router_vision_overrides(provider: str, models: list[dict]) -> list[dic
 async def _fetch_claude() -> list[dict]:
     if not cfg.anthropic_api_key:
         return []
-    base_url = (
-        getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com"
-    ).rstrip("/")
+    base_url = anthropic_endpoint(getattr(cfg, "anthropic_base_url", ""))
     async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
             f"{base_url}/v1/models",
@@ -222,10 +227,9 @@ async def _fetch_claude() -> list[dict]:
 async def _fetch_openai() -> list[dict]:
     if not cfg.openai_api_key:
         return []
-    base_url = (
-        getattr(cfg, "openai_base_url", "") or "https://api.openai.com/v1"
-    ).rstrip("/")
-    custom_endpoint = base_url != "https://api.openai.com/v1"
+    configured_endpoint = getattr(cfg, "openai_base_url", "")
+    base_url = openai_endpoint(configured_endpoint)
+    custom_endpoint = is_custom_openai_endpoint(configured_endpoint)
     async with httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client:
         r = await client.get(
             f"{base_url}/models",
@@ -262,9 +266,6 @@ async def _fetch_openai() -> list[dict]:
             continue
         if any(marker in mid for marker in non_chat_markers):
             continue
-        # Skip dated snapshots — they're noise. Keep only the alias forms.
-        if any(c.isdigit() and "-" in mid[mid.index(c):] for c in mid if False):
-            pass
         # Drop fine-tune / preview-snapshot variants like ".../2024-08-06"
         if mid.count("-") >= 4 and any(seg.isdigit() for seg in mid.split("-")):
             continue

@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-from pathlib import Path
-import sys
 import types
 import unittest
 from unittest.mock import patch
@@ -16,9 +13,9 @@ import httpx
 from ai import sdk_isolation
 from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
 from ai.video_input import VideoInput
+from tests.provider_test_support import load_subject
 
 
-ROOT = Path(__file__).resolve().parents[1]
 MODEL = "meta/muse-spark-1.3-contributor"
 AMBIENT = {
     "OPENAI_API_KEY": "unrelated-openai-key",
@@ -47,18 +44,6 @@ AMBIENT = {
     "HTTPS_PROXY": "http://unrelated.invalid:9",
     "SSL_CERT_FILE": "unrelated-certificate-file-that-does-not-exist",
 }
-
-
-def load_provider(relative: str, cfg):
-    config = types.ModuleType("config")
-    config.cfg = cfg
-    spec = importlib.util.spec_from_file_location(
-        "isolation_test_" + Path(relative).stem, ROOT / relative,
-    )
-    module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {"config": config}):
-        spec.loader.exec_module(module)
-    return module
 
 
 class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
@@ -112,7 +97,7 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
         cfg = types.SimpleNamespace(openrouter_private_routing=False)
         for provider_id, spec in OPENAI_COMPATIBLE_SPECS.items():
             setattr(cfg, spec.credential_attribute, "selected-" + provider_id)
-        module = load_provider("ai/openai_compatible_provider.py", cfg)
+        module = load_subject("ai/openai_compatible_provider.py", cfg)
         for provider_id, spec in OPENAI_COMPATIBLE_SPECS.items():
             with self.subTest(provider=provider_id):
                 provider = module.OpenAICompatibleProvider(provider_id)
@@ -151,7 +136,7 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
         for base_url in ("", "http://127.0.0.1:4321/v1", "https://router.example/v1"):
             with self.subTest(base_url=base_url):
                 cfg = types.SimpleNamespace(openai_api_key="selected-router-key", openai_base_url=base_url)
-                module = load_provider("ai/openai_provider.py", cfg)
+                module = load_subject("ai/openai_provider.py", cfg)
                 provider = module.OpenAIProvider()
                 self.assertEqual(provider._client.max_retries, 2)
                 self.assertEqual(provider._client.timeout, 600.0)
@@ -178,7 +163,7 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
         cfg = types.SimpleNamespace(
             openrouter_api_key="selected-openrouter", openrouter_private_routing=True,
         )
-        module = load_provider("ai/openai_compatible_provider.py", cfg)
+        module = load_subject("ai/openai_compatible_provider.py", cfg)
         with patch.object(sdk_isolation, "_http_client", return_value=http_client):
             provider = module.OpenAICompatibleProvider("openrouter")
         try:
@@ -197,7 +182,7 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_anthropic_key_and_explicit_router_ignore_ambient_auth(self):
         cfg = types.SimpleNamespace(anthropic_api_key="selected-anthropic-key")
-        module = load_provider("ai/claude_provider.py", cfg)
+        module = load_subject("ai/claude_provider.py", cfg)
         provider = module.ClaudeProvider()
         self.assertEqual(provider._client.max_retries, 2)
         self.assertEqual(provider._client.timeout, 600.0)

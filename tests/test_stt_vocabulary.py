@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from audio.stt import deepgram_stt, openai_stt
+from tests.provider_test_support import load_config
 from audio.stt.vocabulary import (
     MAX_USER_TERMS,
     SHIPPED_TERMS,
@@ -24,15 +23,6 @@ from audio.stt.vocabulary import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_config(name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "config.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
 
 
 class VocabularyBoundaryTests(unittest.TestCase):
@@ -169,8 +159,8 @@ class VocabularyProviderTests(unittest.TestCase):
         FakeOpenAIClient.instances = []
 
         async def exercise():
-            with mock.patch.object(
-                openai_stt, "create_openai_client", FakeOpenAIClient
+            with mock.patch(
+                "audio.openai_client.create_openai_client", FakeOpenAIClient
             ), mock.patch.object(
                 openai_stt.cfg, "openai_api_key", "synthetic-openai-key"
             ), mock.patch.object(

@@ -1,6 +1,25 @@
-"""Validate explicit Clicky-owned endpoint configuration without doing I/O."""
+"""Provider endpoint defaults, identity and explicit configuration validation."""
 
 from urllib.parse import urlsplit
+
+
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+
+
+def openai_endpoint(value: str | None) -> str:
+    """Resolve the default and strip trailing slashes for endpoint identity."""
+    return (value or OPENAI_BASE_URL).rstrip("/")
+
+
+def anthropic_endpoint(value: str | None) -> str:
+    """Resolve the default and strip trailing slashes for endpoint identity."""
+    return (value or ANTHROPIC_BASE_URL).rstrip("/")
+
+
+def is_custom_openai_endpoint(value: str | None) -> bool:
+    """Keep the strict identity used for cache and credential boundaries."""
+    return openai_endpoint(value) != OPENAI_BASE_URL
 
 
 def provider_endpoint(value: str, *, default: str) -> str:

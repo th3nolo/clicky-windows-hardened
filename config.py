@@ -9,7 +9,7 @@ from typing import Optional
 
 from feature_gates import ACTION_PERMISSION_SCHEMA_VERSION
 from privacy_controls import PRIVACY_NOTICE_VERSION
-from ai.provider_endpoints import provider_endpoint
+from ai.provider_endpoints import ANTHROPIC_BASE_URL, provider_endpoint
 
 
 _PREFERENCES_VERSION = 1
@@ -349,10 +349,10 @@ class Config:
         os.environ.get("CLICKY_OPENAI_BASE_URL", ""), default="",
     ))
     anthropic_base_url: str = field(default_factory=lambda: provider_endpoint(
-        os.environ.get("CLICKY_ANTHROPIC_BASE_URL", ""), default="https://api.anthropic.com",
+        os.environ.get("CLICKY_ANTHROPIC_BASE_URL", ""), default=ANTHROPIC_BASE_URL,
     ))
     openai_router_vision_models: dict[str, tuple[str, ...]] = field(
-        default_factory=lambda: _configured_router_vision_models()
+        default_factory=_configured_router_vision_models
     )
     ollama_host: str = "http://127.0.0.1:11434"
     lmstudio_host: str = "http://127.0.0.1:1234/v1"

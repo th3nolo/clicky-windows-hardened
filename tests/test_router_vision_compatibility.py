@@ -10,7 +10,7 @@ import httpx
 
 from ai.provider_endpoints import router_vision_models
 from compose.service import cached_model_supports_vision
-from tests.test_provider_client_compatibility import configuration, load_subject
+from tests.provider_test_support import configuration, load_subject, mock_client_factory
 
 
 class RouterVisionCompatibilityTests(unittest.IsolatedAsyncioTestCase):
@@ -30,11 +30,10 @@ class RouterVisionCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             {"id": "gpt-4o"},  # An alias is not a capability declaration.
             {"id": "malformed", "vision": "true", "input_modalities": "image"},
         ]
-        original_client = httpx.AsyncClient
         with tempfile.TemporaryDirectory() as directory, patch.object(
             subject, "_data_dir", return_value=Path(directory),
-        ), patch.object(subject.httpx, "AsyncClient", side_effect=lambda **kwargs: original_client(
-            **kwargs, transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": records})),
+        ), patch.object(subject.httpx, "AsyncClient", side_effect=mock_client_factory(
+            lambda _: httpx.Response(200, json={"data": records}),
         )), patch.dict("sys.modules", {"ai.model_registry": subject}):
             refreshed = await subject.refresh("openai")
             enabled = {record["id"] for record in refreshed if record["vision"]}
