@@ -289,7 +289,12 @@ class DebugScreenshotTrayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-        from PyQt6.QtWidgets import QApplication
+        try:
+            from PyQt6.QtWidgets import QApplication
+        except ModuleNotFoundError as exc:
+            if exc.name != "PyQt6":
+                raise
+            raise unittest.SkipTest("PyQt6 is not installed in the standard-library test environment") from exc
         cls.app = QApplication.instance() or QApplication([])
 
     def test_actual_menu_toggle_signal_and_silent_checked_rollback(self):
