@@ -31,6 +31,9 @@ def video_model_notices(provider: str, model: str | None) -> tuple[str, ...]:
     notices = (
         "This Contributor model may use your prompts and responses to improve "
         "Meta's products.",
+        "Video frames can be understood, but speech embedded in this video "
+        "has not passed Clicky's live audio test. Use the speech hotkey with "
+        "Muse 1.2 for spoken questions; do not rely on this recording's audio.",
     )
     if model == "meta/muse-spark-1.3-contributor":
         notices += (

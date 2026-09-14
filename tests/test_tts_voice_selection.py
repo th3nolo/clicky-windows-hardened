@@ -47,6 +47,7 @@ class ReviewedVoiceCatalogTests(unittest.TestCase):
             {
                 "edge_tts": "speech.platform.bing.com",
                 "openai": "api.openai.com",
+                "openrouter": "openrouter.ai",
                 "elevenlabs": "api.elevenlabs.io",
             },
         )

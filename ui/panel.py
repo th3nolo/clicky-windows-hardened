@@ -224,7 +224,17 @@ class CompanionPanel(QWidget):
         self._response_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._response_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._response_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        scroll.setWidget(self._response_label)
+        response_body = QWidget()
+        response_layout = QVBoxLayout(response_body)
+        response_layout.setContentsMargins(0, 0, 0, 0)
+        self._error_label = QLabel()
+        self._error_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._error_label.setWordWrap(True)
+        self._error_label.setStyleSheet("color: rgb(255,190,130);")
+        self._error_label.setVisible(False)
+        response_layout.addWidget(self._error_label)
+        response_layout.addWidget(self._response_label, stretch=1)
+        scroll.setWidget(response_body)
         root.addWidget(scroll, stretch=1)
 
         # Push-to-talk button
@@ -377,6 +387,9 @@ class CompanionPanel(QWidget):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_state(self, state: AppState):
+        if (state in (AppState.LISTENING, AppState.THINKING)
+                and self._state not in (AppState.LISTENING, AppState.THINKING)):
+            self.clear_error()
         self._state = state
         color = STATE_COLORS[state]
         self._status_dot.setStyleSheet(
@@ -394,12 +407,22 @@ class CompanionPanel(QWidget):
         self._response_text = text
         self._response_label.setText(text)
 
+    def show_error(self, message: str):
+        """Keep failures visible even when Windows suppresses tray notices."""
+        self._error_label.setText(f"Clicky needs attention\n\n{str(message)[:4000]}")
+        self._error_label.setVisible(True)
+        self.show()
+        self.raise_()
+
     def begin_transcript(self, session_id: int):
         if session_id <= self._transcript_session:
             return
         self._transcript_session = session_id
+        self.clear_error()
         self._transcript_label.clear()
         self._transcript_label.setVisible(False)
+
+        self._final_transcript_session = None
 
     def update_partial_transcript(self, session_id: int, text: str):
         if session_id < self._transcript_session:
@@ -413,9 +436,12 @@ class CompanionPanel(QWidget):
             return
         self._transcript_label.setText(f'You: "{text}"')
         self._transcript_label.setVisible(bool(text))
+        self._final_transcript_session = session_id if text else None
 
     def end_transcript(self, session_id: int):
         if session_id != self._transcript_session:
+            return
+        if getattr(self, "_final_transcript_session", None) == session_id:
             return
         self._transcript_label.clear()
         self._transcript_label.setVisible(False)
@@ -430,6 +456,11 @@ class CompanionPanel(QWidget):
     def clear_response(self):
         self._response_text = ""
         self._response_label.setText("")
+        self.clear_error()
+
+    def clear_error(self):
+        self._error_label.clear()
+        self._error_label.setVisible(False)
 
     def show_copilot_code(self, user_code: str, verification_uri: str):
         """Thread-safe: can be called from any thread. Emits a queued signal

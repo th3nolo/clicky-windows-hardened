@@ -65,9 +65,9 @@ class TutorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, ("Look [POINT:1,2]here.", False))
         visible = "".join(call.args[2] for call in host._emit_turn_signal.call_args_list)
         self.assertEqual(visible, "Look here.")
-        host._parse_points.assert_called()
+        host._parse_points.assert_not_called()  # Pointing belongs to spoken playback.
 
-    async def test_stale_stream_closes_without_emitting_or_completing(self):
+    async def test_initially_stale_turn_does_not_dispatch_or_open_a_stream(self):
         closed = asyncio.Event()
         async def response(**_request):
             try:
@@ -75,8 +75,23 @@ class TutorRoutingTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 closed.set()
         host, session = self.stream_host(response)
+        host._acquire_response_dispatch = Mock(wraps=host._acquire_response_dispatch)
         host._turns.cancel(session)
         self.assertEqual(await CompanionManager._stream_tutor_response(host, "q", [], [], "s", session, False), ("", False))
+        host._emit_turn_signal.assert_not_called()
+        host._acquire_response_dispatch.assert_not_called()
+        self.assertFalse(closed.is_set())
+
+    async def test_turn_cancelled_during_stream_closes_without_emitting(self):
+        closed = asyncio.Event()
+        async def response(**_request):
+            try:
+                host._turns.cancel(session)
+                yield "stale"
+            finally:
+                closed.set()
+        host, session = self.stream_host(response)
+        self.assertEqual(await CompanionManager._stream_tutor_response(host,"q",[],[],"s",session,False),("",False))
         host._emit_turn_signal.assert_not_called()
         self.assertTrue(closed.is_set())
 

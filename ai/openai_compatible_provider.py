@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import AsyncGenerator, List
 from contextlib import aclosing
 
@@ -16,6 +17,7 @@ from config import cfg
 
 
 MAX_OUTPUT_TOKENS = 1024
+MUSE_OUTPUT_TOKENS = 4096
 MAX_USER_TEXT_CHARS = 64 * 1024
 MAX_SYSTEM_PROMPT_CHARS = 128 * 1024
 MAX_HISTORY_MESSAGES = 20
@@ -126,6 +128,51 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             async for delta in stream:
                 yield delta
 
+    async def stream_multimodal_response(
+        self, user_text: str, screenshots_b64: List[str], video: VideoInput,
+        audio_b64: str, history: List[Message], system_prompt: str,
+        model: str | None = None,
+        timeline_frames: list[tuple[float, str]] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Original Tutor context plus explicit speech audio and screen video."""
+        if self._spec.provider_id != "openrouter" or model != "meta/muse-spark-1.3-contributor":
+            raise ValueError("Voice/video Tutor requires the selected OpenRouter Muse Spark 1.3 model")
+        if not isinstance(video, VideoInput) or not isinstance(audio_b64, str) or not 1 <= len(audio_b64) <= 2 * 1024 * 1024:
+            raise ValueError("Voice/video Tutor media is invalid")
+        try:
+            audio = base64.b64decode(audio_b64, validate=True)
+        except ValueError:
+            raise ValueError("Voice/video Tutor audio is invalid") from None
+        if not audio:
+            raise ValueError("Voice/video Tutor audio is empty")
+        messages = _messages(user_text, screenshots_b64, history, system_prompt)
+        messages[-1]["content"].extend([
+            {"type": "video_url", "video_url": {"url": video.data_url}},
+            {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}},
+        ])
+        timeline_frames = timeline_frames or []
+        if len(timeline_frames) > 8 or len(timeline_frames) + len(screenshots_b64) > MAX_SCREENSHOTS:
+            raise ValueError("Too many timeline frames")
+        previous_time = -1.0
+        for seconds, frame in timeline_frames:
+            if type(seconds) not in (float, int) or not previous_time <= seconds <= 61 or seconds < 0:
+                raise ValueError("Invalid timeline timestamp")
+            previous_time = seconds
+            _bounded_text(frame, label="Timeline frame", limit=2 * 1024 * 1024)
+            messages[-1]["content"].extend([
+                {"type": "text", "text": f"RECORDED HISTORY at {seconds:.2f}s. This is a past video frame, not a current screen or a pointing coordinate map."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame}", "detail": "high"}},
+            ])
+        import logging
+        video_bytes = len(video.data) * 3 // 4 - (len(video.data) - len(video.data.rstrip("=")))
+        logging.getLogger("clicky.media").info(
+            "dispatching model=%s video/mp4_bytes=%s audio/mp3_bytes=%s screenshots=%s timeline_frames=%s transcript_chars=%s history_messages=%s",
+            model, video_bytes, len(audio), len(screenshots_b64), len(timeline_frames), len(user_text), len(history),
+        )
+        async with aclosing(self._stream_messages(messages, model)) as stream:
+            async for delta in stream:
+                yield delta
+
     async def _stream_messages(
         self, messages: list[dict], model: str | None,
     ) -> AsyncGenerator[str, None]:
@@ -142,17 +189,26 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         stream = await self._client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=MAX_OUTPUT_TOKENS,
+            max_tokens=(MUSE_OUTPUT_TOKENS
+                        if supports_video(self._spec.provider_id, model)
+                        else MAX_OUTPUT_TOKENS),
             stream=True,
             **routing,
         )
+        received_text = False
         try:
             async for chunk in stream:
                 if not chunk.choices:
                     continue
                 content = chunk.choices[0].delta.content
                 if isinstance(content, str) and content:
+                    received_text = received_text or bool(content.strip())
                     yield content
+            if not received_text:
+                raise RuntimeError(
+                    f"{self._spec.label} returned no answer text. Try again or "
+                    "choose another model in the panel."
+                )
         finally:
             close = getattr(stream, "close", None)
             if close is not None:

@@ -33,6 +33,8 @@ from ai.video_input import VideoInput
 from ai.provider_catalog import supports_video
 from screen.voice_clip import VoiceClipRecorder, MAX_SECONDS
 from audio.ambient_listener import AmbientListener
+from audio.stt.local_models import LocalModelUnavailable
+from audio.stt.readiness import local_stt_setup_issue, provider_label
 from audio.tts.base_tts import DisabledTTSProvider
 from audio.tts.local_status_tts import LocalStatusTTS
 from dictation.insertion import (
@@ -166,7 +168,8 @@ def _build_system_prompt(
     if total_steps > 1:
         ctx_lines.append(
             f"LESSON PROGRESS: step {lesson_step + 1} of {total_steps}. "
-            "Explain ONLY this step, then end with \"Say 'next' when ready.\""
+            "This is previous lesson context, not a limit on the current answer. "
+            "Answer the current request completely; pause only if the user asks."
         )
 
     # ── Quiz mode: dominant prompt that completely replaces normal behaviour ──
@@ -356,6 +359,7 @@ class CompanionManager(QObject):
         self._input_lock = threading.RLock()
         self._pressed_session: TurnSession | None = None
         self._video_capture: ScreenVoiceCapture | None = None
+        self._tutor_video_captures: dict[int, ScreenVoiceCapture] = {}
         self._task_followup_voice_armed = False
         self._dictation_pressed: DictationSession | None = None
         self._microphone_test_id: str | None = None
@@ -408,12 +412,17 @@ class CompanionManager(QObject):
                 )
             ),
         )
+        from automation.tutor_notes import TutorNotes
+        self._tutor_notes = TutorNotes(self._dictation_targets, self._dictation_insertion)
+        self._inknotes_pids = {}
         self._dictation_result: DictationRunOutcome | None = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Providers (lazy)
         self._llm: Optional[BaseLLMProvider] = None
         self._stt = None
+        self._stt_identity = None
+        self._capture_stt_identities: dict[int, tuple] = {}
         self._fallback_stt = None
         self._fallback_stt_name = ""
         self._streaming_stt: dict[int, object] = {}
@@ -1102,19 +1111,38 @@ class CompanionManager(QObject):
     def _get_llm(self) -> BaseLLMProvider:
         return self._acquire_response_dispatch(require_model=False).backend
 
-    def _get_stt(self):
-        if self._stt is None:
-            provider = cfg.stt_provider()
+    @staticmethod
+    def _stt_selection_identity(provider: str) -> tuple:
+        if provider == "openrouter":
+            return (provider, cfg.openrouter_api_key, cfg.openrouter_private_routing)
+        return (provider,)
+
+    def _pin_capture_stt(self, session: TurnSession, provider: str) -> None:
+        self._capture_stt_identities[session.sequence] = self._stt_selection_identity(provider)
+        self._turns.bind_cancel(
+            session, "speech-selection",
+            lambda: self._capture_stt_identities.pop(session.sequence, None),
+        )
+
+    def _get_stt(self, provider: str | None = None):
+        provider = provider or cfg.stt_provider()
+        identity = self._stt_selection_identity(provider)
+        if self._stt is None or getattr(self, "_stt_identity", None) != identity:
             if provider == "deepgram":
                 raise RuntimeError(
                     "Deepgram live mode requires an active streaming session; "
                     "Clicky will not silently fall back to batch transcription."
                 )
             self._stt = self._create_batch_stt(provider)
+            self._stt_identity = identity
         return self._stt
 
     @staticmethod
     def _create_batch_stt(provider: str):
+        if provider == "openrouter":
+            from audio.stt.openrouter_stt import OpenRouterSTT
+
+            return OpenRouterSTT()
         if provider == "deepgram_batch":
             from audio.stt.deepgram_stt import DeepgramSTT
 
@@ -1293,6 +1321,45 @@ class CompanionManager(QObject):
             and screen_capture_allowed(cfg)
             and not (self._privacy_guard and is_sensitive_window(active_window_title()))
         )
+
+    def _cancel_tutor_video(self, sequence: int) -> None:
+        capture = getattr(self, "_tutor_video_captures", {}).pop(sequence, None)
+        if capture is not None:
+            capture.timer.cancel()
+            capture.recorder.cancel()
+
+    def _release_tutor_video(self, session: TurnSession) -> None:
+        with self._input_lock:
+            if not self._turns.release_capture(session):
+                return
+            if self._pressed_session == session:
+                self._pressed_session = None
+            self._emit_state(AppState.THINKING, session)
+            self._submit(self._end_capture_and_process(session), session)
+
+    def _start_tutor_video(self, session: TurnSession) -> ScreenVoiceCapture | None:
+        if not getattr(cfg, "openrouter_voice_video_enabled", False) or self._task_followup_voice_armed:
+            return None
+        selection = self._response_selection()
+        if (selection.identity.provider_id != "openrouter"
+                or selection.model_id != "meta/muse-spark-1.3-contributor"
+                or cfg.stt_provider() != "openrouter" or not self._video_sharing_allowed()):
+            raise RuntimeError("Voice/video Tutor requires OpenRouter Muse Spark 1.3, OpenRouter Muse 1.2 transcription, and microphone/cloud speech/screen permissions.")
+        identity = (cfg.openrouter_api_key, cfg.openrouter_private_routing)
+        recorder = VoiceClipRecorder(lambda: (
+            getattr(cfg, "openrouter_voice_video_enabled", False)
+            and self._video_sharing_allowed()
+            and cfg.stt_provider() == "openrouter"
+            and self._response_selection() == selection
+            and (cfg.openrouter_api_key, cfg.openrouter_private_routing) == identity
+        ))
+        timer = threading.Timer(MAX_SECONDS, self._release_tutor_video, args=(session,))
+        timer.daemon = True
+        capture = ScreenVoiceCapture(session, recorder, selection, timer)
+        self._tutor_video_captures[session.sequence] = capture
+        self._turns.bind_cancel(session, "tutor-video", lambda: self._cancel_tutor_video(session.sequence))
+        recorder.start()
+        return capture
 
     def start_video_capture(self) -> TurnSession | None:
         """Explicit screen-and-voice action; regular dictation/STT stays separate."""
@@ -1484,6 +1551,8 @@ class CompanionManager(QObject):
             session = self._turns.start_capture()
             if session is None:
                 return
+            from automation.inknotes_mcp import foreground_notebook_pid
+            self._inknotes_pids[session.sequence] = foreground_notebook_pid()
             if self._begin_capture(session):
                 self._pressed_session = session
                 self._walkthrough.pause_for_voice()
@@ -1585,14 +1654,28 @@ class CompanionManager(QObject):
             )
             return False
         provider = cfg.stt_provider()
+        if provider == "openrouter" and not cfg.openrouter_api_key:
+            self.sig_dictation_error.emit("OPENROUTER_API_KEY is required for OpenRouter speech input.")
+            return False
+        setup_issue = local_stt_setup_issue(cfg, provider)
+        if setup_issue:
+            fallback = cfg.stt_fallback_provider()
+            if not fallback or local_stt_setup_issue(cfg, fallback):
+                self.sig_dictation_error.emit(
+                    f"Speech input is not ready: {setup_issue} Open Setup & "
+                    "Diagnostics → Speech readiness & fallback to configure "
+                    "a speech provider, including OpenRouter Muse Spark 1.2."
+                )
+                return False
         if (
-            provider in ("deepgram", "deepgram_batch", "openai")
+            provider in ("deepgram", "deepgram_batch", "openai", "openrouter")
             and not cloud_stt_allowed(cfg)
         ):
             self.sig_dictation_error.emit(
                 "The selected cloud speech provider is not permitted."
             )
             return False
+        self._pin_capture_stt(session.turn, provider)
         try:
             streaming = self._new_streaming_stt(
                 session.turn,
@@ -1608,6 +1691,7 @@ class CompanionManager(QObject):
             )
         except Exception:
             self._cancel_streaming_stt(session.turn.sequence)
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             _log.exception("dictation microphone start failed")
             self.sig_dictation_error.emit(
                 "Global Dictation could not start the microphone."
@@ -1615,6 +1699,7 @@ class CompanionManager(QObject):
             return False
         if not started:
             self._cancel_streaming_stt(session.turn.sequence)
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             self.sig_dictation_error.emit(
                 "Global Dictation could not claim the microphone."
             )
@@ -1635,21 +1720,25 @@ class CompanionManager(QObject):
         """Produce one final transcript and one truthfully classified insert."""
 
         if not self._turns.is_current(session.turn):
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             return
         try:
             pcm = self._listener.stop_recording(session.turn.sequence)
             self._turns.unbind_cancel(session.turn, "recording")
         except Exception:
             _log.exception("dictation microphone stop failed")
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             self._dictation.fail(session, "microphone_capture_failed")
             self.sig_dictation_error.emit(
                 "Global Dictation could not finalize microphone capture."
             )
             return
         if pcm is None or not self._turns.is_current(session.turn):
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             return
         if len(pcm) < 3200:
             self._cancel_streaming_stt(session.turn.sequence)
+            self._capture_stt_identities.pop(session.turn.sequence, None)
             self._dictation.fail(session, "audio_too_short")
             self.sig_dictation_error.emit(
                 "No usable speech was captured."
@@ -1793,8 +1882,29 @@ class CompanionManager(QObject):
             )
             return False
         provider = cfg.stt_provider()
+        if provider == "openrouter" and not cfg.openrouter_api_key:
+            self._emit_turn_signal(session, self.sig_error,
+                "OPENROUTER_API_KEY is required for OpenRouter speech input. "
+                "Open Setup & Diagnostics → Speech readiness & fallback.")
+            return False
+        setup_issue = local_stt_setup_issue(cfg, provider)
+        if setup_issue:
+            fallback = cfg.stt_fallback_provider()
+            # A configured local fallback remains usable when only the
+            # primary provider is missing prerequisites.
+            if not fallback or local_stt_setup_issue(cfg, fallback):
+                self._emit_turn_signal(
+                    session,
+                    self.sig_error,
+                    f"Speech input is not ready: {setup_issue} "
+                    "Open Setup & Diagnostics → Speech readiness & fallback "
+                    "to configure a speech provider, including OpenRouter Muse "
+                    "Spark 1.2 with your OpenRouter key. For combined screen "
+                    "and audio input, use Ask with screen + voice.",
+                )
+                return False
         if (
-            provider in ("deepgram", "deepgram_batch", "openai")
+            provider in ("deepgram", "deepgram_batch", "openai", "openrouter")
             and not cloud_stt_allowed(cfg)
         ):
             self._emit_turn_signal(
@@ -1805,21 +1915,26 @@ class CompanionManager(QObject):
                 "Clicky did not send microphone audio.",
             )
             return False
+        self._pin_capture_stt(session, provider)
+        tutor_video = None
         try:
+            tutor_video = self._start_tutor_video(session)
             streaming = self._new_streaming_stt(
                 session,
                 publish_partial=not self._task_followup_voice_armed,
             )
         except Exception as exc:
+            self._cancel_tutor_video(session.sequence)
             self._emit_turn_signal(session, self.sig_error, str(exc))
             return False
         try:
-            started = self._listener.start_recording(
-                session.sequence,
-                on_frame=streaming.send_frame if streaming is not None else None,
-            )
+            recording_options = {"on_frame": streaming.send_frame if streaming is not None else None}
+            if tutor_video is not None:
+                recording_options["on_timed_frame"] = tutor_video.recorder.add_audio
+            started = self._listener.start_recording(session.sequence, **recording_options)
         except Exception as e:
             self._cancel_streaming_stt(session.sequence)
+            self._cancel_tutor_video(session.sequence)
             _log.exception("mic start failed")
             self._emit_turn_signal(session, self.sig_error,
                 f"Couldn't open the microphone: {e}\n"
@@ -1828,7 +1943,10 @@ class CompanionManager(QObject):
             return False
         if not started:
             self._cancel_streaming_stt(session.sequence)
+            self._cancel_tutor_video(session.sequence)
             return False
+        if tutor_video is not None:
+            tutor_video.timer.start()
         self._turns.bind_cancel(
             session,
             "recording",
@@ -1864,9 +1982,16 @@ class CompanionManager(QObject):
     async def _end_capture_and_process(self, session: TurnSession):
         if not self._turns.is_current(session):
             return
+        tutor_video = getattr(self, "_tutor_video_captures", {}).get(session.sequence)
+        recorded_timeline = []
         try:
             pcm = self._listener.stop_recording(session.sequence)
             self._turns.unbind_cancel(session, "recording")
+            if pcm is not None and tutor_video is not None:
+                tutor_video.timer.cancel()
+                await asyncio.to_thread(tutor_video.recorder.stop_capture)
+                pcm = tutor_video.recorder.transcription_pcm()
+                recorded_timeline = tutor_video.recorder.timeline_frames()
         except Exception as e:
             _log.exception("mic stop failed")
             self._emit_turn_signal(
@@ -1879,6 +2004,7 @@ class CompanionManager(QObject):
         if pcm is None or not self._turns.is_current(session):
             if self._walkthrough.paused_for_voice:
                 self._walkthrough.cancel("voice_input_failed")
+            self._finish_turn(session)
             return
         _log.info("captured %.1fs of audio", len(pcm) / 32000)
         if len(pcm) < 3200:  # < 0.1s of audio — ignore
@@ -1889,16 +2015,27 @@ class CompanionManager(QObject):
 
         pointing_held = False  # track whether we told overlay to hold dwell
         side_tasks: list[asyncio.Task] = []
+        video_input = None
+        audio_b64 = None
+        timeline_context = []
 
         try:
             # 1. Transcribe — bounded so a hung/loading local STT model can
             # never freeze the UI on "Thinking..." forever
-            transcript, used_stt_provider = (
-                await self._transcribe_with_configured_fallback(
-                    pcm,
-                    session,
+            try:
+                transcript, used_stt_provider = (
+                    await self._transcribe_with_configured_fallback(pcm, session)
                 )
-            )
+            except Exception:
+                if tutor_video is None:
+                    raise
+                self._emit_turn_signal(
+                    session, self.sig_error,
+                    "Speech transcription failed; no new answer was requested. "
+                    "Hold Ctrl+Win while speaking, then release both keys. "
+                    "You can retry now; the previous answer is still shown.",
+                )
+                return
             if not self._turns.is_current(session):
                 return
             _log.info("voice transcription completed (provider=%s)",
@@ -1906,6 +2043,10 @@ class CompanionManager(QObject):
             if not transcript.strip():
                 if self._consume_task_followup_voice_capture():
                     self.sig_task_followup_transcript.emit("")
+                else:
+                    self._emit_turn_signal(session, self.sig_error,
+                        "No intelligible speech was returned. Try again or check "
+                        "Setup & Diagnostics → Microphone.")
                 return
             # Task Center voice is draft input only. It short-circuits before
             # Tutor transcript UI, commands, screen capture, skills, history,
@@ -1919,11 +2060,21 @@ class CompanionManager(QObject):
                 return
 
             self._emit_turn_signal(
-                session,
-                self.sig_transcript_final,
-                session.sequence,
-                transcript,
+                session, self.sig_transcript_final, session.sequence, transcript,
             )
+
+            if tutor_video is not None:
+                if used_stt_provider != "openrouter":
+                    raise RuntimeError("Voice/video Tutor requires Muse 1.2 transcription; no fallback was sent")
+                video_input = await asyncio.to_thread(tutor_video.recorder.finish)
+                from audio.stt.openrouter_stt import _pcm16_to_mp3
+                import base64
+                timeline_context = [(frame.seconds, base64.b64encode(frame.jpeg).decode("ascii"))
+                                    for frame in recorded_timeline]
+                audio_b64 = base64.b64encode(await asyncio.to_thread(_pcm16_to_mp3, pcm, 16000)).decode("ascii")
+                self._acquire_response_dispatch(tutor_video.selection)
+                if not self._video_sharing_allowed() or not getattr(cfg, "openrouter_voice_video_enabled", False):
+                    raise RuntimeError("Voice/video Tutor permissions changed before response")
 
             command = classify_voice_command(transcript)
             if command is VoiceCommand.STOP:
@@ -2088,6 +2239,7 @@ class CompanionManager(QObject):
             else:
                 lang_code = (multilang.detect_language(transcript)
                              if self._multilang else "en")
+            _log.info("voice routing turn=%s language=%s", session.sequence, lang_code)
 
             # OCR fallback for fine print (only if user actually asks to read)
             ocr_extra = ""
@@ -2182,11 +2334,17 @@ class CompanionManager(QObject):
                     "textual screen map, OCR, and detected-figure context above; "
                     "do not claim direct visual inspection.\n"
                 )
+            from automation.tutor_notes import note_requested, NOTE_RESPONSE_CONTRACT
+            writing_note = note_requested(transcript)
+            if writing_note:
+                from automation.inknotes_mcp import NOTE_RESPONSE_CONTRACT as mcp_note_contract
+                system += mcp_note_contract
             walkthrough_requested = bool(
                 multistep
                 and screenshots
                 and provider_images
                 and supports_vision
+                and not writing_note
             )
             if walkthrough_requested:
                 system += walkthrough_response_contract(
@@ -2199,6 +2357,7 @@ class CompanionManager(QObject):
             full_response, walkthrough_overflow = await self._stream_tutor_response(
                 transcript, provider_images, history, system, session, walkthrough_requested,
                 selection=response_selection,
+                **({"video": video_input, "audio_b64": audio_b64, "timeline_frames": timeline_context} if video_input is not None else {}),
             )
             if not self._turns.is_current(session):
                 return
@@ -2290,6 +2449,25 @@ class CompanionManager(QObject):
                     self._lesson_step_idx = 0
 
             clean = ANY_TAG_RE.sub("", full_response).strip()
+            if writing_note and clean:
+                from automation.inknotes_mcp import InkNotesMcpClient, write_explanation
+                pid = self._inknotes_pids.get(session.sequence)
+                if pid:
+                    self._emit_turn_signal(session, self.sig_response_chunk, "\n\nWriting the explanation into InkNotes…")
+                    try:
+                        dispatch = self._acquire_response_dispatch(response_selection)
+                        note_status = await write_explanation(
+                            InkNotesMcpClient(pid), dispatch.backend, dispatch.selection.model_id,
+                            transcript, clean, lambda: self._turns.is_current(session)
+                            and self._response_selection() == response_selection,
+                        )
+                    except Exception:
+                        note_status = "The notebook tool run could not be completed. Check InkNotes before retrying; the complete explanation remains here."
+                else:
+                    note_status = "Open the updated InkNotes notebook and keep it in front when starting Ctrl+Win. The MCP connection was not available for this request."
+                if not self._turns.is_current(session):
+                    return
+                clean = clean + "\n\n" + note_status
             self._emit_turn_signal(session, self.sig_response_done, clean)
             self._last_response = clean   # for "say it again"
 
@@ -2345,7 +2523,9 @@ class CompanionManager(QObject):
             await self._play_lesson(full_response, clean, session)
 
         except Exception as e:
-            self._emit_turn_signal(session, self.sig_error, str(e))
+            self._emit_turn_signal(session, self.sig_error,
+                "The voice/video Tutor request failed. Any completed transcript remains visible; check the selected model and recording permissions. No fallback was sent."
+                if tutor_video is not None else str(e))
 
         finally:
             if self._consume_task_followup_voice_capture():
@@ -2411,20 +2591,43 @@ class CompanionManager(QObject):
         self, transcript: str, provider_images: list[str], history: list[Message],
         system: str, session: TurnSession, walkthrough_requested: bool,
         *, selection: ResponseSelection | None = None,
+        video: VideoInput | None = None, audio_b64: str | None = None,
+        timeline_frames: list[tuple[float, str]] | None = None,
     ) -> tuple[str, bool]:
         """Stream narration or a bounded walkthrough payload for the current turn."""
+        if not self._turns.is_current(session):
+            return "", False
         full_response = ""
         display = ResponseText()
         walkthrough_bytes = 0
         walkthrough_overflow = False
         dispatch = self._acquire_response_dispatch(selection)
-        stream = dispatch.backend.stream_response(
-            user_text=transcript,
-            screenshots_b64=provider_images,
-            history=history,
-            system_prompt=system,
-            model=dispatch.selection.model_id,
-        )
+        arguments = dict(user_text=transcript, screenshots_b64=provider_images,
+                         history=history, system_prompt=system, model=dispatch.selection.model_id)
+        if video is not None:
+            if not self._video_sharing_allowed() or not getattr(cfg, "openrouter_voice_video_enabled", False):
+                raise PermissionError("Voice/video Tutor sharing was revoked")
+            captured = getattr(self, "_tutor_video_captures", {}).get(session.sequence)
+            if captured is None:
+                raise RuntimeError("Voice/video Tutor capture identity is unavailable")
+            captured.recorder.require_sharing_allowed()
+            if dispatch.selection != captured.selection:
+                raise RuntimeError("Voice/video Tutor response selection changed")
+            arguments["system_prompt"] += (
+                "\n\nORIGINAL VOICE TURN: The transcript is a speech-recognition aid, not a prior answer. "
+                "Use the attached explicit audio and synchronized screen recording, current screenshots, "
+                "and conversation context to understand and answer the user. Muse 1.2 only transcribed; "
+                "you own the explanation and the existing POINT/DRAW/walkthrough response decisions. "
+                "For questions about what happened, examine the complete video timeline and describe "
+                "earlier-to-later changes. The final screenshot is not a substitute for the recording. "
+                "Use the current screenshot screen map for coordinates, not an earlier video frame. "
+                "Do not claim a desktop action was executed merely by describing it.\n"
+            )
+            if timeline_frames:
+                arguments["timeline_frames"] = timeline_frames
+            stream = dispatch.backend.stream_multimodal_response(video=video, audio_b64=audio_b64, **arguments)
+        else:
+            stream = dispatch.backend.stream_response(**arguments)
         async with aclosing(stream):
             async for chunk in stream:
                 if not self._turns.is_current(session):
@@ -2446,13 +2649,18 @@ class CompanionManager(QObject):
                     walkthrough_bytes += chunk_size
                     full_response += chunk
                     continue
+                if not isinstance(chunk, str) or len(full_response.encode("utf-8")) + len(chunk.encode("utf-8")) > 64 * 1024:
+                    raise RuntimeError("Tutor response exceeded the bounded narration limit")
                 full_response += chunk
-                self._parse_points(display.pending + chunk, session)
+                # Pointer tags are played with their spoken passage after streaming.
                 flush = display.feed(chunk)
                 if flush:
                     self._emit_turn_signal(session, self.sig_response_chunk, flush)
         if not walkthrough_requested and (remainder := display.finish()):
             self._emit_turn_signal(session, self.sig_response_chunk, remainder)
+        _log.info("response completed turn=%s model=%s multimodal=%s point_tags=%s chars=%s",
+                  session.sequence, dispatch.selection.model_id, video is not None,
+                  len(POINT_RE.findall(full_response)), len(full_response))
         return full_response, walkthrough_overflow
 
     async def _handle_voice_command(
@@ -2497,6 +2705,10 @@ class CompanionManager(QObject):
         """Use the selected STT, then only an explicitly selected local one."""
 
         selected = cfg.stt_provider()
+        identity = CompanionManager._stt_selection_identity(selected)
+        captured = getattr(self, "_capture_stt_identities", {}).pop(session.sequence, identity)
+        if captured != identity:
+            raise RuntimeError("Speech provider or routing settings changed during capture. Record a new turn.")
         try:
             if session.sequence in self._streaming_stt:
                 transcript = await asyncio.wait_for(
@@ -2505,25 +2717,34 @@ class CompanionManager(QObject):
                 )
             else:
                 transcript = await asyncio.wait_for(
-                    self._get_stt().transcribe(pcm),
+                    self._get_stt(selected).transcribe(pcm),
                     timeout=90,
                 )
             return transcript, selected
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             if not self._turns.is_current(session):
                 raise asyncio.CancelledError
+            _log.warning(
+                "speech input failed (provider=%s; error_type=%s)",
+                selected, type(exc).__name__,
+            )
+            if session.sequence in getattr(self, "_tutor_video_captures", {}):
+                raise RuntimeError("Muse 1.2 transcription failed; the voice/video Tutor turn was not sent and no fallback was used.") from None
             fallback_name = cfg.stt_fallback_provider()
             if not fallback_name or fallback_name == selected:
+                local_detail = (
+                    f"{provider_label(selected)}: {exc} "
+                    if isinstance(exc, LocalModelUnavailable) else ""
+                )
                 raise RuntimeError(
-                    "Speech input failed and automatic fallback is off. Open "
+                    "Speech input failed and automatic fallback is off. "
+                    + local_detail + "Open "
                     "Setup & Diagnostics → Speech readiness & fallback to "
                     "inspect the selected provider or explicitly allow a "
                     "local-only fallback."
                 ) from None
-            from audio.stt.readiness import provider_label
-
             self._emit_turn_signal(
                 session,
                 self.sig_error,
@@ -2702,6 +2923,9 @@ class CompanionManager(QObject):
         for match in POINT_RE.finditer(text):
             x, y, label, scr = match.groups()
             lx, ly = self._denorm(float(x), float(y), int(scr))
+            _log.info("point dispatched turn=%s screen=%s x=%.1f y=%.1f",
+                      session.sequence, scr, lx, ly)
+            self._emit_turn_signal(session, self.sig_point_hold, True)
             self._emit_turn_signal(
                 session, self.sig_point_at, lx, ly, label.strip()
             )
@@ -2866,10 +3090,30 @@ class CompanionManager(QObject):
         full_response: str,
         clean: str,
         session: TurnSession,
+        allow_screen_drawings: bool = False,
     ):
         """Narrate sentence by sentence, drawing each sentence's shapes as it
         is spoken — the cadence of a teacher at a whiteboard. Falls back to
         plain TTS when the response contains no drawings."""
+        if not allow_screen_drawings:
+            # Play target changes in narration order, rather than dispatching
+            # every target while the model streams and speaking at the last one.
+            matches = list(POINT_RE.finditer(full_response))
+            if not matches:
+                await self._speak_with_failure_fallback(_speakable(clean), session)
+                return
+            prefix = ANY_TAG_RE.sub("", full_response[:matches[0].start()]).strip()
+            if prefix and not await self._speak_with_failure_fallback(_speakable(prefix), session):
+                return
+            for index, match in enumerate(matches):
+                if not self._turns.is_current(session):
+                    return
+                self._parse_points(match.group(0), session)
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(full_response)
+                passage = ANY_TAG_RE.sub("", full_response[match.end():end]).strip()
+                if passage and not await self._speak_with_failure_fallback(_speakable(passage), session):
+                    return
+            return
         segments = self._segment_lesson(full_response)
         if not any(shapes for _, shapes in segments):
             await self._speak_with_failure_fallback(
@@ -2937,9 +3181,15 @@ class CompanionManager(QObject):
         return ran
 
     def _finish_turn(self, session: TurnSession) -> bool:
+        self._inknotes_pids.pop(session.sequence, None)
+        self._tutor_notes.discard(session.sequence)
+        self._cancel_tutor_video(session.sequence)
         self._cancel_streaming_stt(session.sequence)
+        self._capture_stt_identities.pop(session.sequence, None)
 
         def finish_ui() -> None:
+            self.sig_clear_drawings.emit()
+            self.sig_point_release.emit()
             self.sig_transcript_end.emit(session.sequence)
             self._set_idle_state()
 
@@ -3451,6 +3701,11 @@ class CompanionManager(QObject):
             self.sig_error.emit(
                 "Wake-word listening requires microphone permission."
             )
+            return
+        try:
+            cfg.set_wake_word_enabled(enabled)
+        except Exception:
+            self.sig_error.emit("Could not save the wake-word setting.")
             return
         self._listener.set_wake_word_enabled(enabled)
 

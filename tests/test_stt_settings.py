@@ -83,9 +83,9 @@ class SpeechInputSettingsTests(unittest.TestCase):
 
     def test_tray_names_live_cloud_batch_and_local_batch_modes(self):
         source = (ROOT / "ui" / "tray.py").read_text(encoding="utf-8")
-        self.assertIn("Deepgram Nova-2 — live streaming", source)
-        self.assertIn("Deepgram Nova-2 — cloud batch", source)
-        self.assertIn("whisper.cpp — local batch", source)
+        # Rendered labels and selection are exercised by test_stt_tray_menu.
+        # The menu must share the readiness catalog rather than omit new modes.
+        self.assertIn("STT_PROVIDER_DETAILS.items()", source)
         self.assertIn("on_set_stt_provider", source)
 
     def test_transcript_view_rejects_queued_updates_from_older_turn(self):

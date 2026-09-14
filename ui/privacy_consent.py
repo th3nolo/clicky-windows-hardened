@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from config import cfg
@@ -41,6 +42,15 @@ class PrivacyConsentDialog(QDialog):
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
 
+        from ai.provider_catalog import provider_label
+        provider = provider_label(cfg.llm_provider())
+        selection_notice = QLabel(
+            f"Answer provider: {provider}. Microphone, screen input and spoken "
+            "answers are separate choices. Other features below are optional."
+        )
+        selection_notice.setWordWrap(True)
+        layout.addWidget(selection_notice)
+
         self.microphone = QCheckBox("Allow microphone access")
         self.microphone.setChecked(bool(cfg.microphone_consent))
         self.microphone.setToolTip(
@@ -56,7 +66,7 @@ class PrivacyConsentDialog(QDialog):
         mic_notice.setWordWrap(True)
         layout.addWidget(mic_notice)
 
-        self.cloud_stt = QCheckBox("Allow cloud speech-to-text")
+        self.cloud_stt = QCheckBox("Allow sending speech audio to a cloud provider")
         self.cloud_stt.setChecked(bool(cfg.cloud_stt_consent))
         self.cloud_stt.setToolTip(
             "When a cloud speech provider is selected, Clicky may send captured "
@@ -66,10 +76,10 @@ class PrivacyConsentDialog(QDialog):
         )
         layout.addWidget(self.cloud_stt)
         stt_notice = QLabel(
-            "Deepgram live mode streams bounded microphone frames while you "
-            "speak. Batch cloud modes upload the completed capture. Local "
-            "Whisper modes do neither. Granting this permission does not select "
-            "a cloud provider."
+            "Screen + voice sends audio inside the video to your answer provider. "
+            "The speech hotkey transcribes through the selected speech provider. "
+            "Muse Spark 1.2 can transcribe with your OpenRouter key; local Whisper "
+            "stays on this device. This permission does not select a service."
         )
         stt_notice.setWordWrap(True)
         layout.addWidget(stt_notice)
@@ -148,8 +158,8 @@ class PrivacyConsentDialog(QDialog):
         self.openrouter_private_routing.setChecked(cfg.openrouter_private_routing)
         layout.addWidget(self.openrouter_private_routing)
         private_routing_notice = QLabel(
-            "Optional; off by default. Applies to OpenRouter model requests, "
-            "not speech services or other providers. Some models, including "
+            "Optional; off by default. Applies to OpenRouter answers and speech "
+            "transcription. Other providers and speech services are unaffected. Some models, including "
             "Contributor tiers, may become unavailable. Clicky will not retry "
             "with weaker privacy restrictions. Your OpenRouter account may "
             "already enforce restrictions; this does not change them."
@@ -222,6 +232,33 @@ class PrivacyConsentDialog(QDialog):
             )
             compose_notice.setWordWrap(True)
             layout.addWidget(compose_notice)
+
+        # Keep unrelated features available without making them first-run steps.
+        # Existing enabled permissions expand this section so they remain visible.
+        self.optional_features = QWidget()
+        optional_layout = QVBoxLayout(self.optional_features)
+        optional_layout.setContentsMargins(0, 0, 0, 0)
+        optional_widgets = [
+            self.external_place_search, place_notice,
+            self.market_data, market_notice,
+            self.coding_agent, coding_agent_notice,
+        ]
+        if self.global_dictation is not None:
+            optional_widgets.extend((self.global_dictation, dictation_notice))
+        if self.screen_compose is not None:
+            optional_widgets.extend((self.screen_compose, compose_notice))
+        for widget in optional_widgets:
+            layout.removeWidget(widget)
+            optional_layout.addWidget(widget)
+        enabled = any(widget.isChecked() for widget in optional_widgets
+                      if isinstance(widget, QCheckBox))
+        self.optional_toggle = QPushButton("Other optional features")
+        self.optional_toggle.setCheckable(True)
+        self.optional_toggle.setChecked(enabled)
+        self.optional_toggle.toggled.connect(self.optional_features.setVisible)
+        self.optional_features.setVisible(enabled)
+        layout.addWidget(self.optional_toggle)
+        layout.addWidget(self.optional_features)
 
         buttons = QHBoxLayout()
         keep_disabled = QPushButton("Keep all disabled")

@@ -59,6 +59,14 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.requests.append(request)
             if request.url.path.endswith("/models"):
                 return httpx.Response(200, json={"data": [], "has_more": False})
+            if request.url.path.endswith("/chat/completions"):
+                return httpx.Response(
+                    200, headers={"content-type": "text/event-stream"},
+                    content=(b'data: {"id":"test","object":"chat.completion.chunk",'
+                             b'"created":0,"model":"test","choices":[{"index":0,'
+                             b'"delta":{"content":"Test answer"},"finish_reason":"stop"}]}\n\n'
+                             b'data: [DONE]\n\n'),
+                )
             return httpx.Response(
                 200, headers={"content-type": "text/event-stream"},
                 content=b"data: [DONE]\n\n",
@@ -107,7 +115,7 @@ class SDKIsolationTests(unittest.IsolatedAsyncioTestCase):
                 chunks = [chunk async for chunk in provider.stream_response(
                     "synthetic question", ["synthetic-image"], [], "system", MODEL,
                 )]
-                self.assertEqual(chunks, [])
+                self.assertEqual(chunks, ["Test answer"])
                 request = self.requests[-1]
                 self.assertEqual(str(request.url), spec.base_url + "/chat/completions")
                 self.assert_isolated(request, "selected-" + provider_id)

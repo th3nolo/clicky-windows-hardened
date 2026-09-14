@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
@@ -38,8 +39,9 @@ def mark_setup_complete() -> None:
 class SetupWizard(QDialog):
     """Read-only local dependency and model check."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, on_choose_provider: Callable[[], None] | None = None):
         super().__init__(parent)
+        self._on_choose_provider = on_choose_provider
         self.setWindowTitle("Clicky Setup")
         self.setModal(False)
         self.setMinimumSize(560, 380)
@@ -109,7 +111,7 @@ class SetupWizard(QDialog):
         button_row.addWidget(self.action_btn)
         layout.addLayout(button_row)
 
-        self._set_step("intro")
+        self._set_step("intro" if cfg.llm_provider() == "ollama" else "provider")
 
     def _set_step(self, step: str) -> None:
         self._step = step
@@ -117,7 +119,35 @@ class SetupWizard(QDialog):
         self.skip_btn.setEnabled(True)
         self.skip_btn.show()
 
-        if step == "intro":
+        if step == "provider":
+            provider = cfg.llm_provider()
+            label = {"openrouter": "OpenRouter", "lmstudio": "LM Studio"}.get(
+                provider, provider
+            )
+            self.title.setText(f"Response provider: {label}")
+            self.subtitle.setText(
+                "This provider is selected. Ollama setup is optional. "
+                "A configured provider has not necessarily been connection-tested; "
+                "voice and screen features have separate permissions."
+            )
+            self.status.setText("")
+            self.action_btn.setText("Continue")
+            self.skip_btn.setText("Choose another provider")
+
+        elif step == "provider_choice":
+            self.title.setText("Choose a response provider")
+            self.subtitle.setText(
+                "Open the Clicky tray menu and choose Model to select a provider. "
+                "API providers appear when their key is configured for Clicky."
+            )
+            self.status.setText(
+                "For OpenRouter, configure OPENROUTER_API_KEY in the environment "
+                "used to launch Clicky, then restart Clicky."
+            )
+            self.action_btn.setText("Close setup")
+            self.skip_btn.hide()
+
+        elif step == "intro":
             if ob.is_ollama_running():
                 self.title.setText("Ollama detected")
                 self.subtitle.setText(
@@ -168,12 +198,13 @@ class SetupWizard(QDialog):
             self.skip_btn.setText("Skip - add it later")
 
         elif step == "done":
-            self.title.setText("Local setup detected")
+            self.title.setText("Local text model detected")
             hotkey = "+".join(part.strip().capitalize() for part in cfg.hotkey.split("+"))
             self.subtitle.setText(
-                f"Clicky is ready. Hold {hotkey} anywhere on Windows to start "
-                "a conversation. Wake-word detection also requires a separately "
-                "provisioned local tiny.en speech model."
+                f"Hold {hotkey} to use voice after configuring speech input and "
+                "its permissions. Wake-word detection requires a separately "
+                "provisioned local tiny.en speech model; screen features also "
+                "require an available vision model and permission."
             )
             self.status.setText("")
             self.action_btn.setText("Start using Clicky")
@@ -212,15 +243,19 @@ class SetupWizard(QDialog):
                     cfg.ollama_vision_model_digest,
                     "OLLAMA_VISION_MODEL_DIGEST",
                 ))
-        elif self._step == "done":
+        elif self._step in ("done", "provider", "provider_choice"):
+            if self._step != "done":
+                mark_setup_complete()
             self.accept()
 
     def _on_skip(self) -> None:
-        if self._step == "intro":
+        if self._step in ("intro", "text_model", "provider"):
+            if self._on_choose_provider is None:
+                self._set_step("provider_choice")
+                return
+            self._on_choose_provider()
             mark_setup_complete()
             self.reject()
-        elif self._step == "text_model":
-            self._set_step("vision_model")
         elif self._step == "vision_model":
             self._set_step("done")
 
@@ -251,8 +286,12 @@ class SetupWizard(QDialog):
         show_app_suggestions(self)
 
 
-def maybe_show_setup_wizard(parent=None) -> SetupWizard | None:
-    """Open the read-only setup check only when local state is incomplete."""
+def maybe_show_setup_wizard(
+    parent=None, *, on_choose_provider: Callable[[], None] | None = None
+) -> SetupWizard | None:
+    """Check local setup on first run only when Ollama is the selected provider."""
+    if cfg.llm_provider() != "ollama":
+        return None
     if setup_already_ran():
         return None
     if ob.is_ollama_running() and ob.is_model_installed(
@@ -263,6 +302,6 @@ def maybe_show_setup_wizard(parent=None) -> SetupWizard | None:
         mark_setup_complete()
         return None
 
-    wizard = SetupWizard(parent)
+    wizard = SetupWizard(parent, on_choose_provider=on_choose_provider)
     wizard.show()
     return wizard

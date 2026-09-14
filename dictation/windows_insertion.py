@@ -32,8 +32,18 @@ class _KeyboardInput(ctypes.Structure):
     ]
 
 
+class _MouseInput(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG), ("dy", wintypes.LONG),
+        ("mouse_data", wintypes.DWORD), ("flags", wintypes.DWORD),
+        ("timestamp", wintypes.DWORD), ("extra_info", ctypes.c_size_t),
+    ]
+
+
 class _InputUnion(ctypes.Union):
-    _fields_ = [("keyboard", _KeyboardInput)]
+    # INPUT's union includes MOUSEINPUT even for keyboard-only injection.
+    # Omitting it makes sizeof(INPUT) too small and Windows rejects SendInput.
+    _fields_ = [("keyboard", _KeyboardInput), ("mouse", _MouseInput)]
 
 
 class _Input(ctypes.Structure):

@@ -37,6 +37,7 @@ _PREFERENCE_STRING_LIMITS = {
     "custom_instructions": 32 * 1024,
     "edge_tts_voice_id": 256,
     "openai_tts_voice_id": 256,
+    "openrouter_tts_voice_id": 256,
     "elevenlabs_voice_id": 256,
     "hotkey": 128,
     "dictation_hotkey": 128,
@@ -45,6 +46,8 @@ _PREFERENCE_STRING_LIMITS = {
 }
 _PREFERENCE_BOOL_KEYS = {
     "openrouter_private_routing",
+    "openrouter_voice_video_enabled",
+    "wake_word_enabled",
     "journal_enabled",
     "web_search_enabled",
     "microphone_consent",
@@ -221,11 +224,21 @@ HARD RULES (never break):
      plainly instead of guessing.
 
   2. MULTI-STEP TASKS (export, install, configure, setup, etc.):
-     Describe ONLY the next single step, then end with "Say 'next' when
-     ready." Never dump a numbered list of 5 steps in one response.
+     Give the complete explanation requested, including intermediate reasoning
+     and the final result. For mathematics, work through every required row or
+     column and check dimensions. Pause after one step only when the user
+     explicitly asks for an interactive, one-step-at-a-time walkthrough.
+     Do not require "next" to finish an ordinary explanation.
 
-  3. VISION: describe only what is ACTUALLY in the screenshot. Trust your
-     eyes over the user's words.
+  3. VISUAL EVIDENCE: use all supplied visual evidence. If a screen recording
+     is attached, inspect its full timeline, including earlier frames.
+     For "what did I do", navigation, changes, or demonstrations, describe
+     the observed sequence in order. The separate screenshot is the current
+     state only; it does not replace the video. Do not claim you only see a
+     screenshot when video is supplied. Do not infer activity outside the clip.
+     Use the current screenshot for pointing coordinates, so you never point
+     at a control that was visible only earlier. A retrospective description
+     is not a next-step tutorial and should not end with "say next".
 
   4. WEB SEARCH: when search results appear, use them as your primary
      source and give a direct answer — never say "I don't know" if the
@@ -235,8 +248,8 @@ HARD RULES (never break):
      Never refuse with "I can't identify people" — these are public figures
      with public information available.
 
-STYLE: warm, concise, teacher-y. 1-2 sentences per step. No markdown bullets
-unless genuinely listing options."""
+STYLE: warm, clear and complete. Use enough sentences to explain the reasoning
+and finish the requested task. Numbered steps are welcome when they help."""
 
 
 # Technical rules Clicky needs to actually draw on screen and point at
@@ -250,41 +263,29 @@ COORDINATE SYSTEM (applies to every tag below): coordinates are NORMALIZED
 edge; y=0 is the TOP, y=1000 the BOTTOM. The exact centre of the screen is
 500,500. Sizes/radii use the same scale (100 = 10% of screen width).
 
-POINTING: when you need to point at something, emit EXACTLY ONE tag
+POINTING: before each passage about a visible target, emit a tag
 [POINT:x,y:label:screenN] using normalized coordinates and a 1-3 word label,
-where N is the exact screen number in the current SCREEN MAP. Never invent a
+You may point repeatedly within one answer: put each tag immediately BEFORE
+the explanation of that target. For a matrix calculation, guide attention from
+the input row to each column as you explain its dot product. Each tag moves
+the floating Clicky pointer; it does not write anything in the notebook.
+N is the exact screen number in the current SCREEN MAP. Never invent a
 screen number or substitute screen1 when another screen is active. Use any
 DETECTED ELEMENT coordinate provided above verbatim if given.
+The tag is an executable visual-pointer instruction, not optional decoration.
+When saying "here", "up here", "click this", or directing the user to a
+visible control, include the POINT tag for that control in the same reply.
+Do not claim you pointed unless you emitted the tag. If the target cannot
+be identified in the current screenshot, say so instead of inventing a target.
 
-DRAWING TAGS (coords normalized 0-1000, trailing :color always optional):
-  [LINE:x1,y1->x2,y2:color]         straight line
-  [ARROW:x1,y1->x2,y2:color]        line with arrowhead (points at x2,y2)
-  [CIRCLE:x,y,r:label:color]        ring; label optional
-  [RECT:x1,y1,x2,y2:color]          rectangle by opposite corners
-  [POLY:x1,y1 x2,y2 x3,y3:color]    closed shape, 3+ points (triangles!)
-  [TEXT:x,y:content:color:size]     text; size s|m|l (default m)
-  [ANGLE:x,y,s,rot:color]           right-angle marker at corner (x,y)
-  [CLEAR]                           wipe all drawings
-Colors: blue red green yellow orange purple white cyan (default blue).
-For real UI elements use anchors instead of guessing coordinates:
-  [CIRCLE:@Save button]  [UNDERLINE:@File menu]  — resolved pixel-perfectly.
-
-TEACHING WITH DRAWINGS: when explaining something visible on screen (a
-figure, chart, diagram, equation, code), draw ON it — trace edges, label
-parts, add helper lines — interleaving tags with your spoken words in the
-order a teacher draws on a whiteboard. Place TEXT next to what it names,
-never covering it. Use up to ~10 shapes for a full lesson, 1-2 for a quick
-highlight.
-
-ACCURACY DISCIPLINE: if DETECTED FIGURES are listed above, copy those
-vertex numbers into your tags EXACTLY. Only estimate coordinates for things
-not listed. When estimating: fix the figure's bounding box first, derive
-every endpoint from it, and reuse IDENTICAL numbers for shared vertices.
-
-NARRATION SYNC: Clicky speaks your response sentence by sentence and draws
-each sentence's tags WHILE saying that sentence — put every tag immediately
-after the words that describe it, spread across the lesson (1-2 tags per
-sentence), never dump all tags at the start or end."""
+ANNOTATION DESTINATION: The floating Clicky pointer is only for guidance.
+Written numbers, circles, boxes and other annotations must be actual edits
+inside the user's application, with its normal undo and save behavior.
+Screen-overlay drawing is disabled in this tutor interaction. Do not emit
+LINE, CIRCLE, RECT, TEXT, or other drawing tags. Never claim an annotation
+was added or saved without an executed and verified application edit.
+This response stream currently provides pointing, not notebook-edit tools;
+explain that limit honestly when asked to write in the notebook."""
 
 
 @dataclass
@@ -451,6 +452,16 @@ class Config:
     openai_tts_voice_id: str = field(
         default_factory=lambda: _preference("openai_tts_voice_id", "alloy")
     )
+    openrouter_tts_voice_id: str = field(
+        default_factory=lambda: _preference("openrouter_tts_voice_id", "en-US-Harper:MAI-Voice-2")
+    )
+    openrouter_voice_video_enabled: bool = field(
+        default_factory=lambda: bool(_preference("openrouter_voice_video_enabled", False))
+    )
+    wake_word_enabled: bool = field(
+        default_factory=lambda: bool(_preference("wake_word_enabled", False))
+    )
+
     elevenlabs_voice_id: str = field(
         default_factory=lambda: _preference(
             "elevenlabs_voice_id",
@@ -568,24 +579,18 @@ class Config:
     )
 
     def llm_provider(self) -> str:
-        """Returns the active LLM provider (runtime override > priority chain).
-
-        Priority chain: Claude > OpenAI > GitHub Copilot > Gemini > Ollama.
-        """
-        if self.active_llm in self.available_llm_providers():
+        """Honor explicit selection, then prefer a configured response provider."""
+        available = self.available_llm_providers()
+        if self.active_llm in available:
             return self.active_llm
-        if self.anthropic_api_key:
-            return "claude"
-        if self.openai_api_key:
-            return "openai"
-        try:
-            from ai.github_copilot_provider import is_authenticated as _gh_ok
-            if _gh_ok():
-                return "copilot"
-        except Exception:
-            pass
-        if self.google_api_key:
-            return "gemini"
+        # Preserve the established order, then include the other API providers.
+        # Coding CLIs still require an explicit selection; presence is not intent.
+        for provider in (
+            "claude", "openai", "copilot", "gemini", "kimi_code",
+            "minimax_plan", "deepseek", "qwen", "openrouter",
+        ):
+            if provider in available:
+                return provider
         return "ollama"
 
     def available_llm_providers(self) -> list[str]:
@@ -623,6 +628,12 @@ class Config:
         out.append("ollama")     # always available if the daemon is running
         out.append("lmstudio")   # always available if the local server is running
         return out
+
+    def set_wake_word_enabled(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise ValueError("Wake-word selection must be a boolean.")
+        _save_preferences(wake_word_enabled=enabled)
+        self.wake_word_enabled = enabled
 
     def set_active_llm(self, name: str) -> None:
         """Switch providers and persist only the provider name."""
@@ -706,6 +717,7 @@ class Config:
             "deepgram",
             "deepgram_batch",
             "openai",
+            "openrouter",
             "whisper_cpp",
             "faster_whisper",
         ):
@@ -714,6 +726,16 @@ class Config:
             return "deepgram"
         if self.has_openai_speech_credentials():
             return "openai"
+        if (
+            not forced
+            and self.openrouter_api_key
+            and self.llm_provider() == "openrouter"
+            and self.selected_model("openrouter") in (
+                "meta/muse-spark-1.2-contributor",
+                "meta/muse-spark-1.3-contributor",
+            )
+        ):
+            return "openrouter"
         # Prefer whisper.cpp (GPU-accelerated, same engine as Handy) when the
         # pywhispercpp package is installed; otherwise fall back to faster-whisper.
         try:
@@ -729,6 +751,8 @@ class Config:
             providers.extend(("deepgram", "deepgram_batch"))
         if self.has_openai_speech_credentials():
             providers.append("openai")
+        if self.openrouter_api_key:
+            providers.append("openrouter")
         providers.extend(("whisper_cpp", "faster_whisper"))
         return providers
 
@@ -788,6 +812,8 @@ class Config:
         return approved
 
     def tts_provider(self) -> str:
+        if self.llm_provider() == "openrouter" and self.openrouter_api_key:
+            return "openrouter"
         if self.elevenlabs_api_key:
             return "elevenlabs"
         if self.has_openai_speech_credentials():
@@ -801,6 +827,7 @@ class Config:
         preference_names = {
             "edge_tts": "edge_tts_voice_id",
             "openai": "openai_tts_voice_id",
+            "openrouter": "openrouter_tts_voice_id",
             "elevenlabs": "elevenlabs_voice_id",
         }
         try:
@@ -815,6 +842,7 @@ class Config:
         preference_names = {
             "edge_tts": "edge_tts_voice_id",
             "openai": "openai_tts_voice_id",
+            "openrouter": "openrouter_tts_voice_id",
             "elevenlabs": "elevenlabs_voice_id",
         }
         try:
@@ -842,7 +870,7 @@ class Config:
                 "live"
                 if self.stt_provider() == "deepgram"
                 else "cloud batch"
-                if self.stt_provider() in ("deepgram_batch", "openai")
+                if self.stt_provider() in ("deepgram_batch", "openai", "openrouter")
                 else "local batch"
             ),
             "stt_fallback": fallback_label(self.stt_fallback_provider()),

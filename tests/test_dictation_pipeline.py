@@ -208,6 +208,7 @@ class DictationPipelineIntegrationTests(unittest.TestCase):
                 ACTION_PERMISSION_SCHEMA_VERSION
             ),
             global_dictation_permission=True,
+            whisper_model_sha256="a" * 64,
         )
         self.stt_provider_patch = mock.patch.object(
             manager_module.cfg,
@@ -237,6 +238,7 @@ class DictationPipelineIntegrationTests(unittest.TestCase):
             dictation_insertion_backend=self.backend,
         )
         self.manager._stt = _STT()
+        self.manager._stt_identity = (manager_module.cfg.stt_provider(),)
         deadline = time.monotonic() + 2
         while self.manager._loop is None and time.monotonic() < deadline:
             time.sleep(0.01)

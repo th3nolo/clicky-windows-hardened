@@ -86,7 +86,11 @@ def name_for(code: str) -> str:
 def language_directive(code: str) -> str:
     """Add to system prompt so the LLM matches the user's language."""
     if code == "en":
-        return ""
+        return (
+            "\n\nREPLY LANGUAGE: Respond in English. Do not switch languages "
+            "because of text on the screen or an earlier assistant reply. "
+            "Follow an explicit request from the user to use another language."
+        )
     name = name_for(code)
     return (
         f"\n\nLANGUAGE (MANDATORY — never ignore this rule): "

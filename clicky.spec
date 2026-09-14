@@ -147,6 +147,7 @@ hidden = [
     "audio.stt.deepgram_stt",
     "audio.stt.deepgram_streaming",
     "audio.stt.openai_stt",
+    "audio.stt.openrouter_stt",
     "audio.stt.faster_whisper_stt",
     "audio.stt.whisper_cpp_stt",
 
@@ -156,6 +157,7 @@ hidden = [
     "audio.tts.voice_preview",
     "audio.tts.edge_tts_provider",
     "audio.tts.openai_tts_provider",
+    "audio.tts.openrouter_provider",
     "audio.tts.elevenlabs_provider",
 
 ]

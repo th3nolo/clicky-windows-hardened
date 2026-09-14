@@ -173,7 +173,7 @@ class PrivacyWiringTests(unittest.TestCase):
     def test_dialog_collects_cloud_stt_separately_from_microphone(self) -> None:
         source = (ROOT / "ui" / "privacy_consent.py").read_text(encoding="utf-8")
         self.assertIn('QCheckBox("Allow microphone access")', source)
-        self.assertIn('QCheckBox("Allow cloud speech-to-text")', source)
+        self.assertIn('self.cloud_stt = QCheckBox(', source)
         self.assertIn("cloud_stt=cloud_stt", source)
         self.assertIn("self.cloud_stt.isChecked()", source)
         self.assertIn(

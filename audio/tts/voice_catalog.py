@@ -11,10 +11,12 @@ from dataclasses import dataclass
 
 EDGE_TTS_PROVIDER = "edge_tts"
 OPENAI_TTS_PROVIDER = "openai"
+OPENROUTER_TTS_PROVIDER = "openrouter"
 ELEVENLABS_TTS_PROVIDER = "elevenlabs"
 TTS_PROVIDERS = (
     EDGE_TTS_PROVIDER,
     OPENAI_TTS_PROVIDER,
+    OPENROUTER_TTS_PROVIDER,
     ELEVENLABS_TTS_PROVIDER,
 )
 
@@ -32,11 +34,13 @@ class ReviewedVoice:
 _DESTINATIONS = {
     EDGE_TTS_PROVIDER: "speech.platform.bing.com",
     OPENAI_TTS_PROVIDER: "api.openai.com",
+    OPENROUTER_TTS_PROVIDER: "openrouter.ai",
     ELEVENLABS_TTS_PROVIDER: "api.elevenlabs.io",
 }
 _PROVIDER_LABELS = {
     EDGE_TTS_PROVIDER: "Microsoft Edge TTS",
     OPENAI_TTS_PROVIDER: "OpenAI TTS",
+    OPENROUTER_TTS_PROVIDER: "OpenRouter TTS (MAI Voice 2)",
     ELEVENLABS_TTS_PROVIDER: "ElevenLabs",
 }
 
@@ -106,14 +110,24 @@ _ELEVENLABS_VOICES = (
     ),
 )
 
+# Verified against OpenRouter's speech catalog; model is fixed by the provider.
+_OPENROUTER_VOICES = (
+    _voice(OPENROUTER_TTS_PROVIDER, 'en-US-Harper:MAI-Voice-2', 'Harper - English (US)'),
+    _voice(OPENROUTER_TTS_PROVIDER, 'es-MX-Valeria:MAI-Voice-2', 'Valeria - Spanish'),
+    _voice(OPENROUTER_TTS_PROVIDER, 'fr-FR-Soleil:MAI-Voice-2', 'Soleil - French'),
+    _voice(OPENROUTER_TTS_PROVIDER, 'de-DE-Klaus:MAI-Voice-2', 'Klaus - German'),
+)
+
 _VOICES = {
     EDGE_TTS_PROVIDER: _EDGE_VOICES,
     OPENAI_TTS_PROVIDER: _OPENAI_VOICES,
+    OPENROUTER_TTS_PROVIDER: _OPENROUTER_VOICES,
     ELEVENLABS_TTS_PROVIDER: _ELEVENLABS_VOICES,
 }
 _DEFAULTS = {
     EDGE_TTS_PROVIDER: "en-US-AvaNeural",
     OPENAI_TTS_PROVIDER: "alloy",
+    OPENROUTER_TTS_PROVIDER: "en-US-Harper:MAI-Voice-2",
     ELEVENLABS_TTS_PROVIDER: "EXAVITQu4vr4xnSDxMaL",
 }
 
@@ -168,6 +182,7 @@ __all__ = [
     "EDGE_TTS_PROVIDER",
     "ELEVENLABS_TTS_PROVIDER",
     "OPENAI_TTS_PROVIDER",
+    "OPENROUTER_TTS_PROVIDER",
     "ReviewedVoice",
     "TTS_PROVIDERS",
     "default_voice_id",

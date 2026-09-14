@@ -35,6 +35,23 @@ def sample_clip():
 
 
 class ClipEncodingTests(unittest.TestCase):
+    def test_timeline_samples_span_sealed_recording_and_cancel_releases_buffers(self):
+        recorder = VoiceClipRecorder(lambda: True)
+        for second in range(40):
+            recorder._append(TimedFrame(float(second), b'jpeg'))
+        with self.assertRaises(RuntimeError):
+            recorder.timeline_frames()
+        recorder.stop_capture()
+        selected = recorder.timeline_frames()
+        self.assertEqual(len(selected), 8)
+        self.assertEqual(selected[0].seconds, 0)
+        self.assertEqual(selected[-1].seconds, 39)
+        self.assertEqual([frame.seconds for frame in selected], sorted(frame.seconds for frame in selected))
+        recorder.cancel()
+        self.assertEqual(recorder._frames, [])
+        with self.assertRaises(RuntimeError):
+            recorder.timeline_frames()
+
     def test_mp4_contains_video_and_audible_audio_at_original_offset(self):
         clip = encode_clip(*sample_clip(), lambda: False)
         raw = base64.b64decode(clip.data)
@@ -113,6 +130,49 @@ class VideoProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_video_fails_before_network(self):
         with self.assertRaises(ValueError):
             await anext(self.provider.stream_video_response("Explain", self.video, [], "Tutor", "unverified"))
+        self.create.assert_not_called()
+
+    async def test_original_tutor_multimodal_payload_keeps_history_audio_video_and_screen(self):
+        from audio.stt.openrouter_stt import _pcm16_to_mp3
+        audio = base64.b64encode(_pcm16_to_mp3(sample_clip()[1][0].pcm,16000)).decode("ascii")
+        response = self.provider.stream_multimodal_response(
+            "The transcript", ["current-screenshot"], self.video, audio,
+            [SimpleNamespace(role="assistant",content="Previous explanation")],
+            "Original Tutor system and walkthrough contract", MODEL,
+        )
+        self.assertEqual([chunk async for chunk in response],["A hint"])
+        request = self.create.call_args.kwargs
+        self.assertEqual(request["model"],MODEL)
+        self.assertEqual(request["messages"][1]["content"],"Previous explanation")
+        self.assertEqual(request["messages"][0]["content"],"Original Tutor system and walkthrough contract")
+        parts = request["messages"][-1]["content"]
+        self.assertEqual([part["type"] for part in parts],["image_url","text","video_url","input_audio"])
+        self.assertEqual(parts[-1]["input_audio"],{"data":audio,"format":"mp3"})
+        self.assertEqual(parts[-2]["video_url"]["url"],self.video.data_url)
+        self.assertFalse(request["extra_body"]["provider"]["allow_fallbacks"])
+
+    async def test_original_tutor_audio_video_rejects_12_as_answer_model(self):
+        with self.assertRaises(ValueError):
+            await anext(self.provider.stream_multimodal_response("question", [], self.video,
+                base64.b64encode(b"mp3").decode(), [], "Tutor", "meta/muse-spark-1.2-contributor"))
+        self.create.assert_not_called()
+
+    async def test_timeline_frames_are_timestamped_without_replacing_video(self):
+        frames = [(0.0, 'earlier-jpeg'), (35.0, 'later-jpeg')]
+        result = self.provider.stream_multimodal_response('recap', ['current-screen'], self.video,
+            base64.b64encode(b'mp3').decode(), [], 'Tutor', MODEL, timeline_frames=frames)
+        self.assertEqual([chunk async for chunk in result], ['A hint'])
+        parts = self.create.call_args.kwargs['messages'][-1]['content']
+        self.assertEqual(sum(p['type']=='video_url' for p in parts), 1)
+        self.assertIn('0.00s', parts[4]['text'])
+        self.assertIn('35.00s', parts[6]['text'])
+        self.assertIn('not a current screen', parts[4]['text'])
+
+    async def test_oversized_timeline_is_rejected_before_request(self):
+        with self.assertRaises(ValueError):
+            await anext(self.provider.stream_multimodal_response('q', [], self.video,
+                base64.b64encode(b'mp3').decode(), [], 'Tutor', MODEL,
+                timeline_frames=[(0.0,'frame')]*9))
         self.create.assert_not_called()
 
     async def test_worker_routes_video_and_reports_capabilities(self):

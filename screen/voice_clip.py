@@ -146,9 +146,8 @@ class VoiceClipRecorder:
             self._audio.clear()
 
     def finish(self) -> VideoInput:
-        self._stop.set()
-        self._thread.join(timeout=3)
         try:
+            self.stop_capture()
             if self._thread.is_alive() or self._cancelled.is_set():
                 raise RuntimeError("Recording could not be finalized")
             if self._error:
@@ -163,6 +162,37 @@ class VoiceClipRecorder:
             return result
         finally:
             self.cancel()
+
+    def stop_capture(self) -> None:
+        """Seal capture at hotkey release without discarding media during STT."""
+        self._stop.set()
+        if self._thread.ident is not None:
+            self._thread.join(timeout=3)
+        if self._thread.is_alive() or self._cancelled.is_set():
+            raise RuntimeError("Recording could not be stopped")
+
+    def transcription_pcm(self) -> bytes:
+        """Return the audio owned by this sealed clip for audio-only STT."""
+        if not self._stop.is_set() or self._cancelled.is_set():
+            raise RuntimeError("Recording must be sealed before transcription")
+        with self._lock:
+            return b"".join(chunk.pcm for chunk in self._audio)
+
+    def timeline_frames(self) -> list[TimedFrame]:
+        """Bounded temporal context, including the beginning and end of a clip."""
+        with self._lock:
+            if not self._stop.is_set() or self._cancelled.is_set():
+                raise RuntimeError("Recording must be sealed before reading its timeline")
+            count = min(8, len(self._frames))
+            if count < 2:
+                return self._frames[:count]
+            return [self._frames[round(i * (len(self._frames) - 1) / (count - 1))]
+                    for i in range(count)]
+
+    def require_sharing_allowed(self) -> None:
+        """Recheck the captured provider/credential/permission identity at upload."""
+        if not self._allowed():
+            raise PermissionError("Recording permissions or provider changed")
 
     def _capture(self) -> None:
         import mss

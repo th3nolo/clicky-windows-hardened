@@ -119,9 +119,15 @@ class CompanionBargeInTests(unittest.TestCase):
         self.mic_patch = mock.patch.object(
             manager_module, "microphone_allowed", return_value=True
         )
+        # These lifecycle tests supply fake STT; model provisioning has its
+        # own real preflight regression tests.
+        self.stt_setup_patch = mock.patch.object(
+            manager_module, "local_stt_setup_issue", return_value=""
+        )
         self.listener_patch.start()
         self.skills_patch.start()
         self.mic_patch.start()
+        self.stt_setup_patch.start()
         self.manager = CompanionManager()
         deadline = time.monotonic() + 2
         while self.manager._loop is None and time.monotonic() < deadline:
@@ -132,6 +138,7 @@ class CompanionBargeInTests(unittest.TestCase):
         self.manager.shutdown()
         self.manager._thread.join(timeout=2)
         self.mic_patch.stop()
+        self.stt_setup_patch.stop()
         self.skills_patch.stop()
         self.listener_patch.stop()
 

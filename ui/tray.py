@@ -79,6 +79,7 @@ class TrayManager(QObject):
     on_screen_voice = pyqtSignal()
     on_clipboard_input = pyqtSignal()
     on_diagnostics        = pyqtSignal()
+    on_debug_screenshots_toggled = pyqtSignal(bool)
     on_set_mic_device     = pyqtSignal(int)     # sounddevice input device index
     on_test_microphone    = pyqtSignal()
     on_manage_tts_voice   = pyqtSignal()
@@ -115,7 +116,7 @@ class TrayManager(QObject):
             f"Clicky - AI Companion\nHold {cfg.hotkey} to speak"
         )
         self._search_enabled = bool(cfg.web_search_enabled)
-        self._wake_enabled = True
+        self._wake_enabled = cfg.wake_word_enabled
         self._response_language = ""
         try:
             from config import cfg as _cfg
@@ -403,6 +404,14 @@ class TrayManager(QObject):
         run_setup.triggered.connect(self.on_run_setup)
         diag = setup_menu.addAction("Save diagnostics report…")
         diag.triggered.connect(self.on_diagnostics)
+        self._debug_screenshots_action = setup_menu.addAction(
+            "Allow screenshots of Clicky (debug)"
+        )
+        self._debug_screenshots_action.setCheckable(True)
+        self._debug_screenshots_action.setChecked(False)
+        self._debug_screenshots_action.toggled.connect(
+            self.on_debug_screenshots_toggled
+        )
 
         menu.addSeparator()
 
@@ -412,6 +421,14 @@ class TrayManager(QObject):
         self._tray.setContextMenu(menu)
         # Keep refs to prevent GC
         self._menu = menu
+
+    def set_debug_screenshots_checked(self, enabled: bool):
+        action = self._debug_screenshots_action
+        previous = action.blockSignals(True)
+        try:
+            action.setChecked(enabled)
+        finally:
+            action.blockSignals(previous)
 
     def hide_icon(self):
         """Remove the tray icon from the notification area. MUST run before
@@ -600,12 +617,11 @@ class TrayManager(QObject):
 
     def _build_stt_submenu(self, parent_menu: QMenu, providers: dict):
         """Expose whether microphone audio is live, cloud-batch, or local."""
+        from audio.stt.readiness import STT_PROVIDER_DETAILS
+
         labels = {
-            "deepgram": "Deepgram Nova-2 — live streaming",
-            "deepgram_batch": "Deepgram Nova-2 — cloud batch",
-            "openai": "OpenAI Whisper — cloud batch",
-            "whisper_cpp": "whisper.cpp — local batch",
-            "faster_whisper": "faster-whisper — local batch",
+            name: f"{label} — {mode}"
+            for name, (label, mode, _destination) in STT_PROVIDER_DETAILS.items()
         }
         active = providers.get("stt", "")
         mode = providers.get("stt_mode", "")
@@ -628,6 +644,14 @@ class TrayManager(QObject):
                 action.setToolTip("Set DEEPGRAM_API_KEY to enable this mode.")
             elif name not in available and name == "openai":
                 action.setToolTip("Set OPENAI_API_KEY to enable this mode.")
+            elif name == "openrouter":
+                action.setToolTip(
+                    "Set OPENROUTER_API_KEY to enable this mode."
+                    if name not in available else
+                    "Uses meta/muse-spark-1.2-contributor for transcription. "
+                    "Contributor inputs may be used for training. Microphone "
+                    "and cloud speech permissions are required."
+                )
             action.triggered.connect(
                 lambda checked, selected=name: (
                     self.on_set_stt_provider.emit(selected) if checked else None

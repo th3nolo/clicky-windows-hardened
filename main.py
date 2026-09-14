@@ -144,6 +144,8 @@ def _switch_response_provider(manager, panel, tray, name: str) -> bool:
 
 def main():
     _setup_logging()
+    import logging
+    runtime_log = logging.getLogger("clicky.input")
     validate_action_capability_startup(cfg)
     enable_per_monitor_v2()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -177,6 +179,22 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    def _toggle_debug_screenshots(enabled: bool) -> None:
+        from screen.capture_exclusion import (
+            debug_screenshots_enabled, set_debug_screenshots_enabled,
+        )
+        try:
+            set_debug_screenshots_enabled(enabled)
+        except Exception:
+            tray.set_debug_screenshots_checked(debug_screenshots_enabled())
+            tray.show_notification("Debug screenshots unavailable",
+                "Windows could not change screenshot visibility for every Clicky window.")
+            return
+        runtime_log.info("debug screenshots enabled=%s", enabled)
+        tray.show_notification("Clicky debug screenshots",
+            "External screenshots can include Clicky for this session. Clicky's own screen captures still hide its windows."
+            if enabled else "Clicky windows are excluded from external screenshots again.")
+    tray.on_debug_screenshots_toggled.connect(_toggle_debug_screenshots)
     from ui.walkthrough import WalkthroughPanel
 
     walkthrough_panel = WalkthroughPanel()
@@ -640,6 +658,7 @@ def main():
     )
 
     # Errors
+    manager.sig_error.connect(panel.show_error)
     manager.sig_error.connect(
         lambda e: tray.show_notification("Clicky error", str(e))
     )
@@ -1327,9 +1346,18 @@ def main():
         manager.refresh_ollama_models()
 
     # Setup wizard (re-run) + diagnostics
+    def _show_provider_selection():
+        panel.show()
+        panel.raise_()
+        tray.show_notification(
+            "Choose your answer provider",
+            "Use the tray Model menu for the provider, then the panel Model dropdown. "
+            "Speech input readiness is in Setup & Diagnostics.",
+        )
+
     def _run_setup_again():
         from ui.setup_wizard import SetupWizard
-        wiz = SetupWizard()
+        wiz = SetupWizard(on_choose_provider=_show_provider_selection)
         wiz.show()
         _setup_keepalive[0] = wiz
     tray.on_run_setup.connect(_run_setup_again)
@@ -1428,13 +1456,13 @@ def main():
     # ── Global hotkey ─────────────────────────────────────────────────────────
     def _on_hotkey_press():
         from ui.onboarding_demo import route_demo_hotkey_press
-
+        runtime_log.info("push-to-talk pressed")
         if not route_demo_hotkey_press():
             manager.on_hotkey_press()
 
     def _on_hotkey_release():
         from ui.onboarding_demo import route_demo_hotkey_release
-
+        runtime_log.info("push-to-talk released")
         if not route_demo_hotkey_release():
             manager.on_hotkey_release()
 
@@ -1443,6 +1471,7 @@ def main():
         on_release=_on_hotkey_release,
     )
     hotkey.start()
+    runtime_log.info("push-to-talk hook registered")
 
     dictation_hotkey = None
     dictation_indicator = None
@@ -1533,11 +1562,11 @@ def main():
 
         # Force-show via env var (handy for testing).
         if os.environ.get("CLICKY_FORCE_SETUP", "").strip() in ("1", "true", "yes"):
-            wiz = SetupWizard()
+            wiz = SetupWizard(on_choose_provider=_show_provider_selection)
             wiz.show()
             _setup_keepalive[0] = wiz
         else:
-            wiz = maybe_show_setup_wizard()
+            wiz = maybe_show_setup_wizard(on_choose_provider=_show_provider_selection)
             if wiz is not None:
                 _setup_keepalive[0] = wiz   # keep a reference so it isn't GC'd
     except Exception as e:

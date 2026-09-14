@@ -98,7 +98,7 @@ class AmbientListener:
         self._wake_inflight = False
 
         # Enable/disable toggle
-        self._wake_word_enabled = True
+        self._wake_word_enabled = cfg.wake_word_enabled
 
     # ── Public API ────────────────────────────────────────────────────────────
 

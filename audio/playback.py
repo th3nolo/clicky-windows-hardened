@@ -19,6 +19,9 @@ import av
 
 # Single global flag — flipping this stops every active playback in this process
 _stop_event = threading.Event()
+MAX_COMPRESSED_AUDIO_BYTES = 8 * 1024 * 1024
+MAX_DECODED_SAMPLES = 8 * 1024 * 1024
+MAX_AUDIO_SECONDS = 180
 
 
 def stop_audio() -> None:
@@ -37,22 +40,27 @@ def _arm_audio() -> None:
 
 def decode_mp3_to_pcm(mp3_bytes: bytes) -> tuple[np.ndarray, int]:
     """Decode MP3 (or any container PyAV supports) to float32 mono PCM."""
-    container = av.open(io.BytesIO(mp3_bytes))
-    stream = container.streams.audio[0]
-    sample_rate = stream.rate
-
+    if not isinstance(mp3_bytes, bytes) or len(mp3_bytes) > MAX_COMPRESSED_AUDIO_BYTES:
+        raise ValueError("Speech audio exceeded its encoded size limit.")
     chunks = []
-    resampler = av.audio.resampler.AudioResampler(
-        format="flt", layout="mono", rate=sample_rate
-    )
-
-    for frame in container.decode(stream):
-        resampled = resampler.resample(frame)
-        for rf in resampled:
-            arr = rf.to_ndarray().flatten()
-            chunks.append(arr)
-
-    container.close()
+    with av.open(io.BytesIO(mp3_bytes)) as container:
+        stream = container.streams.audio[0]
+        sample_rate = stream.rate
+        if not isinstance(sample_rate, int) or not 8000 <= sample_rate <= 192000:
+            raise ValueError("Speech audio has an unsupported sample rate.")
+        if not 1 <= stream.codec_context.channels <= 8:
+            raise ValueError("Speech audio has an unsupported channel count.")
+        limit = min(MAX_DECODED_SAMPLES, sample_rate * MAX_AUDIO_SECONDS)
+        count = 0
+        resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=sample_rate)
+        for frame in container.decode(stream):
+            if frame.samples > limit - count:
+                raise ValueError("Speech audio exceeded its playback duration limit.")
+            for rf in resampler.resample(frame):
+                count += rf.samples
+                if count > limit:
+                    raise ValueError("Speech audio exceeded its playback duration limit.")
+                chunks.append(rf.to_ndarray().flatten())
 
     if not chunks:
         return np.zeros(0, dtype=np.float32), sample_rate
@@ -65,7 +73,7 @@ def _blocking_play_chunked(pcm: np.ndarray, sr: int) -> None:
     """Play PCM through an OutputStream, polling _stop_event between blocks
     so cancellation takes effect within ~50 ms instead of 'when the buffer
     runs out'."""
-    if pcm.size == 0:
+    if pcm.size == 0 or _stop_event.is_set():
         return
 
     block = max(1, int(sr * 0.05))    # 50 ms blocks
@@ -83,6 +91,8 @@ def _blocking_play_chunked(pcm: np.ndarray, sr: int) -> None:
     except Exception:
         # Fallback: play everything in one shot. Less responsive to stop, but
         # never silently fails on weird devices.
+        if _stop_event.is_set():
+            return
         try:
             sd.play(pcm.flatten(), samplerate=sr)
             # Poll the stop event during wait
@@ -92,7 +102,9 @@ def _blocking_play_chunked(pcm: np.ndarray, sr: int) -> None:
                     return
                 sd.sleep(50)
         except Exception:
-            pass
+            if _stop_event.is_set():
+                return
+            raise RuntimeError("Audio playback failed on the selected Windows output device.") from None
 
 
 async def play_mp3_async(mp3_bytes: bytes) -> None:

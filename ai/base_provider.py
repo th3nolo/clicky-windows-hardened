@@ -22,6 +22,14 @@ class BaseLLMProvider(ABC):
     ) -> AsyncGenerator[str, None]:
         raise ValueError("The selected provider does not support video input")
 
+    def stream_multimodal_response(
+        self, user_text: str, screenshots_b64: List[str], video: VideoInput,
+        audio_b64: str, history: List[Message], system_prompt: str,
+        model: str | None = None,
+        timeline_frames: list[tuple[float, str]] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        raise ValueError("The selected provider does not support combined Tutor audio/video input")
+
     @abstractmethod
     def stream_response(
         self,

@@ -10,6 +10,7 @@ from audio.stt.local_models import (
     LocalModelUnavailable,
     resolve_faster_whisper_model,
     resolve_whisper_cpp_model,
+    validate_sha256,
 )
 from privacy_controls import (
     cloud_stt_allowed,
@@ -43,6 +44,11 @@ STT_PROVIDER_DETAILS = {
         "cloud batch",
         "https://api.openai.com/v1/audio/transcriptions",
     ),
+    "openrouter": (
+        "OpenRouter Muse Spark 1.2",
+        "cloud batch",
+        "https://openrouter.ai/api/v1/chat/completions",
+    ),
     "whisper_cpp": (
         "whisper.cpp",
         "local batch",
@@ -68,11 +74,39 @@ def fallback_label(provider: str) -> str:
     return f"{provider_label(provider)} — local batch only"
 
 
+def local_stt_setup_issue(config, provider: str) -> str:
+    """Check cheap local prerequisites before capture, without hashing a model.
+
+    An empty result only permits capture; the provider must still resolve and
+    verify the complete model when loading it. Full readiness stays an explicit
+    diagnostic so large model files are not hashed on each hotkey press.
+    """
+    if provider not in LOCAL_FALLBACK_PROVIDERS:
+        return ""
+    package, digest_attribute, digest_variable = (
+        ("pywhispercpp", "whispercpp_model_sha256", "WHISPERCPP_MODEL_SHA256")
+        if provider == "whisper_cpp" else
+        ("faster_whisper", "whisper_model_sha256", "WHISPER_MODEL_SHA256")
+    )
+    try:
+        if importlib.util.find_spec(package) is None:
+            return f"The {provider_label(provider)} speech package is unavailable."
+        validate_sha256(getattr(config, digest_attribute, ""), digest_variable)
+    except LocalModelUnavailable as exc:
+        return f"{provider_label(provider)} needs a verified local speech model. {exc}"
+    except (ImportError, ValueError, OSError):
+        return f"The {provider_label(provider)} speech package is unavailable."
+    return ""
+
+
 def _cloud_readiness(config, provider: str) -> STTReadiness:
     label, mode, destination = STT_PROVIDER_DETAILS[provider]
     key_error = "DEEPGRAM_API_KEY is absent from this process."
     if provider.startswith("deepgram"):
         key_present = bool(config.deepgram_api_key)
+    elif provider == "openrouter":
+        key_present = bool(getattr(config, "openrouter_api_key", None))
+        key_error = "OPENROUTER_API_KEY is absent from this process."
     else:
         try:
             openai_speech_api_key(
@@ -99,6 +133,14 @@ def _cloud_readiness(config, provider: str) -> STTReadiness:
             "readiness check."
         )
         ready = True
+    if provider == "openrouter":
+        detail += (
+            " Model: meta/muse-spark-1.2-contributor. Audio is sent to OpenRouter "
+            "and its selected model provider; the contributor model may use "
+            "inputs for training. Private routing remains enforced when enabled "
+            "and can make this model unavailable. The configured policy is not "
+            "relaxed automatically."
+        )
     return STTReadiness(
         provider,
         label,

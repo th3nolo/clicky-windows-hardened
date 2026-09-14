@@ -18,6 +18,10 @@ def create_tts_provider(provider: str, voice_id: str) -> BaseTTS:
         from audio.tts.openai_tts_provider import OpenAITTSProvider
 
         return OpenAITTSProvider(voice=voice.voice_id)
+    if provider == "openrouter":
+        from audio.tts.openrouter_provider import OpenRouterTTSProvider
+
+        return OpenRouterTTSProvider(voice=voice.voice_id)
     if provider == "edge_tts":
         from audio.tts.edge_tts_provider import EdgeTTSProvider
 

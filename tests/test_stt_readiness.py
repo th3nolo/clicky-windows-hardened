@@ -33,6 +33,7 @@ def ready_config(**updates):
     values = {
         "deepgram_api_key": "process-only",
         "openai_api_key": "process-only",
+        "openrouter_api_key": "process-only",
         "privacy_consent_version": PRIVACY_NOTICE_VERSION,
         "microphone_consent": True,
         "cloud_stt_consent": True,
@@ -61,7 +62,7 @@ class ReadinessProbeTests(unittest.TestCase):
         ):
             rows = readiness.collect_stt_readiness(ready_config())
 
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertTrue(all(row.ready for row in rows))
         destinations = {row.provider: row.destination for row in rows}
         self.assertEqual(
@@ -200,7 +201,7 @@ class _FallbackHarness:
         self._fallback = fallback
         self.sig_error = _Signal()
 
-    def _get_stt(self):
+    def _get_stt(self, provider=None):
         return self._primary
 
     def _get_fallback_stt(self):

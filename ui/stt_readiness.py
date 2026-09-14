@@ -166,7 +166,8 @@ class SpeechReadinessDialog(QDialog):
         blocks = []
         for row in rows:
             color = "#45d483" if row.ready else "#ffb454"
-            status = "READY" if row.ready else "NEEDS SETUP"
+            status = ("MODEL VERIFIED" if row.provider in LOCAL_FALLBACK_PROVIDERS
+                      else "CONFIGURED — connection not tested") if row.ready else "NEEDS SETUP"
             blocks.append(
                 "<div style='margin-bottom:14px'>"
                 f"<b>{html.escape(row.label)}</b> "
