@@ -341,31 +341,53 @@ class TaskRegionHandoffController(QObject):
             ) from exc
 
     def cancel(self, run_id: str) -> bool:
-        """Cancel one exact active task and suppress all late output."""
+        """Save cancellation and request cleanup; do not attest termination."""
 
+        return self._cancel(run_id, "user_cancelled", cancel_future=True)
+
+    def _cancel(
+        self, run_id: str, result_code: str, *, cancel_future: bool
+    ) -> bool:
         if not isinstance(run_id, str):
             return False
         with self._lock:
             active = self._active.pop(run_id, None)
-            if active is None or active.run.terminal:
+            if active is None:
                 return False
+            persisted = False
             try:
-                active.run.cancel()
-                self._store.sync_run(active.run)
-            except Exception:
-                return False
-            try:
-                self._actions.finish(run_id)
+                if not active.run.terminal:
+                    active.run.cancel(result_code)
+                    self._store.sync_run(active.run)
+                    persisted = True
             except Exception:
                 pass
+
+        # The removed identity blocks late output. Releasing its resources must
+        # not depend on saving the cancellation or on another cleanup succeeding.
+        cleanup_failed = False
+        try:
+            self._actions.finish(run_id)
+        except Exception:
+            cleanup_failed = True
+        try:
             active.context.wipe()
-            future = active.future
-        if future is not None:
+        except Exception:
+            cleanup_failed = True
+        future = active.future
+        if cancel_future and future is not None:
             try:
                 future.cancel()
             except Exception:
-                pass
-        _stop_worker(active.worker, cancel=True)
+                cleanup_failed = True
+        if not _stop_worker(active.worker, cancel=True):
+            cleanup_failed = True
+        if not persisted:
+            self.failed.emit(run_id, "region_task_cancel_state_not_saved")
+            return False
+        if cleanup_failed:
+            self.failed.emit(run_id, "region_task_cancel_cleanup_failed")
+            return False
         self.cancelled.emit(run_id)
         return True
 
@@ -440,20 +462,9 @@ class TaskRegionHandoffController(QObject):
         with self._lock:
             if self._active.get(run_id) is not active:
                 return
-            self._active.pop(run_id, None)
-            if not active.run.terminal:
-                try:
-                    active.run.cancel("task_execution_cancelled")
-                    self._store.sync_run(active.run)
-                except Exception:
-                    pass
-            try:
-                self._actions.finish(run_id)
-            except Exception:
-                pass
-            active.context.wipe()
-        _stop_worker(active.worker, cancel=True)
-        self.cancelled.emit(run_id)
+            self._cancel(
+                run_id, "task_execution_cancelled", cancel_future=False
+            )
 
     def _fail(self, active: _ActiveRegionTask, result_code: str) -> None:
         with self._lock:
@@ -507,10 +518,12 @@ def _failure_code(exc: BaseException) -> str:
     return "region_task_failed"
 
 
-def _stop_worker(worker: object, *, cancel: bool) -> None:
+def _stop_worker(worker: object, *, cancel: bool) -> bool:
+    """Report whether the cleanup call returned, not whether a worker exited."""
+
     method = getattr(worker, "cancel" if cancel else "shutdown", None)
     if not callable(method):
-        return
+        return False
     try:
         method()
     except Exception:
@@ -521,6 +534,8 @@ def _stop_worker(worker: object, *, cancel: bool) -> None:
                     fallback()
                 except Exception:
                     pass
+        return False
+    return True
 
 
 __all__ = [

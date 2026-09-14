@@ -66,3 +66,22 @@ source files, with explicit `Any` disallowed and no new type suppressions.
 Local checks use offscreen Qt on Linux. Native Windows capture, microphone
 hardware, packaged startup and actual provider endpoints require Windows/runtime
 validation; unit tests do not establish those outcomes.
+
+## Region cancellation ownership
+
+The region controller removes the exact active identity before cancellation,
+blocking late result publication. Saving the state, removing UI actions, wiping
+the reviewed pixels, requesting future cancellation and requesting worker
+cancellation have independent cleanup paths. A state-save or cleanup exception
+produces a failure signal and a false cancellation result; cleanup still runs.
+Executor cancellation uses the same path without cancelling its own future.
+Repeated cancellation has no remaining active identity to release.
+
+A true cancellation result means the state was saved and cleanup calls returned
+without an observed exception. It does not prove that a background future or
+native worker has terminated. Tests use temporary databases, fake workers and
+offscreen Qt, including a blocked synthetic provider iterator. They cover save,
+state-transition and individual cleanup failures and suppress late output. The
+earlier Linux verification paragraph records the original cleanup work; these
+Windows synthetic checks do not establish device, installed-package or live
+provider behavior.
