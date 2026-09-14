@@ -138,6 +138,18 @@ def build_monitor_descriptors(
     for native in native_monitors:
         qt = qt_by_name.get(_normalized_device_name(native.device_name))
         if qt is None:
+            # Some Windows Qt backends expose the monitor's product name
+            # instead of its GDI device name. An exact, unique rectangle
+            # establishes the correspondence without relying on list order.
+            candidates = [monitor for monitor in qt_monitors
+                          if monitor.logical == native.physical]
+            native_matches = [monitor for monitor in native_monitors
+                              if monitor.physical == native.physical]
+            if len(candidates) == 1 and len(native_matches) == 1:
+                candidate = candidates[0]
+                if not any(entry[1] is candidate for entry in joined):
+                    qt = candidate
+        if qt is None:
             raise MonitorTopologyError(
                 f"Qt did not expose identity for {native.device_name}"
             )
@@ -158,6 +170,8 @@ def build_monitor_descriptors(
 
     if len(joined) != len(capture_rectangles) or len(joined) != len(qt_monitors):
         raise MonitorTopologyError("monitor sources disagree on monitor count")
+    if len({id(entry[1]) for entry in joined}) != len(joined):
+        raise MonitorTopologyError("Qt monitor correspondence is not unique")
     if len({entry[3] for entry in joined}) != len(joined):
         raise MonitorTopologyError("monitor hardware identities are not unique")
 

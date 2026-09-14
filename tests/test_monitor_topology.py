@@ -71,6 +71,28 @@ def topology_fixture():
 
 
 class MonitorTopologyTests(unittest.TestCase):
+    def test_windows_product_name_matches_unique_exact_rectangle(self):
+        rect = Rect(0, 0, 2560, 1440)
+        monitors = build_monitor_descriptors(
+            capture_rectangles=[rect],
+            native_monitors=[NativeMonitor(1, r"\\.\DISPLAY1", rect, True)],
+            qt_monitors=[QtMonitor("MSI MAG 275QF", rect)],
+            focused_handle=1,
+        )
+        self.assertEqual(monitors[0].device_name, r"\\.\DISPLAY1")
+        self.assertEqual(monitors[0].physical_to_logical(100, 200), (100, 200))
+
+    def test_product_name_fallback_rejects_ambiguous_or_scaled_rectangles(self):
+        rect = Rect(0, 0, 2560, 1440)
+        for qt in ([QtMonitor("A", rect), QtMonitor("B", rect)],
+                   [QtMonitor("A", Rect(0, 0, 1280, 720))]):
+            with self.subTest(qt=qt), self.assertRaises(MonitorTopologyError):
+                build_monitor_descriptors(
+                    capture_rectangles=[rect],
+                    native_monitors=[NativeMonitor(1, r"\\.\DISPLAY1", rect, True)],
+                    qt_monitors=qt, focused_handle=1,
+                )
+
     def descriptors(self):
         capture, native, qt = topology_fixture()
         return build_monitor_descriptors(
