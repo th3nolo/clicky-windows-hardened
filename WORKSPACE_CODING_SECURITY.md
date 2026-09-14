@@ -409,6 +409,12 @@ available if isolated bytes or the original repository changed after review,
 because safely deleting the disposable copy must not require it to remain
 adoptable.
 
+The low-level predicates, directory protection and cleanup traversal live in
+`security/filesystem.py`. Adoption retains ancestor/root validation and owns
+rollback failures and `journal_cleanup_pending`; the shared functions do not
+grant access or suppress filesystem errors. Their public location does not
+replace the native Windows acceptance requirements below.
+
 ## Availability and release gates
 
 Source implementation must remain behind the existing default-off

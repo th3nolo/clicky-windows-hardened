@@ -45,6 +45,19 @@ continues to enforce the existing speech permission setting.
 
 ## Boundaries retained
 
+Task-model collection and its configured provider adapter each own their acquired
+iterator through `tasks/stream_lifecycle.py`. Cleanup is awaited when iteration
+finishes or fails, while iterators without a callable `aclose` remain supported.
+An existing validation, provider, or cancellation error wins over a cleanup
+error; cleanup-only failure prevents a successful broker result. This owns stream
+cleanup attempts, not provider-client disposal or a new cleanup timeout policy.
+
+`security/filesystem.py` owns the shared link/reparse predicates, directory
+protection and no-follow tree cleanup. Task workspaces, artifact adoption and
+workspace adoption use that public interface while retaining their separate
+root checks, authorization, rollback and error reporting. The extraction does
+not change native ACL behavior or establish new containment guarantees.
+
 Microphone diagnostics remain local and separate from transcription and capture.
 OAuth consent, scope validation, token storage, action approval, worker isolation,
 and authenticated receipts keep their existing responsibilities. The CI build,

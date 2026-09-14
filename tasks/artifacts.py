@@ -13,9 +13,11 @@ from pathlib import Path
 from tasks.coordinator import (
     TaskWorkspace,
     TaskWorkspaceError,
-    _is_link_or_reparse,
-    _protect_directory,
-    _remove_tree_without_following_links,
+)
+from security.filesystem import (
+    is_link_or_reparse,
+    protect_directory,
+    remove_tree_without_following_links,
 )
 from tasks.models import Artifact, TaskRun, ToolCall, ToolResult
 from tasks.verifiers import (
@@ -143,7 +145,7 @@ class ArtifactAdoptionManager:
         }
         workspace.verify()
         if root.exists() and (
-            _is_link_or_reparse(root) or not root.is_dir()
+            is_link_or_reparse(root) or not root.is_dir()
         ):
             raise ArtifactAdoptionError(
                 "Artifact storage directory is linked or invalid"
@@ -310,7 +312,7 @@ class ArtifactAdoptionManager:
             self._pending.clear()
             return
         try:
-            _remove_tree_without_following_links(directory)
+            remove_tree_without_following_links(directory)
         except OSError as exc:
             raise ArtifactAdoptionError(
                 "Could not discard incomplete task output"
@@ -328,7 +330,7 @@ class ArtifactAdoptionManager:
     ) -> bytes:
         if temporary:
             self._workspace.verify()
-        elif _is_link_or_reparse(path.parent):
+        elif is_link_or_reparse(path.parent):
             raise ArtifactAdoptionError(
                 "Adopted artifact directory identity changed"
             )
@@ -373,11 +375,11 @@ def read_adopted_artifact(
     if (
         not root.exists()
         or not root.is_dir()
-        or _is_link_or_reparse(root)
+        or is_link_or_reparse(root)
         or not run_directory.exists()
         or not run_directory.is_dir()
-        or _is_link_or_reparse(run_directory)
-        or _is_link_or_reparse(path)
+        or is_link_or_reparse(run_directory)
+        or is_link_or_reparse(path)
     ):
         raise ArtifactAdoptionError(
             "Adopted artifact storage identity changed"
@@ -469,7 +471,7 @@ def _prepare_private_directory(path: Path) -> None:
             raise ArtifactAdoptionError(
                 "Artifact storage directory is linked or invalid"
             )
-        _protect_directory(path)
+        protect_directory(path)
     except ArtifactAdoptionError:
         raise
     except OSError as exc:
@@ -488,7 +490,7 @@ def _reject_linked_existing_ancestors(path: Path) -> None:
             )
         current = parent
     for candidate in (current, *current.parents):
-        if _is_link_or_reparse(candidate):
+        if is_link_or_reparse(candidate):
             raise ArtifactAdoptionError(
                 "Artifact storage ancestors cannot be linked"
             )
