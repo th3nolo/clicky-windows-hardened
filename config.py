@@ -631,8 +631,8 @@ class Config:
 
         if normalized not in ALL_PROVIDER_IDS:
             return
-        self.active_llm = normalized
         _save_preferences(active_llm=normalized)
+        self.active_llm = normalized
 
     def selected_model(self, provider: str) -> str:
         attributes = {
@@ -684,8 +684,8 @@ class Config:
         if target is None or not valid_model_id(model_id):
             raise ValueError("Invalid provider model selection")
         attribute, preference = target
-        setattr(self, attribute, model_id)
         _save_preferences(**{preference: model_id})
+        setattr(self, attribute, model_id)
 
     def has_openai_speech_credentials(self) -> bool:
         from audio.openai_credentials import openai_speech_api_key
@@ -867,11 +867,11 @@ class Config:
             return
         normalized = (name or "").strip()[:256]
         if kind == "vision":
-            self.ollama_vision_model = normalized
             _save_preferences(ollama_vision_model=normalized)
+            self.ollama_vision_model = normalized
         else:
-            self.ollama_text_model = normalized
             _save_preferences(ollama_text_model=normalized)
+            self.ollama_text_model = normalized
 
     def set_custom_instructions(self, text: str) -> None:
         value = (text or "").strip()[: 32 * 1024]

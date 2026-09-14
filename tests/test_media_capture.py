@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication
 import companion_manager as module
 from audio.ambient_listener import AmbientListener
 from companion_manager import CompanionManager
+from ai.response_selection import ProviderIdentity, ResponseDispatch, ResponseSelection, require_unchanged_selection
 from turn_coordinator import TurnCoordinator, TurnPhase
 from ui.media_input import read_clipboard
 
@@ -43,6 +44,13 @@ class MediaHost:
     send_video_capture = CompanionManager.send_video_capture
     cancel_video_capture = CompanionManager.cancel_video_capture
     _answer_video = CompanionManager._answer_video
+
+    def _response_selection(self):
+        return ResponseSelection(ProviderIdentity(module.cfg.llm_provider(), "synthetic"), self._current_model, 1)
+
+    def _acquire_response_dispatch(self, selection):
+        require_unchanged_selection(selection, self._response_selection())
+        return ResponseDispatch(selection, object())
 
     def __init__(self):
         self._input_lock = threading.RLock()

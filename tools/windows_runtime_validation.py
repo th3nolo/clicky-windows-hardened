@@ -437,7 +437,7 @@ def _validate_privacy_controls(root: Path) -> dict[str, object]:
         manager = companion_manager.CompanionManager()
         manager.sig_error.connect(manager_errors.append)
         manager._submit = lambda coroutine, _session=None: coroutine.close()
-        manager._get_llm = lambda: FakeLLM()
+        manager._create_llm = lambda _provider: FakeLLM()
         manager.start()
         _require(
             manager.set_model("sandbox-validation-model"),
