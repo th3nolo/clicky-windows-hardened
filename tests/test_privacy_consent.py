@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import os
 import tempfile
@@ -13,17 +12,10 @@ from pathlib import Path
 from unittest import mock
 
 import privacy_controls
+from tests.provider_test_support import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_config(name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "config.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 class PrivacyControlTests(unittest.TestCase):

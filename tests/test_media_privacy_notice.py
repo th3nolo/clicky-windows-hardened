@@ -10,7 +10,7 @@ from unittest.mock import patch
 from ai.provider_catalog import MUSE_VIDEO_MODELS, supports_video, video_model_notices
 from ai.provider_endpoints import provider_endpoint
 from privacy_controls import PRIVACY_NOTICE_VERSION
-from tests.test_privacy_consent import load_config
+from tests.provider_test_support import load_config
 
 
 class MediaModelNoticeTests(unittest.TestCase):

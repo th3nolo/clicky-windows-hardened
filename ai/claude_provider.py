@@ -1,6 +1,7 @@
 from typing import AsyncGenerator, List
 
 from ai.base_provider import BaseLLMProvider, Message
+from ai.provider_endpoints import ANTHROPIC_BASE_URL
 from ai.sdk_isolation import create_anthropic_client
 from config import cfg
 
@@ -13,7 +14,7 @@ class ClaudeProvider(BaseLLMProvider):
     def __init__(self):
         self._client = create_anthropic_client(
             api_key=cfg.anthropic_api_key,
-            base_url=getattr(cfg, "anthropic_base_url", "") or "https://api.anthropic.com",
+            base_url=getattr(cfg, "anthropic_base_url", "") or ANTHROPIC_BASE_URL,
             timeout=600.0, max_retries=2,
         )
 

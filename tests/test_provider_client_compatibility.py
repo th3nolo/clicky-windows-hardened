@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -16,10 +13,11 @@ import httpx
 
 from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
 from ai.sdk_isolation import create_openai_client
+from audio import openai_client
 from privacy_controls import PRIVACY_NOTICE_VERSION
+from tests.provider_test_support import configuration, load_subject, mock_client_factory
 
 
-ROOT = Path(__file__).resolve().parents[1]
 HOSTILE_ENV = {
     "OPENAI_API_KEY": "ambient-openai",
     "OPENAI_ADMIN_KEY": "ambient-admin",
@@ -30,42 +28,6 @@ HOSTILE_ENV = {
     "HTTP_PROXY": "http://ambient.invalid:8080",
     "HTTPS_PROXY": "http://ambient.invalid:8080",
 }
-
-
-def load_subject(relative: str, config: types.SimpleNamespace):
-    name = "compatibility_" + relative.replace("/", "_").replace(".py", "")
-    spec = importlib.util.spec_from_file_location(name, ROOT / relative)
-    assert spec and spec.loader
-    subject = importlib.util.module_from_spec(spec)
-    config_stub = types.ModuleType("config")
-    config_stub.cfg = config
-    capture_stub = types.ModuleType("audio.capture")
-    capture_stub.pcm16_to_wav = lambda *_: b"synthetic-wav"
-    playback_stub = types.ModuleType("audio.playback")
-    playback_stub.play_mp3_async = mock.AsyncMock()
-    with mock.patch.dict(sys.modules, {
-        "config": config_stub,
-        "audio.capture": capture_stub,
-        "audio.playback": playback_stub,
-        name: subject,
-    }):
-        spec.loader.exec_module(subject)
-    return subject
-
-
-def configuration(**overrides):
-    values = {
-        "openai_api_key": "explicit-openai",
-        "openai_speech_api_key": None,
-        "openai_base_url": "",
-        "anthropic_api_key": "explicit-anthropic",
-        "google_api_key": "explicit-gemini",
-        "lmstudio_host": "http://127.0.0.1:54321/custom/v1",
-        "lmstudio_model": "qwen-local",
-    }
-    values.update({spec.credential_attribute: "explicit-" + provider for provider, spec in OPENAI_COMPATIBLE_SPECS.items()})
-    values.update(overrides)
-    return types.SimpleNamespace(**values)
 
 
 class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
@@ -88,7 +50,7 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 client = httpx.AsyncClient(transport=httpx.MockTransport(respond), trust_env=False)
                 def factory(**kwargs):
                     return create_openai_client(**kwargs, http_client=client)
-                with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject, "create_openai_client", side_effect=factory):
+                with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(openai_client, "create_openai_client", side_effect=factory):
                     provider = getattr(subject, class_name)()
                     try:
                         if class_name == "OpenAISTT":
@@ -109,7 +71,7 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             ("audio/tts/openai_tts_provider.py", "OpenAITTSProvider"),
         ):
             subject = load_subject(relative, configuration(openai_base_url="http://127.0.0.1:9876/v1"))
-            with self.subTest(provider=class_name), mock.patch.object(subject, "create_openai_client") as factory:
+            with self.subTest(provider=class_name), mock.patch.object(openai_client, "create_openai_client") as factory:
                 with self.assertRaisesRegex(RuntimeError, "OPENAI_SPEECH_API_KEY"):
                     getattr(subject, class_name)()
                 factory.assert_not_called()
@@ -123,7 +85,7 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(200, content=b"speech")
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond), trust_env=False)
-        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject, "create_openai_client", side_effect=lambda **kwargs: create_openai_client(**kwargs, http_client=client)):
+        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(openai_client, "create_openai_client", side_effect=lambda **kwargs: create_openai_client(**kwargs, http_client=client)):
             provider = subject.OpenAITTSProvider()
             try:
                 await provider.speak("synthetic text")
@@ -135,7 +97,7 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_official_trailing_slash_keeps_legacy_speech_key(self):
         subject = load_subject("audio/stt/openai_stt.py", configuration(openai_base_url="https://api.openai.com/v1/"))
-        with mock.patch.object(subject, "create_openai_client") as factory:
+        with mock.patch.object(openai_client, "create_openai_client") as factory:
             subject.OpenAISTT()
         self.assertEqual(factory.call_args.kwargs["api_key"], "explicit-openai")
 
@@ -177,14 +139,11 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_discovery_uses_only_selected_cloud_key(self):
         subject = load_subject("ai/model_registry.py", configuration())
-        original_client = httpx.AsyncClient
         requests, options = [], []
         def respond(request):
             requests.append(request)
             return httpx.Response(200, json={"data": [], "models": []})
-        def factory(**kwargs):
-            options.append(kwargs)
-            return original_client(**kwargs, transport=httpx.MockTransport(respond))
+        factory = mock_client_factory(respond, options)
         cases = [
             (subject._fetch_openai, "https://api.openai.com/v1/models", "authorization", "Bearer explicit-openai"),
             (subject._fetch_claude, "https://api.anthropic.com/v1/models", "x-api-key", "explicit-anthropic"),
@@ -203,14 +162,13 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_custom_openai_discovery_preserves_non_openai_router_models(self):
         subject = load_subject("ai/model_registry.py", configuration(openai_base_url="http://127.0.0.1:54321/router/v1/", openai_api_key="router-only"))
         requests = []
-        original_client = httpx.AsyncClient
         def respond(request):
             requests.append(request)
             return httpx.Response(200, json={"data": [
                 {"id": "qwen-local"}, {"id": "MiniMax-M2.7"}, {"id": "deepseek-chat"},
                 {"id": []}, {"id": {}}, {"id": "\x00invalid"}, {"id": "x" * 1024}, None,
             ]})
-        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject.httpx, "AsyncClient", side_effect=lambda **kwargs: original_client(**kwargs, transport=httpx.MockTransport(respond))):
+        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject.httpx, "AsyncClient", side_effect=mock_client_factory(respond)):
             models = await subject._fetch_openai()
         self.assertEqual(str(requests[0].url), "http://127.0.0.1:54321/router/v1/models")
         self.assertEqual(requests[0].headers["authorization"], "Bearer router-only")
@@ -220,16 +178,13 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_lmstudio_preserves_custom_local_route_without_cloud_authorization(self):
         subject = load_subject("ai/lmstudio_provider.py", configuration())
-        original_client = httpx.AsyncClient
         requests, options = [], []
         def respond(request):
             requests.append(request)
             if request.url.path.endswith("/models"):
                 return httpx.Response(200, json={"data": [{"id": "qwen-local"}]})
             return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"local reply"}}]}\n\ndata: [DONE]\n\n')
-        def factory(**kwargs):
-            options.append(kwargs)
-            return original_client(**kwargs, transport=httpx.MockTransport(respond))
+        factory = mock_client_factory(respond, options)
         with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject.httpx, "AsyncClient", side_effect=factory):
             provider = subject.LMStudioProvider()
             self.assertEqual([chunk async for chunk in provider.stream_response("synthetic", [], [], "system")], ["local reply"])
@@ -246,11 +201,10 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             anthropic_base_url="http://127.0.0.1:54321/router/", anthropic_api_key="anthropic-router-only",
         ))
         requests = []
-        original_client = httpx.AsyncClient
         def respond(request):
             requests.append(request)
             return httpx.Response(200, json={"data": [{"id": "router-model"}]})
-        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject.httpx, "AsyncClient", side_effect=lambda **kwargs: original_client(**kwargs, transport=httpx.MockTransport(respond))):
+        with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject.httpx, "AsyncClient", side_effect=mock_client_factory(respond)):
             models = await subject._fetch_claude()
         self.assertEqual(str(requests[0].url), "http://127.0.0.1:54321/router/v1/models")
         self.assertEqual(requests[0].headers["x-api-key"], "anthropic-router-only")
@@ -259,16 +213,13 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_copilot_token_and_discovery_keep_distinct_credentials(self):
         subject = load_subject("ai/github_copilot_provider.py", configuration())
-        original_client = httpx.AsyncClient
         requests, options = [], []
         def respond(request):
             requests.append(request)
             if str(request.url) == subject.COPILOT_TOKEN_URL:
                 return httpx.Response(200, json={"token": "explicit-session"})
             return httpx.Response(200, json={"data": []})
-        def factory(**kwargs):
-            options.append(kwargs)
-            return original_client(**kwargs, transport=httpx.MockTransport(respond))
+        factory = mock_client_factory(respond, options)
         with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject, "load_github_token", return_value="explicit-github"), mock.patch.object(subject.httpx, "AsyncClient", side_effect=factory):
             await subject.fetch_models_live()
         self.assertEqual([str(request.url) for request in requests], [subject.COPILOT_TOKEN_URL, subject.COPILOT_MODELS_URL])
@@ -283,13 +234,10 @@ class ProviderClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             anthropic_base_url="http://127.0.0.1:54321/router/", anthropic_api_key="anthropic-router-only",
         ))
         requests, options = [], []
-        original_client = httpx.AsyncClient
         def respond(request):
             requests.append(request)
             return httpx.Response(200, json={"content": []})
-        def factory(**kwargs):
-            options.append(kwargs)
-            return original_client(**kwargs, transport=httpx.MockTransport(respond))
+        factory = mock_client_factory(respond, options)
         with mock.patch.dict(os.environ, HOSTILE_ENV), mock.patch.object(subject, "_resize_jpeg", return_value=b"synthetic-image"), mock.patch.object(subject.httpx, "AsyncClient", side_effect=factory):
             await subject.detect_element(
                 screenshot_jpeg_b64="YQ==", original_width=100, original_height=100,
