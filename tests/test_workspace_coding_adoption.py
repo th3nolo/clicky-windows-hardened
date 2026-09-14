@@ -495,7 +495,7 @@ class WorkspaceAdoptionTests(unittest.TestCase):
 
             with mock.patch.object(
                 adoption_module,
-                "_remove_tree_without_following_links",
+                "remove_tree_without_following_links",
                 side_effect=OSError("synthetic cleanup failure"),
             ):
                 receipt = fixture.adopter(run).apply(call, request)

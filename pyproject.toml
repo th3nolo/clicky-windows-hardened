@@ -68,6 +68,7 @@ default = true
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 files = [
+    "security/filesystem.py",
     "clicky_core",
     "ai/response_text.py",
     "ai/video_input.py",

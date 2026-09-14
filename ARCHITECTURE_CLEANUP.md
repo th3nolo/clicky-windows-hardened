@@ -45,6 +45,12 @@ continues to enforce the existing speech permission setting.
 
 ## Boundaries retained
 
+`security/filesystem.py` owns the shared link/reparse predicates, directory
+protection and no-follow tree cleanup. Task workspaces, artifact adoption and
+workspace adoption use that public interface while retaining their separate
+root checks, authorization, rollback and error reporting. The extraction does
+not change native ACL behavior or establish new containment guarantees.
+
 Microphone diagnostics remain local and separate from transcription and capture.
 OAuth consent, scope validation, token storage, action approval, worker isolation,
 and authenticated receipts keep their existing responsibilities. The CI build,
