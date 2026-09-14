@@ -235,6 +235,8 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ['first', 'First column.', 'second', 'Second column.'])
 
     async def test_voice_note_routes_generated_answer_to_insertion(self):
+        page_client = SimpleNamespace(call=AsyncMock(return_value={"content": [{"type": "text", "text": '{"notebook_id":"synthetic-book","page_id":"page-1","revision":7}'}]}))
+        self.stack.enter_context(patch('automation.inknotes_mcp.InkNotesMcpClient', return_value=page_client))
         mcp_write = self.stack.enter_context(patch('automation.inknotes_mcp.write_explanation', AsyncMock(return_value='Handwriting saved.')))
         self.stack.enter_context(patch('automation.inknotes_mcp.foreground_notebook_pid', return_value=12345))
         self.recorder.finish.return_value = encode_clip(*sample_clip(), lambda: False)
@@ -254,5 +256,7 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
             await self.manager._end_capture_and_process(session)
         insert.assert_not_called()  # The obsolete prepared-text-box path is disabled.
         mcp_write.assert_awaited_once()
+        page_client.call.assert_awaited_once_with('inknotes_read_page')
+        self.assertEqual(mcp_write.call_args.kwargs['expected_page'], {'notebook_id': 'synthetic-book', 'page_id': 'page-1', 'revision': 7})
         self.assertEqual(mcp_write.call_args.args[4], answer)
         self.assertIsNone(self.manager._turns.active)

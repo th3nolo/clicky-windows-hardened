@@ -28,3 +28,38 @@ Speech hotkeys and screen-video recording remain different inputs. They share se
 4. Retain explicit local-router, OpenAI, Anthropic, and other provider choices. Do not install a model or switch cloud destinations silently to pass a test.
 
 Run the standard unittest discovery suite with the existing reviewed runtime, a disposable profile, and offscreen Qt. Live checks are separate opt-in runs and must not execute in ordinary CI. The test suite must use synthetic credentials and block unintended external requests.
+
+## Spatial teacher workflow
+
+Clicky owns the spoken question, model selection, explanation and teaching sequence. InkNotes exposes native-ink operations through its current-user Windows named pipe MCP server. Clicky's standard-library stdio adapter carries MCP requests; it does not replace the user's notebook with a chat surface.
+
+The production manager captures notebook ID, page ID and revision when the recording is released, before transcription and explanation generation. It supplies that snapshot to `write_explanation`. A mismatch on the planner's first read stops writing to a different or edited page. Each subsequent mutation also checks a fresh page identity/revision immediately before dispatch; the InkNotes server enforces the supplied revision atomically.
+
+The default `verified` loop uses the actual page image plus bounded stroke geometry and the image-to-page transform. Handwritten symbol interpretation remains a model judgment. Tools available to the planner are:
+
+- `inknotes_read_page`: observe the page or a close-up region.
+- `inknotes_annotate`: draw a colored ellipse, rectangle, underline, bracket or arrow around page bounds or identified strokes.
+- `inknotes_write_at`: place handwriting in a specified page rectangle.
+- `inknotes_draw_path`: create a native pen path.
+- `inknotes_remove_annotation`: remove only an annotation created by this teaching session.
+- `inknotes_add_handwriting`: retain complete-note writing compatibility.
+- `inknotes_save`: save an existing notebook location.
+
+After a mutation, Clicky reads the full page again before presenting the successful step narration. Completion requires a model checklist against the resulting full-page image and structural read-back of session annotations. A cropped image cannot establish whole-page completion: Clicky supplies the full page for another assessment. Final messages distinguish a model visual assessment from deterministic structural checks and confirmed saving; neither establishes mathematical correctness by itself.
+
+The loop defaults to 24 model turns and 300 seconds, including awaited step narration. It checks cancellation while streaming, before dispatch, and again after the awaited preflight read. Already completed operations remain undoable ink; cancellation cannot retract a request already executing in InkNotes. Ambiguous transport failures are not retried. Explicit rejected operations may be corrected twice only after a fresh read confirms unchanged identity/revision. Repeated identical mutations are deduplicated, and saving is revision-aware. Spatial teaching currently stays on one page rather than silently moving the explanation to another page.
+
+`baseline` and `geometry` are experimental comparison modes, not measured winners. Baseline sends no images and writes the complete supplied explanation using the legacy tool. Geometry supplies images and spatial tools but does not request a final visual self-assessment. A provider without vision support takes the baseline fallback and reports that limitation. Keep model, synthetic task, initial notebook and budgets equal when comparing modes.
+
+### Validation
+
+Run focused regressions with the existing reviewed Python environment and dependency lock; no installation is required:
+
+```powershell
+python -B -m unittest tests.test_teaching_planner -v
+python -B -m unittest tests.test_teacher_manager tests.test_original_voice_video -v
+```
+
+Manager/UI tests need the existing Qt runtime, a disposable profile, and offscreen Qt for automated runs. Run the repository's full offline discovery checks separately. These tests establish planner and manager behavior, not physical microphone, Windows shortcut, audible playback, or live model quality.
+
+Dynamic acceptance must start through Clicky's interface with both applications running on a synthetic notebook. Record runtime identities, model and provider, source revision, observed operations and final rendered page. Check semantic annotation targets, preservation of original ink, readable placement, narration, interruption, undo/redo and save/reopen. Compare the complete result against an independent mathematical oracle. Treat direct MCP component tests and live model-to-MCP tests as supporting evidence, separately from the complete two-app user workflow.

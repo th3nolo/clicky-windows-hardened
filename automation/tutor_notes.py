@@ -22,17 +22,62 @@ NOTE_RESPONSE_CONTRACT = (
 
 
 def note_requested(text: str) -> bool:
-    """A write command is required; an ordinary question never edits a page."""
-    text = text.casefold()
-    if re.search(r"\b(don't|do not|don't ever|not write|never write|no escribas|no anotes)\b", text):
+    """Recognize explicit notebook writing/annotation requests, not discussion."""
+    text = text.casefold().replace("’", "'").strip(" ¿¡")
+    # Ignore quoted instructions and reported speech, including sentence breaks
+    # inside a quotation. Those words describe someone else's request.
+    text = re.sub(r'"[^"\n]*"|\u201c[^\u201d]*\u201d|\u00ab[^\u00bb]*\u00bb', '', text)
+    if re.search(r"\b(?:said|says|wrote|told me|dijo|dice|escribi\u00f3)\b", text):
         return False
-    if re.match(r"\s*(why|what|how|por qué|cómo)\b", text):
+    actions = (
+        r"(?:writ\w*|handwrit\w*|add|leave|put|insert|circl\w*|underlin\w*|"
+        r"bracket\w*|annotat\w*|mark\w*|draw\w*|escrib\w*|anot\w*|"
+        r"dibuj\w*|marc\w*|rode\w*|encerr\w*|subray\w*|a\u00f1ad\w*|agreg\w*)"
+    )
+    # Reject negated drawing/writing, while permitting constraints such as
+    # "without covering my work" or "do not erase my original strokes".
+    if re.search(
+        r"\b(?:don't|do not|never|not|no|nunca|jam\u00e1s|sin|without|avoid)"
+        r"\s+(?:(?:ever|please|actually|ever again|por favor)\s+)?" + actions + r"\b", text
+    ):
         return False
-    return bool(re.search(
-        r"\b(write|handwrite|add|leave|put|insert|escribe|escriba|anota|añade|agrega)\b"
-        r".{0,100}\b(note|notes|explanation|answer|solution|steps|calculation|down|here|inknotes|notebook|nota|notas|explicación|respuesta|aquí|cuaderno)\b",
-        text,
-    ))
+    prefix = (
+        r"(?:(?:clicky[, ]+)?(?:please\s+|por favor[, ]+)?)"
+        r"(?:(?:can|could|would|will) you\s+|(?:puedes|podrías|podrias)\s+)?"
+        r"(?:please\s+|por favor[, ]+)?"
+    )
+    writing = (
+        r"(?:write|handwrite|add|leave|put|insert|escribe|escriba|escribir|anota|anotar|añade|agrega)\b"
+        r"[^.!?;]{0,100}\b(?:note|notes|explanation|answer|solution|steps|calculation|"
+        r"down|here|inknotes|notebook|equation|nota|notas|explicación|respuesta|"
+        r"solución|pasos|cálculo|ecuación|aquí|cuaderno)\b"
+    )
+    annotation = (
+        r"(?:circle|underline|bracket|annotate|mark|draw|rodea|encierra|subraya|"
+        r"anota|marca|marcar|dibuja|dibujar|rodear|encerrar|subrayar)\b[^.!?;]{0,100}\b"
+        r"(?:term|terms|equation|mistake|error|row|column|matrix|vector|fraction|"
+        r"numerator|denominator|symbol|arrow|circle|bracket|diagram|graph|this|that|"
+        r"término|términos|ecuación|fila|columna|matriz|fracción|numerador|"
+        r"denominador|símbolo|flecha|círculo|corchete|diagrama|gráfica|esto|eso)\b"
+    )
+    for sentence in re.split(r"[.!?;\n]+", text):
+        command = re.sub(r"^" + prefix, "", sentence.strip(" \u00bf\u00a1"), count=1)
+        if re.match(r"(?:explain|explica|expl\u00edcame|explicame)\s+(?:how|why|what|c\u00f3mo|como|por qu\u00e9|por que)\b", command):
+            continue
+        command = re.sub(
+            r"^(?:explain|explica|expl\u00edcame|explicame)\b[^.!?;]{0,100}?\b(?:and|y)\s+",
+            "", command, count=1,
+        )
+        # A pen/color selection is an instrument for the following explicit
+        # annotation, not a general permission to execute arbitrary commands.
+        command = re.sub(
+            r"^(?:use (?:your|the|a) (?:blue |green |red |colored )?(?:pencil|pen) to|"
+            r"(?:usa|utiliza) (?:tu|el|un) (?:l\u00e1piz|lapiz|bol\u00edgrafo)(?: azul| verde| rojo)? para)\s+",
+            "", command, count=1,
+        )
+        if re.match(r"(?:" + writing + "|" + annotation + ")", command):
+            return True
+    return False
 
 
 def read_editor(target):

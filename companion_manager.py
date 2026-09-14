@@ -1532,7 +1532,7 @@ class CompanionManager(QObject):
         self._emit_state(AppState.SPEAKING, session)
         await self._speak_with_failure_fallback(response, session)
 
-    def on_hotkey_press(self):
+    def on_hotkey_press(self, *, notebook_pid: int | None = None) -> bool:
         with self._input_lock:
             if (
                 self._microphone_test_id is not None
@@ -1542,22 +1542,26 @@ class CompanionManager(QObject):
                     "Stop the active voice test or preview before starting "
                     "speech input."
                 )
-                return
+                return False
             if (
                 self._pressed_session is not None
                 and self._turns.is_current(self._pressed_session)
             ):
-                return
+                return False
             session = self._turns.start_capture()
             if session is None:
-                return
+                return False
             from automation.inknotes_mcp import foreground_notebook_pid
-            self._inknotes_pids[session.sequence] = foreground_notebook_pid()
+            self._inknotes_pids[session.sequence] = (
+                notebook_pid if notebook_pid is not None else foreground_notebook_pid()
+            )
             if self._begin_capture(session):
                 self._pressed_session = session
                 self._walkthrough.pause_for_voice()
+                return True
             else:
                 self._finish_turn(session)
+                return False
 
     def on_hotkey_release(self):
         with self._input_lock:
@@ -2020,6 +2024,24 @@ class CompanionManager(QObject):
         timeline_context = []
 
         try:
+            # Bind the page at capture release, before transcription/model latency.
+            # A later page switch must not redirect an explanation to new work.
+            notebook_snapshot = None
+            notebook_pid = self._inknotes_pids.get(session.sequence)
+            if notebook_pid:
+                from automation.inknotes_mcp import InkNotesMcpClient, text_result
+                try:
+                    observed = await InkNotesMcpClient(notebook_pid).call("inknotes_read_page")
+                    if not observed.get("isError"):
+                        import json
+                        snapshot = json.loads(text_result(observed))
+                        notebook_snapshot = {
+                            key: snapshot[key] for key in ("notebook_id", "page_id", "revision")
+                        }
+                except Exception:
+                    pass  # Ordinary spoken help still works; writing fails closed below.
+            if not self._turns.is_current(session):
+                return
             # 1. Transcribe — bounded so a hung/loading local STT model can
             # never freeze the UI on "Thinking..." forever
             try:
@@ -2448,18 +2470,46 @@ class CompanionManager(QObject):
                     self._lesson_steps = steps
                     self._lesson_step_idx = 0
 
+            note_narrated = False
+            note_narration_failed = False
+            note_complete = False
+            note_status = ""
             clean = ANY_TAG_RE.sub("", full_response).strip()
             if writing_note and clean:
                 from automation.inknotes_mcp import InkNotesMcpClient, write_explanation
                 pid = self._inknotes_pids.get(session.sequence)
-                if pid:
+                if pid and notebook_snapshot:
                     self._emit_turn_signal(session, self.sig_response_chunk, "\n\nWriting the explanation into InkNotes…")
                     try:
                         dispatch = self._acquire_response_dispatch(response_selection)
+
+                        async def present_teaching_step(event):
+                            nonlocal note_narrated, note_narration_failed, note_complete
+                            if not self._turns.is_current(session):
+                                return
+                            if event.get("type") == "verification":
+                                note_complete = event.get("complete") is True
+                                return
+                            narration = event.get("narration", "")
+                            if event.get("type") != "step" or not narration:
+                                return
+                            self._emit_turn_signal(
+                                session, self.sig_response_chunk, "\n\n" + narration
+                            )
+                            if await self._speak_with_failure_fallback(
+                                _speakable(narration), session
+                            ):
+                                note_narrated = True
+                            else:
+                                note_narration_failed = True
+
                         note_status = await write_explanation(
                             InkNotesMcpClient(pid), dispatch.backend, dispatch.selection.model_id,
                             transcript, clean, lambda: self._turns.is_current(session)
                             and self._response_selection() == response_selection,
+                            on_event=present_teaching_step,
+                            expected_page=notebook_snapshot,
+                            supports_vision=supports_vision,
                         )
                     except Exception:
                         note_status = "The notebook tool run could not be completed. Check InkNotes before retrying; the complete explanation remains here."
@@ -2520,7 +2570,10 @@ class CompanionManager(QObject):
                     )
             self._turns.set_phase(session, TurnPhase.SPEAKING)
             self._emit_state(AppState.SPEAKING, session)
-            await self._play_lesson(full_response, clean, session)
+            if note_narrated and note_complete and not note_narration_failed:
+                await self._speak_with_failure_fallback(note_status, session)
+            else:
+                await self._play_lesson(full_response, clean, session)
 
         except Exception as e:
             self._emit_turn_signal(session, self.sig_error,

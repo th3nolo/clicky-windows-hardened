@@ -101,6 +101,7 @@ class FirstRunPermissionTests(unittest.TestCase):
     def test_media_retry_clears_old_error_but_speaking_does_not(self):
         panel = types.SimpleNamespace(_state=AppState.IDLE, _error_label=QLabel(),
             _status_dot=QLabel(), _status_label=QLabel(), _waveform=mock.Mock(),
+            _refresh_capture_controls=mock.Mock(),
             show=mock.Mock(), raise_=mock.Mock())
         panel.clear_error = lambda: CompanionPanel.clear_error(panel)
         CompanionPanel.show_error(panel, 'Old media failure')

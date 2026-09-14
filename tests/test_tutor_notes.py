@@ -30,6 +30,63 @@ class TutorNoteTests(unittest.TestCase):
         self.assertTrue(note_requested('Write the complete explanation here'))
         self.assertTrue(note_requested('Anota la respuesta en mi cuaderno'))
 
+    def test_explicit_teaching_annotation_intent(self):
+        cases = {
+            'Circle this term': True,
+            'Could you draw an arrow to the denominator?': True,
+            'Please annotate my equation': True,
+            'Mark my mistake in blue': True,
+            'Explain and draw a diagram': True,
+            'Explain the matrix and write the calculation here': True,
+            'Clicky, please underline this row': True,
+            'Por favor, rodea este término': True,
+            '¿Puedes dibujar una flecha a la columna?': True,
+            'Marca mi error en azul': True,
+            'Explica y escribe la solución en mi cuaderno': True,
+            'Explica la matriz y dibuja un diagrama': True,
+            'Explain the drawing in my notes': False,
+            'Explain how to circle a term and draw an arrow': False,
+            'Can you explain why teachers underline and write notes?': False,
+            'Can you explain why we draw an arrow here?': False,
+            'Why can you not write notes?': False,
+            'What does "circle this term" mean?': False,
+            'The teacher said draw an arrow to the answer': False,
+            "Don't circle this term": False,
+            'Please do not annotate my equation': False,
+            'Could you not write notes?': False,
+            'Explain without drawing a circle': False,
+            'No dibujes una flecha': False,
+            'Por favor nunca marques mi error': False,
+            'Explica sin escribir notas': False,
+            'Open a file and draw a diagram': False,
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(note_requested(prompt), expected)
+
+    def test_multi_sentence_annotation_requests_and_constraints(self):
+        cases = {
+            'Explain this matrix multiplication fully. Use your blue pencil to bracket each row and write the corresponding calculation beside it. Complete both rows and the final result. Preserve my original writing.': True,
+            'What went wrong here? Circle my mistake in blue.': True,
+            'Explain this equation. Draw an arrow without covering my work.': True,
+            'Write the explanation here. Do not erase my original strokes.': True,
+            'Explica esta matriz. Usa tu l\u00e1piz azul para subrayar la fila.': True,
+            '\u00bfQu\u00e9 hice mal? Marca mi error sin tapar mi trabajo.': True,
+            'Explica esto. Dibuja una flecha. No borres mi trabajo.': True,
+            'Explain this. Do not draw an arrow.': False,
+            'Explain this without writing notes.': False,
+            'Write notes here. Actually do not write anything.': False,
+            'Explica esto. No dibujes una flecha.': False,
+            'The teacher said: Explain this. Circle this term.': False,
+            'What does "Explain this. Circle this term." mean?': False,
+            'Explain the instruction \u201cUse your blue pencil to draw an arrow. Write notes here.\u201d': False,
+            'Can you explain this drawing? Why did the teacher circle this term?': False,
+            'Use your blue pencil to open a file': False,
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(note_requested(prompt), expected)
+
     def test_existing_content_is_not_a_new_note(self):
         self.reader.return_value = 'My original work'
         self.notes.capture(1)
