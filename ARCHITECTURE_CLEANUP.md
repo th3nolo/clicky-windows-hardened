@@ -45,6 +45,13 @@ continues to enforce the existing speech permission setting.
 
 ## Boundaries retained
 
+Task-model collection and its configured provider adapter each own their acquired
+iterator through `tasks/stream_lifecycle.py`. Cleanup is awaited when iteration
+finishes or fails, while iterators without a callable `aclose` remain supported.
+An existing validation, provider, or cancellation error wins over a cleanup
+error; cleanup-only failure prevents a successful broker result. This owns stream
+cleanup attempts, not provider-client disposal or a new cleanup timeout policy.
+
 `security/filesystem.py` owns the shared link/reparse predicates, directory
 protection and no-follow tree cleanup. Task workspaces, artifact adoption and
 workspace adoption use that public interface while retaining their separate
