@@ -98,3 +98,14 @@ state-transition and individual cleanup failures and suppress late output. The
 earlier Linux verification paragraph records the original cleanup work; these
 Windows synthetic checks do not establish device, installed-package or live
 provider behavior.
+
+## Lesson recorder ownership
+
+Each recording owns its writer, stop event and transcript. The capture worker
+finalizes those resources after its last write. A Stop timeout leaves the session
+in a stopping state and rejects a replacement recording until the old worker
+exits. Late captured frames are discarded after Stop. Only successful video and
+transcript finalization produces the saved result; cleanup failures remain visible.
+Ordinary Quit waits for this ownership boundary and stays open if finalization is
+still pending. Process termination or an OS shutdown can still interrupt recording.
+Local recording consent policy is unchanged by this lifecycle correction.
