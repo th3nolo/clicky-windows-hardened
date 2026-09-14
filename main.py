@@ -25,7 +25,7 @@ if (
     raise SystemExit(run_worker())
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSignalBlocker
 
 from config import cfg
 from audio.secure_temp import initialize_secure_audio_temp
@@ -112,6 +112,34 @@ def _setup_logging():
         )
     except Exception:
         pass  # logging must never block startup
+
+
+def _restore_response_selection(panel) -> None:
+    # The panel emits its current model during refresh. Restoration must not
+    # recursively retry a failed preference write.
+    with QSignalBlocker(panel):
+        panel.refresh_for_provider(cfg.llm_provider())
+
+
+def _select_response_model(manager, panel, model: str) -> bool:
+    if manager.set_model(model):
+        return True
+    _restore_response_selection(panel)
+    return False
+
+
+def _switch_response_provider(manager, panel, tray, name: str) -> bool:
+    if not manager.set_active_provider(name):
+        _restore_response_selection(panel)
+        tray.rebuild_menu()
+        return False
+    panel.refresh_for_provider(name)
+    tray.rebuild_menu()
+    tray.show_notification(
+        "Model selection changed" if panel.model_selection_notice else "Clicky",
+        panel.model_selection_notice or f"Switched to {name}",
+    )
+    return True
 
 
 def main():
@@ -617,7 +645,10 @@ def main():
     )
 
     # Panel → Manager
-    panel.on_model_changed.connect(manager.set_model)
+    def _select_model(model: str) -> None:
+        _select_response_model(manager, panel, model)
+
+    panel.on_model_changed.connect(_select_model)
     panel.emit_current_model()
     if panel.model_selection_notice:
         tray.show_notification("Model selection changed", panel.model_selection_notice)
@@ -774,13 +805,7 @@ def main():
     tray.on_attach_doc.connect(_attach_doc)
 
     def _switch(name: str):
-        manager.set_active_provider(name)
-        panel.refresh_for_provider(name)       # repopulate model dropdown + badge
-        tray.rebuild_menu()                    # tick mark moves to new provider
-        tray.show_notification(
-            "Model selection changed" if panel.model_selection_notice else "Clicky",
-            panel.model_selection_notice or f"Switched to {name}",
-        )
+        _switch_response_provider(manager, panel, tray, name)
 
     tray.on_switch_provider.connect(_switch)
     def _stop_all():

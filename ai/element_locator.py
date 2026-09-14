@@ -66,6 +66,7 @@ async def detect_element(
     screen_index: int,
     user_question: str,
     model: str = "claude-sonnet-4-6",
+    endpoint: str | None = None,
     physical_width: int | None = None,
     physical_height: int | None = None,
     physical_left: int = 0,
@@ -89,7 +90,9 @@ async def detect_element(
     api_key = cfg.anthropic_api_key
     if not api_key:
         return None
-    base_url = anthropic_endpoint(getattr(cfg, "anthropic_base_url", ""))
+    base_url = anthropic_endpoint(
+        endpoint if endpoint is not None else getattr(cfg, "anthropic_base_url", "")
+    )
 
     # Default: assume the JPEG is at native physical resolution
     if physical_width is None:

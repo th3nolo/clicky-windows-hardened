@@ -45,6 +45,19 @@ continues to enforce the existing speech permission setting.
 
 ## Boundaries retained
 
+Response selection has one manager-owned synchronization boundary. Provider and
+model preferences are saved before the manager publishes the new selection;
+failed saves retain the previous selection and restore the panel without retrying
+the failed write. Immutable response tokens include provider, effective endpoint,
+model and revision. Acquiring a backend checks that token again after construction,
+which runs outside the lock. Request streams use the acquired backend and model
+together. This does not change SDK client disposal or promise synchronization for
+arbitrary direct writes to configuration fields outside the manager's setters.
+
+`ai/response_selection.py` contains importable, dependency-free token checks and
+is included in the strict mypy selection. Manager regression tests call the real
+methods with synthetic configuration and backends; they do not copy method ASTs.
+
 Microphone diagnostics remain local and separate from transcription and capture.
 OAuth consent, scope validation, token storage, action approval, worker isolation,
 and authenticated receipts keep their existing responsibilities. The CI build,

@@ -10,6 +10,7 @@ from companion_manager import CompanionManager
 from screen.capture import ScreenShot
 from turn_coordinator import TurnCoordinator
 from tutor import VoiceCommand
+from ai.response_selection import ProviderIdentity, ResponseDispatch, ResponseSelection
 
 
 class TutorRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -47,7 +48,10 @@ class TutorRoutingTests(unittest.IsolatedAsyncioTestCase):
     def stream_host(self, generator):
         turns = TurnCoordinator()
         return types.SimpleNamespace(
-            _get_llm=lambda: types.SimpleNamespace(stream_response=generator),
+            _acquire_response_dispatch=lambda *_: ResponseDispatch(
+                ResponseSelection(ProviderIdentity("openai", "synthetic"), "selected", 1),
+                types.SimpleNamespace(stream_response=generator),
+            ),
             _turns=turns, _current_model="selected", _parse_points=Mock(),
             _emit_turn_signal=Mock(), sig_response_chunk=object(),
         ), turns.start_processing()

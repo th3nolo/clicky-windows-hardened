@@ -25,6 +25,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from config import cfg
 from ai.base_provider import BaseLLMProvider, Message
 from ai.response_text import ANY_TAG_RE, ResponseText
+from ai.response_selection import (
+    ProviderIdentity, ResponseDispatch, ResponseSelection, SelectionChangedError,
+    require_selected_model, require_unchanged_selection,
+)
 from ai.video_input import VideoInput
 from ai.provider_catalog import supports_video
 from screen.voice_clip import VoiceClipRecorder, MAX_SECONDS
@@ -342,6 +346,12 @@ class CompanionManager(QObject):
         self._state: AppState = AppState.IDLE
         self._history: List[Message] = []
         self._current_model: Optional[str] = None
+        # Input/turn code may take this lock; selection transactions never call
+        # back into input/turn ownership or emit Qt signals while holding it.
+        self._selection_lock = threading.RLock()
+        self._selection_revision = 0
+        self._selection_identity: ProviderIdentity | None = None
+        self._llm_identity: ProviderIdentity | None = None
         self._web_search_enabled = bool(cfg.web_search_enabled)
         self._turns = TurnCoordinator()
         self._input_lock = threading.RLock()
@@ -483,7 +493,7 @@ class CompanionManager(QObject):
     def current_response_model(self) -> str | None:
         """Return the model currently visible in the main panel."""
 
-        return self._current_model
+        return self._response_selection().model_id
 
     @staticmethod
     def _capture_walkthrough_displays():
@@ -767,8 +777,9 @@ class CompanionManager(QObject):
                 raise RuntimeError(
                     "The reviewed region changed before provider routing."
                 )
-            provider = cfg.llm_provider()
-            model = self._current_model
+            dispatch = self._acquire_response_dispatch()
+            provider = dispatch.selection.identity.provider_id
+            model = dispatch.selection.model_id
             if not model:
                 raise RuntimeError(
                     "The selected model changed before region routing."
@@ -801,7 +812,7 @@ class CompanionManager(QObject):
             ).decode("ascii")
             full_response = ""
             display = ResponseText()
-            stream = self._get_llm().stream_response(
+            stream = dispatch.backend.stream_response(
                 user_text=context.purpose,
                 screenshots_b64=[encoded],
                 history=[],
@@ -1007,15 +1018,80 @@ class CompanionManager(QObject):
 
     # ── Provider lazy init ────────────────────────────────────────────────────
 
-    def _get_llm(self) -> BaseLLMProvider:
-        if self._llm is None:
-            provider = cfg.llm_provider()
-            if provider == "ollama":
-                _require_local_ollama()
-            from ai.provider_factory import create_llm_provider
+    @staticmethod
+    def _response_identity() -> ProviderIdentity:
+        from ai.provider_catalog import OPENAI_COMPATIBLE_SPECS
+        from ai.provider_endpoints import anthropic_endpoint, openai_endpoint
 
-            self._llm = create_llm_provider(provider)
-        return self._llm
+        provider = cfg.llm_provider()
+        if provider in OPENAI_COMPATIBLE_SPECS:
+            endpoint = OPENAI_COMPATIBLE_SPECS[provider].base_url.rstrip("/")
+        elif provider == "openai":
+            endpoint = openai_endpoint(cfg.openai_base_url)
+        elif provider == "claude":
+            endpoint = anthropic_endpoint(cfg.anthropic_base_url)
+        elif provider == "ollama":
+            endpoint = cfg.ollama_host.rstrip("/")
+        elif provider == "lmstudio":
+            endpoint = cfg.lmstudio_host.rstrip("/")
+        else:
+            # These providers have no configurable HTTP destination. CLI identity
+            # is deliberately not represented as an invented network endpoint.
+            endpoint = {
+                "gemini": "https://generativelanguage.googleapis.com/v1beta",
+                "copilot": "https://api.githubcopilot.com",
+                "codex_agent": "cli:codex_agent",
+                "qwen_code_agent": "cli:qwen_code_agent",
+            }[provider]
+        return ProviderIdentity(provider, endpoint)
+
+    def _response_selection_locked(self) -> ResponseSelection:
+        identity = self._response_identity()
+        previous = self._selection_identity
+        if identity != previous:
+            if previous is not None and previous.provider_id != identity.provider_id:
+                self._current_model = None
+            self._selection_identity = identity
+            self._selection_revision += 1
+            self._llm = None
+            self._llm_identity = None
+        return ResponseSelection(identity, self._current_model, self._selection_revision)
+
+    def _response_selection(self) -> ResponseSelection:
+        with self._selection_lock:
+            return self._response_selection_locked()
+
+    @staticmethod
+    def _create_llm(provider: str) -> BaseLLMProvider:
+        if provider == "ollama":
+            _require_local_ollama()
+        from ai.provider_factory import create_llm_provider
+
+        return create_llm_provider(provider)
+
+    def _acquire_response_dispatch(
+        self, accepted: ResponseSelection | None = None, *, require_model: bool = True,
+    ) -> ResponseDispatch[BaseLLMProvider]:
+        with self._selection_lock:
+            selection = self._response_selection_locked()
+            if accepted is not None:
+                require_unchanged_selection(accepted, selection)
+            if require_model:
+                require_selected_model(selection)
+            if self._llm is not None and self._llm_identity == selection.identity:
+                return ResponseDispatch(selection, self._llm)
+        # Constructors may perform bounded local identity checks. Never hold
+        # selection ownership over that I/O or over request/stream execution.
+        candidate = self._create_llm(selection.identity.provider_id)
+        with self._selection_lock:
+            require_unchanged_selection(selection, self._response_selection_locked())
+            if self._llm is None or self._llm_identity != selection.identity:
+                self._llm = candidate
+                self._llm_identity = selection.identity
+            return ResponseDispatch(selection, self._llm)
+
+    def _get_llm(self) -> BaseLLMProvider:
+        return self._acquire_response_dispatch(require_model=False).backend
 
     def _get_stt(self):
         if self._stt is None:
@@ -2053,7 +2129,8 @@ class CompanionManager(QObject):
             history = self._app_memory.setdefault(ak, [])
 
             provider_images = images_b64
-            provider = cfg.llm_provider()
+            response_selection = self._response_selection()
+            provider = response_selection.identity.provider_id
             try:
                 from ai.model_selection import model_supports_vision
                 from ai.provider_catalog import REGISTRY_MODEL_PROVIDERS
@@ -2062,14 +2139,14 @@ class CompanionManager(QObject):
                     from ai.model_registry import cached_models
 
                     supports_vision = model_supports_vision(
-                        self._current_model,
+                        response_selection.model_id,
                         cached_models(provider),
                     )
                 elif provider == "copilot":
                     from ai.github_copilot_provider import cached_models
 
                     supports_vision = model_supports_vision(
-                        self._current_model,
+                        response_selection.model_id,
                         cached_models(),
                     )
                 else:
@@ -2100,6 +2177,7 @@ class CompanionManager(QObject):
 
             full_response, walkthrough_overflow = await self._stream_tutor_response(
                 transcript, provider_images, history, system, session, walkthrough_requested,
+                selection=response_selection,
             )
             if not self._turns.is_current(session):
                 return
@@ -2201,8 +2279,8 @@ class CompanionManager(QObject):
                     journal.log_qa(
                         question=transcript, answer=clean,
                         app_key=ak, window_title=title,
-                        provider=cfg.llm_provider(),
-                        model=self._current_model or "",
+                        provider=response_selection.identity.provider_id,
+                        model=response_selection.model_id or "",
                         enabled=self._journal_enabled,
                     )
                 except Exception:
@@ -2276,7 +2354,8 @@ class CompanionManager(QObject):
             return None
         if target is not None and target.source in ("uia", "ocr"):
             return float(target.x), float(target.y)
-        if cfg.llm_provider() == "claude" and cfg.anthropic_api_key:
+        dispatch = self._acquire_response_dispatch()
+        if dispatch.selection.identity.provider_id == "claude" and cfg.anthropic_api_key:
             from ai.element_locator import detect_element
 
             detected = await detect_element(
@@ -2288,13 +2367,14 @@ class CompanionManager(QObject):
                 logical_left=shot.logical_left, logical_top=shot.logical_top,
                 logical_width=shot.logical_width, logical_height=shot.logical_height,
                 screen_index=shot.index, user_question=question,
-                model=self._current_model or "claude-sonnet-4-6",
+                model=require_selected_model(dispatch.selection),
+                endpoint=dispatch.selection.identity.endpoint,
             )
         else:
             from ai.universal_locator import detect_element_universal
 
             detected = await detect_element_universal(
-                llm=self._get_llm(), model=self._current_model,
+                llm=dispatch.backend, model=dispatch.selection.model_id,
                 screenshot_jpeg_b64=shot.base64_jpeg,
                 original_width=shot.width, original_height=shot.height,
                 physical_width=shot.physical_width, physical_height=shot.physical_height,
@@ -2309,18 +2389,20 @@ class CompanionManager(QObject):
     async def _stream_tutor_response(
         self, transcript: str, provider_images: list[str], history: list[Message],
         system: str, session: TurnSession, walkthrough_requested: bool,
+        *, selection: ResponseSelection | None = None,
     ) -> tuple[str, bool]:
         """Stream narration or a bounded walkthrough payload for the current turn."""
         full_response = ""
         display = ResponseText()
         walkthrough_bytes = 0
         walkthrough_overflow = False
-        stream = self._get_llm().stream_response(
+        dispatch = self._acquire_response_dispatch(selection)
+        stream = dispatch.backend.stream_response(
             user_text=transcript,
             screenshots_b64=provider_images,
             history=history,
             system_prompt=system,
-            model=self._current_model,
+            model=dispatch.selection.model_id,
         )
         async with aclosing(stream):
             async for chunk in stream:
@@ -2860,44 +2942,58 @@ class CompanionManager(QObject):
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
-    def set_model(self, model: str):
+    def set_model(self, model: str) -> bool:
         from ai.model_selection import model_is_available, valid_model_id
-
-        provider = cfg.llm_provider()
         from ai.provider_catalog import REGISTRY_MODEL_PROVIDERS
 
-        if provider in REGISTRY_MODEL_PROVIDERS:
-            from ai.model_registry import cached_models
-
-            valid = model_is_available(model, cached_models(provider))
-        elif provider == "copilot":
-            from ai.github_copilot_provider import cached_models
-
-            valid = model_is_available(model, cached_models())
-        else:
-            valid = valid_model_id(model)
-        if not valid:
-            self._current_model = None
-            if model:
-                self.sig_error.emit(
-                    f"The selected {provider} model is unavailable. "
-                    "Choose a listed model before asking Clicky."
-                )
-            return False
+        error = ""
         try:
-            cfg.set_selected_model(provider, model)
-        except (OSError, ValueError) as exc:
-            self._current_model = None
-            self.sig_error.emit(f"Could not save the {provider} model: {exc}")
-            return False
-        self._current_model = model
-        return True
+            with self._selection_lock:
+                selection = self._response_selection_locked()
+                provider = selection.identity.provider_id
+                if provider in REGISTRY_MODEL_PROVIDERS:
+                    from ai.model_registry import cached_models
 
-    def set_active_provider(self, name: str):
+                    valid = model_is_available(model, cached_models(provider))
+                elif provider == "copilot":
+                    from ai.github_copilot_provider import cached_models
+
+                    valid = model_is_available(model, cached_models())
+                else:
+                    valid = valid_model_id(model)
+                if not valid:
+                    if self._current_model is not None:
+                        self._current_model = None
+                        self._selection_revision += 1
+                    error = "Choose an available model before asking Clicky." if model else ""
+                else:
+                    cfg.set_selected_model(provider, model)
+                    if self._current_model != model:
+                        self._current_model = model
+                        self._selection_revision += 1
+        except (OSError, ValueError):
+            self.sig_error.emit("Could not save the model. The previous selection was retained.")
+            return False
+        if error:
+            self.sig_error.emit(error)
+        return valid
+
+    def set_active_provider(self, name: str) -> bool:
         """Switch the active provider and refresh only its reviewed model source."""
-        cfg.set_active_llm(name)
-        self._llm = None           # force re-init on next query
-        self._current_model = None
+        name = (name or "").strip().lower()
+        try:
+            with self._selection_lock:
+                if name not in cfg.available_llm_providers():
+                    raise ValueError("Unavailable provider")
+                cfg.set_active_llm(name)
+                self._current_model = None
+                self._selection_identity = self._response_identity()
+                self._selection_revision += 1
+                self._llm = None
+                self._llm_identity = None
+        except (OSError, ValueError):
+            self.sig_error.emit("Could not select the provider. The previous selection was retained.")
+            return False
         # If switching to Copilot and the cached model list is stale (or
         # missing), refresh it in the background so the panel shows the
         # *current* set of models GitHub offers — not stale hardcoded ones.
@@ -2920,6 +3016,7 @@ class CompanionManager(QObject):
         if name == "ollama":
             # Surface installed models in the tray immediately
             self.refresh_ollama_models()
+        return True
 
     async def _refresh_one_model_list(self, provider: str):
         try:
@@ -2958,12 +3055,19 @@ class CompanionManager(QObject):
         except Exception as e:
             self.sig_error.emit(f"Ollama model list failed: {e}")
 
-    def set_ollama_model(self, kind: str, name: str):
+    def set_ollama_model(self, kind: str, name: str) -> bool:
         """Tray callback — update the active vision/text model. No restart needed."""
-        cfg.set_ollama_model(kind, name)
-        # Force the provider instance to re-read cfg on next call
-        if cfg.llm_provider() == "ollama":
-            self._llm = None
+        try:
+            with self._selection_lock:
+                cfg.set_ollama_model(kind, name)
+                if cfg.llm_provider() == "ollama":
+                    self._llm = None
+                    self._llm_identity = None
+                    self._selection_revision += 1
+        except (OSError, ValueError):
+            self.sig_error.emit("Could not save the local model. The previous selection was retained.")
+            return False
+        return True
 
     def set_custom_instructions(self, text: str):
         """Persist non-secret instructions in the LocalAppData preferences."""
@@ -3425,12 +3529,13 @@ class CompanionManager(QObject):
             history = self._app_memory.setdefault(ak, [])
 
             full = ""
-            async for chunk in self._get_llm().stream_response(
+            dispatch = self._acquire_response_dispatch()
+            async for chunk in dispatch.backend.stream_response(
                 user_text="(quiz mode just enabled — start the quiz now)",
                 screenshots_b64=images_b64,
                 history=history,
                 system_prompt=system,
-                model=self._current_model,
+                model=dispatch.selection.model_id,
             ):
                 if not self._turns.is_current(session):
                     return

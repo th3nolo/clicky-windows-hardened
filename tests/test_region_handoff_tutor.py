@@ -18,6 +18,7 @@ except ImportError:
 from handoff.models import HandoffDataClass, HandoffDestination
 from handoff.routing import HandoffRouteContext
 from turn_coordinator import TurnCoordinator
+from ai.response_selection import ProviderIdentity, ResponseDispatch, ResponseSelection
 
 
 JPEG = b"\xff\xd8\xffreviewed-tutor-region\xff\xd9"
@@ -76,6 +77,13 @@ class RouteHarness:
 
     def _get_llm(self):
         return self._provider
+
+    def _acquire_response_dispatch(self):
+        return ResponseDispatch(
+            ResponseSelection(ProviderIdentity(manager_module.cfg.llm_provider(), "synthetic"),
+                              self._current_model, 1),
+            self._provider,
+        )
 
     def _emit_turn_signal(self, session, signal, *args):
         return CompanionManager._emit_turn_signal(

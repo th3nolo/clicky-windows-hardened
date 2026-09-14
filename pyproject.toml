@@ -70,6 +70,7 @@ plugins = ["pydantic.mypy"]
 files = [
     "clicky_core",
     "ai/response_text.py",
+    "ai/response_selection.py",
     "ai/video_input.py",
     "screen/voice_clip.py",
     "ui/media_input.py",
