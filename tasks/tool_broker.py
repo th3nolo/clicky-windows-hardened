@@ -68,6 +68,7 @@ from tasks.artifacts import (
     PendingArtifact,
 )
 from tasks.coordinator import TaskWorkspace
+from tasks.stream_lifecycle import owned_stream
 from tasks.models import (
     MAX_ARTIFACT_BYTES,
     Artifact,
@@ -2321,15 +2322,16 @@ class TaskToolBroker:
     ) -> str:
         chunks: list[str] = []
         byte_count = 0
-        async for chunk in self._model_stream(arguments):
-            if not isinstance(chunk, str):
-                raise TaskToolBrokerOperationError(
-                    "model_output_invalid"
-                )
-            encoded = chunk.encode("utf-8")
-            byte_count += len(encoded)
-            self._require_output_capacity(byte_count)
-            chunks.append(chunk)
+        async with owned_stream(self._model_stream(arguments)) as stream:
+            async for chunk in stream:
+                if not isinstance(chunk, str):
+                    raise TaskToolBrokerOperationError(
+                        "model_output_invalid"
+                    )
+                encoded = chunk.encode("utf-8")
+                byte_count += len(encoded)
+                self._require_output_capacity(byte_count)
+                chunks.append(chunk)
         text = "".join(chunks)
         return _require_text_output(text)
 
@@ -2863,14 +2865,16 @@ async def _configured_model_stream(
             + arguments.context
             + "\n[END BOUNDED PUBLIC EVIDENCE]"
         )
-    async for chunk in provider.stream_response(
+    stream = provider.stream_response(
         user_text=user_text,
         screenshots_b64=[],
         history=[],
         system_prompt=arguments.system_prompt,
         model=selected_model,
-    ):
-        yield chunk
+    )
+    async with owned_stream(stream):
+        async for chunk in stream:
+            yield chunk
 
 
 def broker_arguments_digest(arguments: BrokerArguments) -> str:
