@@ -879,6 +879,13 @@ class CompanionManager(QObject):
             pass   # silent — not user-facing on startup
 
     def shutdown(self):
+        if self._recorder is not None:
+            result = self._recorder.stop()
+            if result.status is lesson_recorder.RecordingStopStatus.STOPPING:
+                self.sig_error.emit(
+                    "Lesson recording is still stopping. Please retry Quit after it finishes."
+                )
+                return False
         self.stop_realtime_voice(wait=True)
         self.stop_microphone_test(reason="shutdown")
         self.stop_tts_voice_preview(reason="shutdown")
@@ -904,6 +911,7 @@ class CompanionManager(QObject):
         self._listener.stop()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
+        return True
 
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
@@ -3483,20 +3491,23 @@ class CompanionManager(QObject):
     def start_recording(self) -> Optional[str]:
         if self._recorder is None:
             self._recorder = lesson_recorder.LessonRecorder(
-                on_error=self.sig_error.emit
+                on_error=self.sig_error.emit,
+                on_state=self.sig_recording_state.emit,
             )
         out = self._recorder.start()
         if out:
-            self.sig_recording_state.emit(True, str(out))
             return str(out)
         return None
 
     def stop_recording(self) -> Optional[str]:
-        if not self._recorder or not self._recorder.is_recording:
+        if self._recorder is None:
             return None
-        out = self._recorder.stop()
-        self.sig_recording_state.emit(False, str(out) if out else "")
-        return str(out) if out else None
+        result = self._recorder.stop()
+        if result.status is lesson_recorder.RecordingStopStatus.STOPPING:
+            self.sig_error.emit("Lesson recording is still stopping; its files are not finalized yet.")
+        if result.status is lesson_recorder.RecordingStopStatus.SAVED:
+            return str(result.output_directory)
+        return None
 
     @property
     def is_recording(self) -> bool:

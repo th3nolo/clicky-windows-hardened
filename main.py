@@ -704,7 +704,7 @@ def main():
         tray.show_notification(
             "Lesson Recording",
             f"Recording to:\n{out}" if out else
-            "Recording is unavailable in this reviewed build. Recreate the frozen environment from uv.lock."
+            "Recording could not start. Check the reported recording status."
         )
     def _record_stop():
         out = manager.stop_recording()
@@ -1393,8 +1393,9 @@ def main():
     def _quit():
         if task_region is not None:
             task_region.cancel_all()
+        if not manager.shutdown():
+            return
         tray.hide_icon()
-        manager.shutdown()
         app.quit()
 
     tray.on_quit.connect(_quit)

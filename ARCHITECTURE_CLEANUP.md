@@ -66,3 +66,14 @@ source files, with explicit `Any` disallowed and no new type suppressions.
 Local checks use offscreen Qt on Linux. Native Windows capture, microphone
 hardware, packaged startup and actual provider endpoints require Windows/runtime
 validation; unit tests do not establish those outcomes.
+
+## Lesson recorder ownership
+
+Each recording owns its writer, stop event and transcript. The capture worker
+finalizes those resources after its last write. A Stop timeout leaves the session
+in a stopping state and rejects a replacement recording until the old worker
+exits. Late captured frames are discarded after Stop. Only successful video and
+transcript finalization produces the saved result; cleanup failures remain visible.
+Ordinary Quit waits for this ownership boundary and stays open if finalization is
+still pending. Process termination or an OS shutdown can still interrupt recording.
+Local recording consent policy is unchanged by this lifecycle correction.
