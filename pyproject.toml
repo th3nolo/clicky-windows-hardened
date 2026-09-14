@@ -69,6 +69,7 @@ default = true
 plugins = ["pydantic.mypy"]
 files = [
     "tasks/stream_lifecycle.py",
+    "security/filesystem.py",
     "clicky_core",
     "ai/response_text.py",
     "ai/video_input.py",

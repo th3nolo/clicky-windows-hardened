@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Callable
 
 from capability_registry import CapabilityId
-from tasks.coordinator import (
-    _is_link_or_reparse,
-    _protect_directory,
-    _remove_tree_without_following_links,
+from security.filesystem import (
+    is_link_or_reparse,
+    protect_directory,
+    remove_tree_without_following_links,
 )
 from tasks.models import TaskRun, ToolCall
 from workspace_coding.file_protection import (
@@ -534,7 +534,7 @@ class WorkspaceAdopter:
             )
         except Exception as exc:
             try:
-                _remove_tree_without_following_links(transaction_root)
+                remove_tree_without_following_links(transaction_root)
             except OSError:
                 raise WorkspaceAdoptionError(
                     "workspace_transaction_stage_failed_cleanup_failed"
@@ -595,7 +595,7 @@ class WorkspaceAdopter:
             ) from exc
         cleanup_pending = False
         try:
-            _remove_tree_without_following_links(transaction_root)
+            remove_tree_without_following_links(transaction_root)
         except OSError:
             cleanup_pending = True
         self._finished = True
@@ -629,7 +629,7 @@ class WorkspaceAdopter:
             tool_name="workspace.discard",
         )
         try:
-            _remove_tree_without_following_links(
+            remove_tree_without_following_links(
                 self._snapshot.task_root
             )
         except OSError as exc:
@@ -753,10 +753,10 @@ class WorkspaceAdopter:
         try:
             root.mkdir(mode=0o700)
             ensure_plain_directory(root)
-            _protect_directory(root)
+            protect_directory(root)
         except Exception as exc:
             try:
-                _remove_tree_without_following_links(root)
+                remove_tree_without_following_links(root)
             except OSError:
                 pass
             raise WorkspaceAdoptionError(
@@ -1087,7 +1087,7 @@ def _rollback(
         raise WorkspaceAdoptionError(
             "workspace_rollback_postcondition_failed"
         )
-    _remove_tree_without_following_links(transaction_root)
+    remove_tree_without_following_links(transaction_root)
 
 
 def _validate_snapshot_result(
@@ -1484,7 +1484,7 @@ def _prepare_private_parent(path: Path) -> None:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         ensure_plain_directory(path)
         _reject_linked_existing_ancestors(path)
-        _protect_directory(path)
+        protect_directory(path)
     except Exception as exc:
         raise WorkspaceAdoptionError(
             "workspace_transaction_parent_invalid"
@@ -1501,7 +1501,7 @@ def _reject_linked_existing_ancestors(path: Path) -> None:
             )
         current = parent
     for candidate in (current, *current.parents):
-        if _is_link_or_reparse(candidate):
+        if is_link_or_reparse(candidate):
             raise WorkspaceAdoptionError(
                 "workspace_path_ancestor_linked"
             )
@@ -1539,7 +1539,7 @@ def _final_candidate(path: Path) -> Path:
             )
         missing.append(current.name)
         current = current.parent
-    if _is_link_or_reparse(current):
+    if is_link_or_reparse(current):
         raise WorkspaceAdoptionError(
             "workspace_transaction_path_ancestor_linked"
         )
