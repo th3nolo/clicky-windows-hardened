@@ -77,6 +77,14 @@ allowing another start. Explicit Stop attempts both releases even when one fails
 in the same rollback scope, so a partially opened stream remains reachable for
 cleanup. Retrying startup discards an old output-stop sentinel.
 
+The real session also owns its cleanup task before awaiting transport closure.
+Repeated caller cancellation joins that task, and terminal-state methods still
+wait for it. WebSocket, client and queued-frame cleanup have independent final
+paths; the existing transport-close timeouts remain. Real-session tests with
+fake transports cover cancellation during failed open and response cancellation,
+including original-error preservation and a failed WebSocket close. This does
+not promise recovery from process death or a cancelled event-loop shutdown task.
+
 `tests/test_realtime_startup_rollback.py` injects constructor, start and cleanup
 failures and uses an async barrier to check repeated cancellation during rollback.
 These tests use synthetic sessions, streams and workers; they do not establish

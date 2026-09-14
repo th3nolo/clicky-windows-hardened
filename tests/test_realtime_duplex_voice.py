@@ -13,6 +13,7 @@ import aiohttp
 from yarl import URL
 
 from audio.realtime import openai_realtime as realtime
+from audio.realtime.controller import RealtimeVoiceController
 from audio.realtime.base import (
     DuplexConsentError,
     DuplexError,
@@ -71,6 +72,148 @@ class FakeClientSession:
 
     async def close(self):
         self.closed = True
+
+
+class RealSessionRollbackTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        FakeClientSession.instances = []
+        FakeClientSession.next_websocket = None
+        self.transport_patch = mock.patch.object(
+            realtime.aiohttp, "ClientSession", FakeClientSession
+        )
+        self.transport_patch.start()
+        self.addCleanup(self.transport_patch.stop)
+
+    async def start_controller(self, controller):
+        await controller.start(
+            api_key="synthetic-key", feature_enabled=True,
+            microphone_consent=True, cloud_stt_consent=True,
+            cloud_tts_consent=True, input_device=None, output_device=None,
+        )
+
+    async def test_repeated_cancel_during_real_open_cleanup_keeps_owner(self):
+        opening, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class WebSocket(FakeWebSocket):
+            async def send_json(self, value):
+                opening.set()
+                await asyncio.Event().wait()
+
+            async def close(self):
+                closing.set()
+                await release.wait()
+                self.closed = True
+
+        websocket = WebSocket()
+        FakeClientSession.next_websocket = websocket
+        controller = RealtimeVoiceController(
+            loop=asyncio.get_running_loop(), bridge_factory=lambda *a, **k: mock.Mock()
+        )
+        task = asyncio.create_task(self.start_controller(controller))
+        try:
+            await asyncio.wait_for(opening.wait(), 2)
+            task.cancel("first cancellation")
+            await asyncio.wait_for(closing.wait(), 2)
+            session = controller._session
+            task.cancel("second cancellation")
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            self.assertIs(controller._session, session)
+            self.assertIs(session._ws, websocket)
+            self.assertFalse(session._cleanup_task.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError) as caught:
+                await asyncio.wait_for(task, 2)
+            self.assertEqual(caught.exception.args, ("first cancellation",))
+            self.assertTrue(websocket.closed)
+            self.assertTrue(FakeClientSession.instances[0].closed)
+            self.assertTrue(session._cleanup_task.done())
+            self.assertIsNone(controller._session)
+            await controller.stop()
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_open_error_survives_cancellation_during_transport_cleanup(self):
+        closing, release = asyncio.Event(), asyncio.Event()
+        primary = DuplexProtocolError("synthetic original protocol failure")
+
+        class WebSocket(FakeWebSocket):
+            async def send_json(self, value):
+                raise primary
+
+            async def close(self):
+                closing.set()
+                await release.wait()
+                self.closed = True
+
+        websocket = WebSocket()
+        FakeClientSession.next_websocket = websocket
+        controller = RealtimeVoiceController(
+            loop=asyncio.get_running_loop(), bridge_factory=lambda *a, **k: mock.Mock()
+        )
+        task = asyncio.create_task(self.start_controller(controller))
+        try:
+            await asyncio.wait_for(closing.wait(), 2)
+            task.cancel("secondary cancellation")
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(DuplexProtocolError) as caught:
+                await asyncio.wait_for(task, 2)
+            self.assertIs(caught.exception, primary)
+            self.assertTrue(websocket.closed)
+            self.assertTrue(FakeClientSession.instances[0].closed)
+            self.assertIsNone(controller._session)
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cancelled_response_cancel_still_closes_transports(self):
+        sending = asyncio.Event()
+
+        class WebSocket(FakeWebSocket):
+            async def send_json(self, value):
+                if value.get("type") == "response.cancel":
+                    sending.set()
+                    await asyncio.Event().wait()
+                await super().send_json(value)
+
+        websocket = WebSocket()
+        FakeClientSession.next_websocket = websocket
+        session = OpenAIRealtimeSessionTests.new_session(asyncio.get_running_loop())
+        await session.open()
+        session._active_response_id = "synthetic-response"
+        task = asyncio.create_task(session.cancel())
+        try:
+            await asyncio.wait_for(sending.wait(), 2)
+            task.cancel("cancel response send")
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+            self.assertTrue(websocket.closed)
+            self.assertTrue(FakeClientSession.instances[0].closed)
+            await session.cancel()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await session.cancel()
+
+    async def test_websocket_close_failure_does_not_skip_client_or_queue(self):
+        websocket = FakeWebSocket()
+        websocket.close = mock.AsyncMock(side_effect=OSError("synthetic close failure"))
+        FakeClientSession.next_websocket = websocket
+        session = OpenAIRealtimeSessionTests.new_session(asyncio.get_running_loop())
+        await session.open()
+        await session.cancel()
+        websocket.close.assert_awaited_once()
+        self.assertTrue(FakeClientSession.instances[0].closed)
+        self.assertIsNone(session._client)
+        self.assertIsNone(session._ws)
+        self.assertEqual(session._queue.qsize(), 0)
+        await session.cancel()
+        websocket.close.assert_awaited_once()
 
 
 class OpenAIRealtimeSessionTests(unittest.TestCase):

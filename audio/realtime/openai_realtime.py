@@ -115,7 +115,6 @@ class OpenAIRealtimeSession(DuplexSession):
         self._sender_task: asyncio.Task[None] | None = None
         self._receiver_task: asyncio.Task[None] | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
-        self._cleanup_lock = asyncio.Lock()
         self._session_updated = asyncio.Event()
 
     @property
@@ -193,11 +192,13 @@ class OpenAIRealtimeSession(DuplexSession):
             self._raise_if_failed()
         except asyncio.CancelledError:
             self._state = DuplexState.CANCELED
-            await self._cleanup()
+            with suppress(asyncio.CancelledError):
+                await self._cleanup()
             raise
         except Exception as exc:
-            await self._close_transport()
             self._state = DuplexState.FAILED
+            with suppress(asyncio.CancelledError):
+                await self._cleanup()
             if isinstance(exc, DuplexError):
                 raise
             if isinstance(exc, asyncio.TimeoutError):
@@ -293,8 +294,10 @@ class OpenAIRealtimeSession(DuplexSession):
 
     async def close(self) -> None:
         if self._state is DuplexState.CLOSED:
+            await self._cleanup()
             return
         if self._state is DuplexState.CANCELED:
+            await self._cleanup()
             raise asyncio.CancelledError
         if self._state is DuplexState.FAILED:
             await self._wait_for_failure_cleanup()
@@ -327,20 +330,27 @@ class OpenAIRealtimeSession(DuplexSession):
 
     async def cancel(self) -> None:
         if self._state in (DuplexState.CANCELED, DuplexState.CLOSED):
+            await self._cleanup()
             return
         was_open = self._state in (DuplexState.OPEN, DuplexState.CLOSING)
         response_id = self._active_response_id
         self._state = DuplexState.CANCELED
         self._active_response_id = None
-        if was_open and response_id is not None and self._ws is not None:
-            with suppress(Exception):
-                await self._ws.send_json(
-                    {
-                        "type": "response.cancel",
-                        "response_id": response_id,
-                    }
-                )
-        await self._cleanup()
+        try:
+            if was_open and response_id is not None and self._ws is not None:
+                with suppress(Exception):
+                    await self._ws.send_json(
+                        {
+                            "type": "response.cancel",
+                            "response_id": response_id,
+                        }
+                    )
+        except BaseException:
+            with suppress(asyncio.CancelledError):
+                await self._cleanup()
+            raise
+        else:
+            await self._cleanup()
 
     def _session_update_event(self) -> dict[str, Any]:
         return {
@@ -655,7 +665,7 @@ class OpenAIRealtimeSession(DuplexSession):
             self._failure_reported = True
             with suppress(Exception):
                 self._on_error(str(error))
-        self._cleanup_task = asyncio.create_task(self._cleanup())
+        self._start_cleanup()
 
     def _schedule_failure(self, error: DuplexError) -> None:
         with suppress(RuntimeError):
@@ -682,30 +692,59 @@ class OpenAIRealtimeSession(DuplexSession):
         self._receiver_task = None
 
     async def _wait_for_failure_cleanup(self) -> None:
-        if self._cleanup_task is not None:
-            await asyncio.shield(self._cleanup_task)
+        await self._cleanup()
+
+    def _start_cleanup(self) -> asyncio.Task[None]:
+        if self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(self._cleanup_owned())
+        return self._cleanup_task
 
     async def _cleanup(self) -> None:
-        async with self._cleanup_lock:
+        # Publish the cleanup owner before its first await. Terminal state alone
+        # does not establish that workers and transports have been released.
+        cleanup = self._start_cleanup()
+        interrupted: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError as exc:
+                if cleanup.cancelled():
+                    raise
+                if interrupted is None:
+                    interrupted = exc
+        if interrupted is not None:
+            raise interrupted
+
+    async def _cleanup_owned(self) -> None:
+        try:
             await self._stop_workers()
-            await self._close_transport()
-            self._clear_queued_frames()
+        finally:
+            try:
+                await self._close_transport()
+            finally:
+                self._clear_queued_frames()
 
     async def _close_transport(self) -> None:
-        websocket, self._ws = self._ws, None
-        client, self._client = self._client, None
-        if websocket is not None:
-            with suppress(Exception):
-                await asyncio.wait_for(
-                    websocket.close(),
-                    timeout=CLOSE_TIMEOUT_SECONDS,
-                )
-        if client is not None:
-            with suppress(Exception):
-                await asyncio.wait_for(
-                    client.close(),
-                    timeout=CLOSE_TIMEOUT_SECONDS,
-                )
+        websocket, client = self._ws, self._client
+        try:
+            if websocket is not None:
+                with suppress(Exception):
+                    await asyncio.wait_for(
+                        websocket.close(),
+                        timeout=CLOSE_TIMEOUT_SECONDS,
+                    )
+        finally:
+            self._ws = None
+            try:
+                if client is not None:
+                    with suppress(Exception):
+                        await asyncio.wait_for(
+                            client.close(),
+                            timeout=CLOSE_TIMEOUT_SECONDS,
+                        )
+            finally:
+                self._client = None
 
     def _clear_queued_frames(self) -> None:
         while True:
