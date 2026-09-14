@@ -45,6 +45,32 @@ continues to enforce the existing speech permission setting.
 
 ## Boundaries retained
 
+Task-model collection and its configured provider adapter each own their acquired
+iterator through `tasks/stream_lifecycle.py`. Cleanup is awaited when iteration
+finishes or fails, while iterators without a callable `aclose` remain supported.
+An existing validation, provider, or cancellation error wins over a cleanup
+error; cleanup-only failure prevents a successful broker result. This owns stream
+cleanup attempts, not provider-client disposal or a new cleanup timeout policy.
+
+`security/filesystem.py` owns the shared link/reparse predicates, directory
+protection and no-follow tree cleanup. Task workspaces, artifact adoption and
+workspace adoption use that public interface while retaining their separate
+root checks, authorization, rollback and error reporting. The extraction does
+not change native ACL behavior or establish new containment guarantees.
+
+Response selection has one manager-owned synchronization boundary. Provider and
+model preferences are saved before the manager publishes the new selection;
+failed saves retain the previous selection and restore the panel without retrying
+the failed write. Immutable response tokens include provider, effective endpoint,
+model and revision. Acquiring a backend checks that token again after construction,
+which runs outside the lock. Request streams use the acquired backend and model
+together. This does not change SDK client disposal or promise synchronization for
+arbitrary direct writes to configuration fields outside the manager's setters.
+
+`ai/response_selection.py` contains importable, dependency-free token checks and
+is included in the strict mypy selection. Manager regression tests call the real
+methods with synthetic configuration and backends; they do not copy method ASTs.
+
 Microphone diagnostics remain local and separate from transcription and capture.
 OAuth consent, scope validation, token storage, action approval, worker isolation,
 and authenticated receipts keep their existing responsibilities. The CI build,
@@ -66,6 +92,36 @@ source files, with explicit `Any` disallowed and no new type suppressions.
 Local checks use offscreen Qt on Linux. Native Windows capture, microphone
 hardware, packaged startup and actual provider endpoints require Windows/runtime
 validation; unit tests do not establish those outcomes.
+
+## Region cancellation ownership
+
+The region controller removes the exact active identity before cancellation,
+blocking late result publication. Saving the state, removing UI actions, wiping
+the reviewed pixels, requesting future cancellation and requesting worker
+cancellation have independent cleanup paths. A state-save or cleanup exception
+produces a failure signal and a false cancellation result; cleanup still runs.
+Executor cancellation uses the same path without cancelling its own future.
+Repeated cancellation has no remaining active identity to release.
+
+A true cancellation result means the state was saved and cleanup calls returned
+without an observed exception. It does not prove that a background future or
+native worker has terminated. Tests use temporary databases, fake workers and
+offscreen Qt, including a blocked synthetic provider iterator. They cover save,
+state-transition and individual cleanup failures and suppress late output. The
+earlier Linux verification paragraph records the original cleanup work; these
+Windows synthetic checks do not establish device, installed-package or live
+provider behavior.
+
+## Lesson recorder ownership
+
+Each recording owns its writer, stop event and transcript. The capture worker
+finalizes those resources after its last write. A Stop timeout leaves the session
+in a stopping state and rejects a replacement recording until the old worker
+exits. Late captured frames are discarded after Stop. Only successful video and
+transcript finalization produces the saved result; cleanup failures remain visible.
+Ordinary Quit waits for this ownership boundary and stays open if finalization is
+still pending. Process termination or an OS shutdown can still interrupt recording.
+Local recording consent policy is unchanged by this lifecycle correction.
 
 ## Realtime startup ownership
 
