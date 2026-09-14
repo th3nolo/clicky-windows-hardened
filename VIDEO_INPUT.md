@@ -40,6 +40,15 @@ Audio stays inside the MP4; the video path does not call a separate STT provider
 
 ## Bounds and lifecycle
 
+Clipboard submissions, reviewed region handoffs, and screen-and-voice recordings
+retain the accepted provider, effective endpoint, model and selection revision.
+Changing that selection while work is queued rejects the request, including a
+change away and back to the same model. Clipboard image data is copied at
+submission. Immediately before dispatch, Clicky rechecks the relevant sharing
+permission and image capability, acquires the matching backend/model pair, and
+uses that pair for the stream. A later switch affects new requests; it does not
+redirect an already acquired request. There is no cross-provider fallback.
+
 - One pinned display, captured at 6 fps, at most 1280 × 720; H.264 video and mono 16 kHz AAC audio.
 - 60-second capture ceiling, 24 MiB capture-buffer ceiling, 16 MiB encoded MP4 ceiling. Capacity failures discard the request rather than truncate it silently.
 - Frames and PCM stay in memory; no temporary recordings or media journal entries are written.

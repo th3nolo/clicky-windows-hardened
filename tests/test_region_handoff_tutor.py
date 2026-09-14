@@ -78,12 +78,12 @@ class RouteHarness:
     def _get_llm(self):
         return self._provider
 
-    def _acquire_response_dispatch(self):
-        return ResponseDispatch(
-            ResponseSelection(ProviderIdentity(manager_module.cfg.llm_provider(), "synthetic"),
-                              self._current_model, 1),
-            self._provider,
-        )
+    def _response_selection(self):
+        return ResponseSelection(ProviderIdentity(manager_module.cfg.llm_provider(), "synthetic"),
+                                 self._current_model, 1)
+
+    def _acquire_response_dispatch(self, selection):
+        return ResponseDispatch(selection, self._provider)
 
     def _emit_turn_signal(self, session, signal, *args):
         return CompanionManager._emit_turn_signal(
@@ -107,6 +107,7 @@ class RouteHarness:
 
 
 class StartHarness:
+    _response_selection = RouteHarness._response_selection
     def __init__(self) -> None:
         self._turns = TurnCoordinator()
         self._current_model = "vision-model"
@@ -123,7 +124,7 @@ class StartHarness:
     def _set_idle_state(self):
         self.states.append(("idle", None))
 
-    async def _run_region_tutor(self, routed, session):
+    async def _run_region_tutor(self, routed, session, selection):
         return (routed, session)
 
     def _submit(self, coroutine, session=None):
@@ -174,6 +175,7 @@ class TutorRegionCallerTests(unittest.TestCase):
                     harness,
                     routed,
                     session,
+                    harness._response_selection(),
                 )
             )
 

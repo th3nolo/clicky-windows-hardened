@@ -103,8 +103,7 @@ _log = logging.getLogger("clicky.manager")
 class ScreenVoiceCapture:
     session: TurnSession
     recorder: VoiceClipRecorder
-    provider: str
-    model: str
+    selection: ResponseSelection
     timer: threading.Timer
 
 
@@ -699,8 +698,9 @@ class CompanionManager(QObject):
             raise RuntimeError(
                 "Screen capture permission was revoked before routing."
             )
-        model = self._current_model
-        provider = cfg.llm_provider()
+        selection = self._response_selection()
+        model = selection.model_id
+        provider = selection.identity.provider_id
         if not model:
             context.wipe()
             raise RuntimeError(
@@ -733,7 +733,7 @@ class CompanionManager(QObject):
             self._cancel_outputs,
         )
         self._emit_state(AppState.THINKING, session)
-        worker = self._run_region_tutor(context, session)
+        worker = self._run_region_tutor(context, session, selection)
         try:
             future = self._submit(
                 worker,
@@ -754,6 +754,7 @@ class CompanionManager(QObject):
         self,
         context,
         session: TurnSession,
+        selection: ResponseSelection,
     ) -> None:
         """Use only the reviewed crop; never recapture or inherit history."""
 
@@ -777,7 +778,7 @@ class CompanionManager(QObject):
                 raise RuntimeError(
                     "The reviewed region changed before provider routing."
                 )
-            dispatch = self._acquire_response_dispatch()
+            dispatch = self._acquire_response_dispatch(selection)
             provider = dispatch.selection.identity.provider_id
             model = dispatch.selection.model_id
             if not model:
@@ -1288,9 +1289,10 @@ class CompanionManager(QObject):
     def start_video_capture(self) -> TurnSession | None:
         """Explicit screen-and-voice action; regular dictation/STT stays separate."""
         with self._input_lock:
+            selection = self._response_selection()
             if (
                 not self._video_sharing_allowed()
-                or not supports_video(cfg.llm_provider(), self._current_model)
+                or not supports_video(selection.identity.provider_id, selection.model_id)
             ):
                 self.sig_error.emit(
                     "Select Muse Spark 1.2 or 1.3 in OpenRouter and enable microphone, "
@@ -1307,14 +1309,13 @@ class CompanionManager(QObject):
             session = self._turns.start_capture()
             if session is None:
                 return None
-            provider, model = cfg.llm_provider(), self._current_model or ""
             recorder = VoiceClipRecorder(lambda: (
                 self._video_sharing_allowed()
-                and cfg.llm_provider() == provider and self._current_model == model
+                and self._response_selection() == selection
             ))
             timer = threading.Timer(MAX_SECONDS, self.send_video_capture, args=(session,))
             timer.daemon = True
-            self._video_capture = ScreenVoiceCapture(session, recorder, provider, model, timer)
+            self._video_capture = ScreenVoiceCapture(session, recorder, selection, timer)
             self._turns.bind_cancel(session, "video", recorder.cancel)
             try:
                 recorder.start()
@@ -1366,15 +1367,13 @@ class CompanionManager(QObject):
             video = await asyncio.to_thread(recorder.finish)
             if not self._turns.is_current(session):
                 return
-            if (
-                not self._video_sharing_allowed()
-                or cfg.llm_provider() != capture.provider or self._current_model != capture.model
-            ):
-                raise PermissionError("Recording destination or permissions changed")
+            if not self._video_sharing_allowed():
+                raise PermissionError("Recording permissions changed")
+            dispatch = self._acquire_response_dispatch(capture.selection)
             await self._answer_media(
                 session, "Follow my spoken instructions in this screen recording. "
                 "Use both the audio and the visual sequence; explain any uncertainty.",
-                [], video,
+                [], video, dispatch=dispatch,
             )
         except Exception:
             self._emit_turn_signal(session, self.sig_error,
@@ -1387,25 +1386,38 @@ class CompanionManager(QObject):
         if len(text) > 16000 or len(images) > 1:
             self.sig_error.emit("Clipboard input is too large")
             return
+        selection = self._response_selection()
         if images:
             from compose.service import cached_model_supports_vision
-            if not screen_capture_allowed(cfg) or not cached_model_supports_vision(cfg.llm_provider(), self._current_model):
+            if not screen_capture_allowed(cfg) or not cached_model_supports_vision(
+                selection.identity.provider_id, selection.model_id,
+            ):
                 self.sig_error.emit("Enable image sharing and select a model with image input")
                 return
         with self._input_lock:
-            if self._turns.active is not None or not self._current_model:
+            if self._turns.active is not None or not selection.model_id:
                 self.sig_error.emit("Select a model and finish the active turn first")
                 return
             session = self._turns.start_processing()
             if session is not None:
                 self._turns.bind_cancel(session, "playback", self._cancel_outputs)
-                self._submit(self._answer_clipboard(session, text, images), session)
+                self._submit(self._answer_clipboard(session, text, tuple(images), selection), session)
 
-    async def _answer_clipboard(self, session: TurnSession, text: str, images: list[str]) -> None:
+    async def _answer_clipboard(
+        self, session: TurnSession, text: str, images: tuple[str, ...], selection: ResponseSelection,
+    ) -> None:
         try:
-            if images and not screen_capture_allowed(cfg):
-                raise PermissionError("Image sharing is no longer allowed")
-            await self._answer_media(session, text, images)
+            if not self._turns.is_current(session):
+                return
+            if images:
+                from compose.service import cached_model_supports_vision
+
+                if not screen_capture_allowed(cfg) or not cached_model_supports_vision(
+                    selection.identity.provider_id, selection.model_id,
+                ):
+                    raise PermissionError("Image sharing is no longer allowed")
+            dispatch = self._acquire_response_dispatch(selection)
+            await self._answer_media(session, text, list(images), dispatch=dispatch)
         except Exception:
             self._emit_turn_signal(session, self.sig_error, "Clipboard request failed; no fallback was sent")
         finally:
@@ -1413,6 +1425,7 @@ class CompanionManager(QObject):
 
     async def _answer_media(
         self, session: TurnSession, text: str, images: list[str], video: VideoInput | None = None,
+        *, dispatch: ResponseDispatch[BaseLLMProvider],
     ) -> None:
         self._emit_state(AppState.THINKING, session)
         self._emit_turn_signal(session, self.sig_transcript_final, session.sequence, text)
@@ -1424,11 +1437,11 @@ class CompanionManager(QObject):
             "Actions require Clicky's existing Task Center and approval controls. "
             "Return plain text or Markdown without desktop-control markup."
         )
-        backend = self._get_llm()
+        backend, model = dispatch.backend, require_selected_model(dispatch.selection)
         stream = (
-            backend.stream_video_response(text, video, [], system, self._current_model)
+            backend.stream_video_response(text, video, [], system, model)
             if video is not None else
-            backend.stream_response(text, images, [], system, self._current_model)
+            backend.stream_response(text, images, [], system, model)
         )
         parts: list[str] = []
         async with aclosing(stream):

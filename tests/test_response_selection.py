@@ -1,5 +1,7 @@
 """Real selection-owner methods with synthetic configuration and backends."""
 
+import asyncio
+import hashlib
 import threading
 import types
 import unittest
@@ -8,6 +10,7 @@ from unittest import mock
 import config
 import companion_manager as manager_module
 from companion_manager import CompanionManager
+from turn_coordinator import TurnCoordinator
 from ai.response_selection import (
     ProviderIdentity, ResponseSelection, SelectionChangedError,
     require_selected_model, require_unchanged_selection,
@@ -168,6 +171,123 @@ class ResponseSelectionTests(unittest.TestCase):
         self.assertEqual(self.cfg.ollama_text_model, "updated-local")
         with self.assertRaises(SelectionChangedError):
             self.host._acquire_response_dispatch(before.selection)
+
+    def media_host(self):
+        host = self.host
+        host._input_lock = threading.RLock()
+        host._turns = TurnCoordinator()
+        host._cancel_outputs = mock.Mock()
+        host._emit_state = host._emit_turn_signal = mock.Mock()
+        host.sig_transcript_final = host.sig_response_chunk = object()
+        host.sig_response_done = object()
+        host._speak_with_failure_fallback = mock.AsyncMock()
+        host._finish_turn = host._turns.complete
+        host._answer_clipboard = types.MethodType(CompanionManager._answer_clipboard, host)
+        host._answer_media = types.MethodType(CompanionManager._answer_media, host)
+        host.pending = []
+        host._submit = lambda coroutine, session: host.pending.append(coroutine)
+        host.sent = []
+        async def response(*args, **kwargs):
+            host.sent.append((args, kwargs))
+            yield "synthetic response"
+        backend = types.SimpleNamespace(stream_response=response, stream_video_response=response)
+        host._create_llm.side_effect = lambda _: backend
+        return host
+
+    def drain(self, host):
+        async def run():
+            for coroutine in host.pending:
+                await coroutine
+        asyncio.run(run())
+        host.pending.clear()
+
+    def test_queued_clipboard_rejects_each_changed_destination_without_request(self):
+        host = self.media_host()
+        changes = (
+            lambda: host.set_active_provider("openrouter"),
+            lambda: host.set_model("model-b"),
+            lambda: setattr(self.cfg, "openai_base_url", "http://127.0.0.1:8765/v1"),
+            lambda: (host.set_model("model-b"), host.set_model("model-a")),
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                host.set_active_provider("openai")
+                host.set_model("model-a")
+                self.cfg.openai_base_url = "https://api.openai.com/v1"
+                with mock.patch.object(manager_module, "screen_capture_allowed", return_value=True):
+                    CompanionManager.submit_clipboard(host, "review", ["accepted-image"])
+                    self.assertEqual(len(host.pending), 1)
+                    change()
+                    self.drain(host)
+                self.assertEqual(host.sent, [])
+                self.assertIsNone(host._turns.active)
+        host._create_llm.assert_not_called()
+
+    def test_clipboard_copies_images_and_dispatch_does_not_reread_selection(self):
+        host = self.media_host()
+        images = ["accepted-image"]
+        acquire = host._acquire_response_dispatch
+        def acquire_then_switch(selection):
+            dispatch = acquire(selection)
+            host.set_active_provider("openrouter")
+            host.set_model("model-b")
+            return dispatch
+        host._acquire_response_dispatch = acquire_then_switch
+        with mock.patch.object(manager_module, "screen_capture_allowed", return_value=True):
+            CompanionManager.submit_clipboard(host, "review", images)
+            images[0] = "later-image"
+            self.drain(host)
+        self.assertEqual(len(host.sent), 1)
+        args, _ = host.sent[0]
+        self.assertEqual(args[1], ["accepted-image"])
+        self.assertEqual(args[-1], "model-a")
+        host._create_llm.assert_called_once_with("openai")
+
+    def test_clipboard_rechecks_permission_and_capability_and_stale_turn(self):
+        host = self.media_host()
+        for mode in ("permission", "capability", "turn"):
+            with self.subTest(mode=mode), mock.patch.object(
+                manager_module, "screen_capture_allowed", return_value=True,
+            ) as allowed, mock.patch("compose.service.cached_model_supports_vision", return_value=True) as vision:
+                CompanionManager.submit_clipboard(host, "review", ["image"])
+                if mode == "permission":
+                    allowed.return_value = False
+                elif mode == "capability":
+                    vision.return_value = False
+                else:
+                    host._turns.cancel_active()
+                self.drain(host)
+                self.assertEqual(host.sent, [])
+        host._create_llm.assert_not_called()
+
+    def test_video_rejects_revision_change_even_when_model_is_restored(self):
+        host = self.media_host()
+        host._video_sharing_allowed = mock.Mock(return_value=True)
+        selection = host._response_selection()
+        session = host._turns.start_processing()
+        recorder = mock.Mock()
+        recorder.finish.return_value = object()
+        capture = types.SimpleNamespace(selection=selection, session=session, recorder=recorder)
+        host.set_model("model-b")
+        host.set_model("model-a")
+        asyncio.run(CompanionManager._answer_video(host, capture))
+        self.assertEqual(host.sent, [])
+        host._create_llm.assert_not_called()
+        recorder.cancel.assert_called_once()
+
+    def test_region_worker_rejects_the_accepted_endpoint_after_queue_change(self):
+        host = self.media_host()
+        selection = host._response_selection()
+        session = host._turns.start_processing()
+        image = b"synthetic-crop"
+        context = types.SimpleNamespace(image_content=image, image_sha256=hashlib.sha256(image).hexdigest(),
+                                        expires_at=float("inf"), wipe=mock.Mock())
+        self.cfg.openai_base_url = "http://127.0.0.1:8765/v1"
+        with mock.patch.object(manager_module, "screen_capture_allowed", return_value=True):
+            asyncio.run(CompanionManager._run_region_tutor(host, context, session, selection))
+        self.assertEqual(host.sent, [])
+        host._create_llm.assert_not_called()
+        context.wipe.assert_called()
 
 
 class SelectionUITests(unittest.TestCase):
