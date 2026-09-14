@@ -60,10 +60,7 @@ class GlobalHotkeyMonitor:
       • CLASSIC combos ("ctrl+alt+space", "alt+q"): last part is a normal
         key; hook press/release of that key and require the modifiers.
 
-    Start-menu suppression: when a combo containing Win engages, we inject a
-    dummy F24 press. Windows only opens the Start menu if the Win key is
-    pressed and released *alone* — the dummy key marks the hold as "used",
-    so releasing Win afterwards does nothing.
+    Observes keys without injecting replacement keys or suppressing Start.
     """
 
     def __init__(
@@ -77,7 +74,6 @@ class GlobalHotkeyMonitor:
         self._on_press = on_press
         self._on_release = on_release
         self._held = False
-        self._has_win = any(p in ("win", "windows", "cmd") for p in self._parts)
         self._modifier_only = all(p in _MOD_ALIASES for p in self._parts)
         self._hook_handle = None
         # Canonical set of tokens the combo needs, and our own live key-state.
@@ -112,8 +108,6 @@ class GlobalHotkeyMonitor:
                 # is_pressed as a safety net for events we may have missed).
                 if all(t in self._down or _is_down(t) for t in self._need):
                     self._held = True
-                    if self._has_win:
-                        self._suppress_start_menu()
                     self._on_press()
             else:
                 # Release when any needed token is genuinely up.
@@ -124,14 +118,6 @@ class GlobalHotkeyMonitor:
         except Exception:
             pass  # never let a callback error kill the keyboard hook
 
-    @staticmethod
-    def _suppress_start_menu():
-        """Inject a dummy key while Win is held so its release is a no-op."""
-        try:
-            keyboard.press_and_release("f24")
-        except Exception:
-            pass
-
     # ── Classic terminal-key mode ─────────────────────────────────────────────
 
     def _modifiers_held(self) -> bool:
@@ -140,8 +126,6 @@ class GlobalHotkeyMonitor:
     def _handle_press(self, event):
         if not self._held and self._modifiers_held():
             self._held = True
-            if self._has_win:
-                self._suppress_start_menu()
             self._on_press()
 
     def _handle_release(self, event):
