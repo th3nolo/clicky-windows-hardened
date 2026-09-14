@@ -77,37 +77,35 @@ class WindowsDuplexAudioBridge:
     def start(self) -> None:
         if self._running:
             raise RuntimeError("Realtime audio devices are already open")
-        output = self._backend.RawOutputStream(
-            samplerate=PROVIDER_SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=OUTPUT_CHUNK_FRAMES,
-            device=self._output_device,
-        )
-        input_stream = self._backend.RawInputStream(
-            samplerate=INPUT_SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=INPUT_BLOCK_FRAMES,
-            device=self._input_device,
-            callback=self._input_callback,
-        )
+        self._drain_output_queue()
         try:
-            output.start()
-            input_stream.start()
-        except Exception:
-            self._close_stream(input_stream)
-            self._close_stream(output)
+            self._output_stream = self._backend.RawOutputStream(
+                samplerate=PROVIDER_SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=OUTPUT_CHUNK_FRAMES,
+                device=self._output_device,
+            )
+            self._input_stream = self._backend.RawInputStream(
+                samplerate=INPUT_SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=INPUT_BLOCK_FRAMES,
+                device=self._input_device,
+                callback=self._input_callback,
+            )
+            self._output_stream.start()
+            self._input_stream.start()
+            self._running = True
+            self._worker = threading.Thread(
+                target=self._write_output,
+                name="clicky-realtime-output",
+                daemon=True,
+            )
+            self._worker.start()
+        except BaseException:
+            self.stop()
             raise
-        self._output_stream = output
-        self._input_stream = input_stream
-        self._running = True
-        self._worker = threading.Thread(
-            target=self._write_output,
-            name="clicky-realtime-output",
-            daemon=True,
-        )
-        self._worker.start()
 
     def enqueue_output(self, pcm16_audio: bytes) -> None:
         if not self._running or not pcm16_audio:
@@ -154,7 +152,11 @@ class WindowsDuplexAudioBridge:
             self._drain_output_queue()
             self._output_queue.put_nowait(_OUTPUT_END)
         worker = self._worker
-        if worker is not None and worker is not threading.current_thread():
+        if (
+            worker is not None
+            and worker is not threading.current_thread()
+            and worker.is_alive()
+        ):
             worker.join(timeout=1.0)
         self._worker = None
         self._close_stream(self._output_stream)
