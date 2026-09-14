@@ -310,9 +310,12 @@ class TaskWorkerPolicyTests(unittest.TestCase):
             "workspace.verify()",
             "protocol_output_bytes",
             "diagnostic_bytes",
-            "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)",
         ):
             self.assertIn(required, source)
+        self.assertIn(
+            "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)",
+            (ROOT / "security" / "filesystem.py").read_text(encoding="utf-8"),
+        )
         self.assertIn("not a complete sandbox", source)
 
 

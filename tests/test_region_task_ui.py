@@ -9,6 +9,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -292,6 +293,161 @@ class TaskRegionUiTests(unittest.IsolatedAsyncioTestCase):
         for coroutine, _future in tuple(self.submissions):
             await coroutine
         self.submissions.clear()
+
+    async def test_cancel_save_failure_still_releases_pending_resources(self):
+        routed = context()
+        run_id = self.controller.route(routed)
+        coroutine, future = self.submissions.pop()
+        cancelled, failed = [], []
+        self.controller.cancelled.connect(cancelled.append)
+        self.controller.failed.connect(lambda *args: failed.append(args))
+
+        with mock.patch.object(self.store, "sync_run", side_effect=OSError):
+            self.assertFalse(self.actions.cancel(run_id))
+
+        self.assertEqual(self.controller.active_run_ids, ())
+        self.assertFalse(self.actions.controllable(run_id))
+        self.assertTrue(future.cancelled)
+        self.assertEqual(bytes(routed.image_content), b"\x00" * len(JPEG))
+        self.assertEqual(self.workers.started[0][1].cancel_calls, 1)
+        self.assertEqual(cancelled, [])
+        self.assertEqual(failed, [(run_id, "region_task_cancel_state_not_saved")])
+        self.assertIs(self.store.get_task(run_id).state, TaskState.RUNNING)
+        await coroutine
+        self.assertEqual(self.provider.calls, [])
+        self.assertFalse(self.controller.cancel(run_id))
+        self.assertEqual(self.workers.started[0][1].cancel_calls, 1)
+
+    async def test_cancel_save_failure_closes_executing_stream_without_result(self):
+        entered, closed = asyncio.Event(), asyncio.Event()
+
+        class BlockingProvider:
+            async def stream_response(self, **kwargs):
+                try:
+                    entered.set()
+                    await asyncio.Event().wait()
+                    yield "late result"
+                finally:
+                    closed.set()
+
+        self.provider = BlockingProvider()
+        self.controller._submit = asyncio.create_task
+        completed, cancelled, failed = [], [], []
+        self.controller.completed.connect(completed.append)
+        self.controller.cancelled.connect(cancelled.append)
+        self.controller.failed.connect(lambda *args: failed.append(args))
+        routed = context()
+        run_id = self.controller.route(routed)
+        task = self.controller._active[run_id].future
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            with mock.patch.object(self.store, "sync_run", side_effect=OSError):
+                self.assertFalse(self.controller.cancel(run_id))
+            await asyncio.wait_for(task, 2)
+            self.assertTrue(closed.is_set())
+            self.assertEqual(completed, [])
+            self.assertEqual(cancelled, [])
+            self.assertEqual(failed, [(run_id, "region_task_cancel_state_not_saved")])
+            self.assertEqual(self.workers.started[0][1].cancel_calls, 1)
+            self.assertEqual(bytes(routed.image_content), b"\x00" * len(JPEG))
+            self.assertFalse(any(
+                event.event_type == "model_output"
+                for event in self.store.list_events(run_id)
+            ))
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_each_cleanup_failure_preserves_remaining_attempts(self):
+        for stage in ("actions", "pixels", "future", "worker"):
+            with self.subTest(stage=stage):
+                routed = context(stage)
+                run_id = self.controller.route(routed)
+                _coroutine, future = self.submissions[-1]
+                worker = self.workers.started[-1][1]
+                failed, cancelled = [], []
+                on_failed = lambda *args: failed.append(args)
+                self.controller.failed.connect(on_failed)
+                self.controller.cancelled.connect(cancelled.append)
+                target, method = {
+                    "actions": (self.actions, "finish"),
+                    "pixels": (HandoffRouteContext, "wipe"),
+                    "future": (future, "cancel"),
+                    "worker": (worker, "cancel"),
+                }[stage]
+                with mock.patch.object(target, method, side_effect=OSError) as fault:
+                    self.assertFalse(self.controller.cancel(run_id))
+                fault.assert_called_once()
+                self.assertIs(self.store.get_task(run_id).state, TaskState.CANCELLED)
+                self.assertEqual(self.controller.active_run_ids, ())
+                self.assertEqual(cancelled, [])
+                self.assertEqual(failed, [(run_id, "region_task_cancel_cleanup_failed")])
+                if stage != "actions":
+                    self.assertFalse(self.actions.controllable(run_id))
+                if stage != "pixels":
+                    self.assertEqual(bytes(routed.image_content), b"\x00" * len(JPEG))
+                if stage != "future":
+                    self.assertTrue(future.cancelled)
+                if stage != "worker":
+                    self.assertEqual(worker.cancel_calls, 1)
+                self.controller.failed.disconnect(on_failed)
+                self.controller.cancelled.disconnect(cancelled.append)
+                self.actions.finish(run_id)
+                routed.wipe()
+
+    async def test_cancel_transition_failure_still_releases_resources(self):
+        routed = context()
+        run_id = self.controller.route(routed)
+        run, worker = self.workers.started[0]
+        with mock.patch.object(type(run), "cancel", side_effect=RuntimeError):
+            self.assertFalse(self.controller.cancel(run_id))
+        self.assertTrue(self.submissions[0][1].cancelled)
+        self.assertEqual(worker.cancel_calls, 1)
+        self.assertEqual(bytes(routed.image_content), b"\x00" * len(JPEG))
+        self.assertFalse(self.actions.controllable(run_id))
+
+    async def test_cancel_all_continues_after_one_save_failure(self):
+        routes = [context("first"), context("second")]
+        run_ids = [self.controller.route(routed) for routed in routes]
+        sync_run = self.store.sync_run
+
+        def save(run):
+            if run.run_id == run_ids[0]:
+                raise OSError("synthetic save failure")
+            sync_run(run)
+
+        with mock.patch.object(self.store, "sync_run", side_effect=save):
+            self.controller.cancel_all()
+        self.assertEqual(self.controller.active_run_ids, ())
+        self.assertTrue(all(future.cancelled for _, future in self.submissions))
+        self.assertEqual([worker.cancel_calls for _, worker in self.workers.started], [1, 1])
+        self.assertTrue(all(bytes(item.image_content) == b"\x00" * len(JPEG) for item in routes))
+        self.assertIs(self.store.get_task(run_ids[0]).state, TaskState.RUNNING)
+        self.assertIs(self.store.get_task(run_ids[1]).state, TaskState.CANCELLED)
+
+    async def test_executor_cancel_save_failure_has_no_success_signal(self):
+        routed = context()
+        run_id = self.controller.route(routed)
+        active = self.controller._active[run_id]
+        cancelled, failed = [], []
+        self.controller.cancelled.connect(cancelled.append)
+        self.controller.failed.connect(lambda *args: failed.append(args))
+        with mock.patch.object(self.store, "sync_run", side_effect=OSError):
+            self.controller._cancel_from_executor(active)
+        self.assertEqual(cancelled, [])
+        self.assertEqual(failed, [(run_id, "region_task_cancel_state_not_saved")])
+        self.assertEqual(active.worker.cancel_calls, 1)
+        self.assertFalse(active.future.cancelled)
+        self.assertEqual(bytes(routed.image_content), b"\x00" * len(JPEG))
+
+    async def test_future_cancel_false_is_only_a_request_outcome(self):
+        run_id = self.controller.route(context())
+        future = self.submissions[0][1]
+        with mock.patch.object(future, "cancel", return_value=False) as cancel:
+            self.assertTrue(self.controller.cancel(run_id))
+        cancel.assert_called_once()
+        self.assertIs(self.store.get_task(run_id).state, TaskState.CANCELLED)
+        self.assertEqual(self.workers.started[0][1].cancel_calls, 1)
 
     async def test_revoked_permission_rejects_before_persistence(self) -> None:
         self.config = configured(task_agent_permission=False)
