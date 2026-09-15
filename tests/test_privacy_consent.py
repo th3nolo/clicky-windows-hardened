@@ -227,7 +227,7 @@ class PrivacyWiringTests(unittest.TestCase):
         source = (ROOT / "companion_manager.py").read_text(encoding="utf-8")
         self.assertEqual(source.count("capture_all_screens()"), 3)
         self.assertIn(
-            "if sensitive or identity_q or not screen_permission:", source
+            "if submitted_text is not None or sensitive or identity_q or not screen_permission:", source
         )
         quiz_gate = source.index(
             'if not screen_capture_allowed(cfg):\n'

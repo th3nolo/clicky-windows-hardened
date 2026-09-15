@@ -195,6 +195,19 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    local_control = None
+    if os.environ.get("CLICKY_CONTROL_API") == "1":
+        from automation.local_control import default_endpoint_file
+        from automation.local_control_qt import ClickyLocalControl
+        endpoint_file = os.environ.get("CLICKY_CONTROL_ENDPOINT_FILE") or default_endpoint_file()
+        local_control = ClickyLocalControl(manager, endpoint_file, enabled=True)
+        try:
+            local_control.start()
+        except Exception:
+            local_control.close()
+            raise
+        app.aboutToQuit.connect(local_control.close)
+        runtime_log.info("Authenticated local Clicky control enabled on loopback")
     def _toggle_debug_screenshots(enabled: bool) -> None:
         from screen.capture_exclusion import (
             debug_screenshots_enabled, set_debug_screenshots_enabled,
