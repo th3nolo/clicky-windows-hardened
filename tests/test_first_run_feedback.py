@@ -101,6 +101,7 @@ class FirstRunPermissionTests(unittest.TestCase):
     def test_media_retry_clears_old_error_but_speaking_does_not(self):
         panel = types.SimpleNamespace(_state=AppState.IDLE, _error_label=QLabel(),
             _status_dot=QLabel(), _status_label=QLabel(), _waveform=mock.Mock(),
+            _refresh_capture_controls=mock.Mock(),
             show=mock.Mock(), raise_=mock.Mock())
         panel.clear_error = lambda: CompanionPanel.clear_error(panel)
         CompanionPanel.show_error(panel, 'Old media failure')
@@ -114,14 +115,14 @@ class FirstRunPermissionTests(unittest.TestCase):
 
 
 class EmptyProviderResponseTests(unittest.IsolatedAsyncioTestCase):
-    async def run_response(self, model, content):
+    async def run_response(self, model, content, *, finish_reason='stop', method='stream_response'):
         import json
         requests = []
         def transport(request):
             requests.append(json.loads(request.content))
             chunk = {'id':'test', 'object':'chat.completion.chunk', 'created':0,
                      'model':model, 'choices':[{'index':0, 'delta':{'content':content},
-                                               'finish_reason':'stop'}]}
+                                               'finish_reason':finish_reason}]}
             return httpx.Response(200, headers={'content-type':'text/event-stream'},
                 text='data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n')
         client = create_openai_client(api_key='synthetic', base_url='https://openrouter.ai/api/v1',
@@ -131,7 +132,8 @@ class EmptyProviderResponseTests(unittest.IsolatedAsyncioTestCase):
         )), mock.patch.object(provider_module, 'create_openai_client', return_value=client):
             provider = provider_module.OpenAICompatibleProvider('openrouter')
             try:
-                answer = ''.join([part async for part in provider.stream_response(
+                stream_method = getattr(provider, method)
+                answer = ''.join([part async for part in stream_method(
                     'test', [], [], 'test', model=model)])
             finally:
                 await client.close()
@@ -148,6 +150,25 @@ class EmptyProviderResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request['provider'], {'allow_fallbacks':False,'zdr':True,'data_collection':'deny'})
         _, other = await self.run_response('another/model', 'hello')
         self.assertEqual(other['max_tokens'], 1024)
+
+    async def test_drawing_allowance_is_scoped_and_larger(self):
+        answer, request = await self.run_response(
+            'meta/muse-spark-1.3-contributor', 'complete drawing command',
+            method='stream_drawing_response',
+        )
+        self.assertEqual(answer, 'complete drawing command')
+        self.assertEqual(request['max_tokens'], provider_module.DRAWING_OUTPUT_TOKENS)
+        self.assertEqual(request['max_tokens'], 16384)
+
+    async def test_length_finish_reason_raises_typed_truncation_error(self):
+        with self.assertRaises(provider_module.StreamOutputTruncatedError) as failure:
+            await self.run_response(
+                'meta/muse-spark-1.3-contributor', '{"tool":"inknotes_draw_curves",',
+                finish_reason='length', method='stream_drawing_response',
+            )
+        self.assertEqual(failure.exception.finish_reason, 'length')
+        self.assertEqual(failure.exception.max_tokens, provider_module.DRAWING_OUTPUT_TOKENS)
+        self.assertIn('finish_reason=length', str(failure.exception))
 
 
 if __name__ == '__main__':

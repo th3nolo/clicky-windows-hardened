@@ -83,11 +83,12 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(forwarded),1)
         self.assertEqual(forwarded[0]["user_text"],transcript)
         self.assertEqual(forwarded[0]["model"],MODEL)
-        self.assertIs(forwarded[0]["video"],video)
+        # A static explanation retains the original speech audio but avoids
+        # uploading the complete recording and duplicate sampled frames.
+        self.assertIsNone(forwarded[0]["video"])
         self.assertEqual(base64.b64decode(forwarded[0]["audio_b64"]),b"mp3 audio")
         self.assertIs(forwarded[0]["history"][0],prior)
-        self.assertEqual(len(forwarded[0]["timeline_frames"]), 3)
-        self.assertEqual(forwarded[0]["timeline_frames"][0][0], 0.0)
+        self.assertEqual(forwarded[0].get("timeline_frames", []), [])
         self.assertIn("Muse 1.2 only transcribed",forwarded[0]["system_prompt"])
         parse.assert_not_called()  # Playback owns pointing; streaming must not jump ahead.
         lesson.assert_awaited_once()
@@ -136,19 +137,35 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
                 await self.manager._transcribe_with_configured_fallback(b"pcm",session)
         fallback.assert_not_called()
 
-    async def test_media_encoding_failure_keeps_completed_transcript_visible(self):
+    async def test_static_turn_skips_failed_video_encoding_and_still_answers(self):
         self.recorder.finish.side_effect = RuntimeError("private-provider-detail")
         transcripts, errors = [], []
+        forwarded = []
+        self.manager._web_search_enabled = False
+        self.manager._multilang = False
+        self.manager._code_mode_auto = False
+        self.manager._journal_enabled = False
+        async def multimodal(**kwargs):
+            forwarded.append(kwargs)
+            yield "The equation is consistent."
+        dispatch = ResponseDispatch(
+            self.selection,
+            SimpleNamespace(stream_multimodal_response=multimodal),
+        )
         self.manager.sig_transcript_final.connect(lambda seq,text: transcripts.append(text),type=Qt.ConnectionType.DirectConnection)
         self.manager.sig_error.connect(errors.append,type=Qt.ConnectionType.DirectConnection)
-        with patch.object(self.manager,"_transcribe_with_configured_fallback",AsyncMock(return_value=("Check my equation","openrouter"))):
+        with patch.object(self.manager,"_transcribe_with_configured_fallback",AsyncMock(return_value=("Check my equation","openrouter"))), patch.object(self.manager, "_acquire_response_dispatch", return_value=dispatch), patch.object(self.manager, "_handle_voice_command", AsyncMock(return_value=False)), patch.object(module.skills_pkg, "match", return_value=None), patch.object(module, "active_window_title", return_value="Synthetic notebook"), patch.object(module, "capture_all_screens", return_value=[]), patch("audio.stt.openrouter_stt._pcm16_to_mp3", return_value=b"mp3 audio"), patch.object(self.manager, "_play_lesson", AsyncMock()):
             self.manager.on_hotkey_press()
             session = self.manager._turns.active
             self.manager._turns.release_capture(session)
             await self.manager._end_capture_and_process(session)
         self.assertEqual(transcripts,["Check my equation"])
-        self.assertEqual(len(errors),1)
-        self.assertNotIn("private-provider-detail",errors[0])
+        self.recorder.finish.assert_not_called()
+        self.recorder.cancel.assert_called()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(forwarded), 1)
+        self.assertIsNone(forwarded[0]["video"])
+        self.assertEqual(forwarded[0]["audio_b64"], base64.b64encode(b"mp3 audio").decode("ascii"))
         self.assertEqual(self.manager._tutor_video_captures,{})
 
     async def test_missing_pcm_finishes_capture_and_cancels_video(self):
@@ -235,6 +252,8 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ['first', 'First column.', 'second', 'Second column.'])
 
     async def test_voice_note_routes_generated_answer_to_insertion(self):
+        page_client = SimpleNamespace(call=AsyncMock(return_value={"content": [{"type": "text", "text": '{"notebook_id":"synthetic-book","page_id":"page-1","revision":7}'}]}))
+        self.stack.enter_context(patch('automation.inknotes_mcp.InkNotesMcpClient', return_value=page_client))
         mcp_write = self.stack.enter_context(patch('automation.inknotes_mcp.write_explanation', AsyncMock(return_value='Handwriting saved.')))
         self.stack.enter_context(patch('automation.inknotes_mcp.foreground_notebook_pid', return_value=12345))
         self.recorder.finish.return_value = encode_clip(*sample_clip(), lambda: False)
@@ -254,5 +273,7 @@ class OriginalVoiceVideoTests(unittest.IsolatedAsyncioTestCase):
             await self.manager._end_capture_and_process(session)
         insert.assert_not_called()  # The obsolete prepared-text-box path is disabled.
         mcp_write.assert_awaited_once()
+        page_client.call.assert_awaited_once_with('inknotes_read_page')
+        self.assertEqual(mcp_write.call_args.kwargs['expected_page'], {'notebook_id': 'synthetic-book', 'page_id': 'page-1', 'revision': 7})
         self.assertEqual(mcp_write.call_args.args[4], answer)
         self.assertIsNone(self.manager._turns.active)

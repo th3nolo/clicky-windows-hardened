@@ -31,6 +31,7 @@ from ai.response_selection import (
 )
 from ai.video_input import VideoInput
 from ai.provider_catalog import supports_video
+from automation.media_context import build_media_context
 from screen.voice_clip import VoiceClipRecorder, MAX_SECONDS
 from audio.ambient_listener import AmbientListener
 from audio.stt.local_models import LocalModelUnavailable
@@ -99,6 +100,7 @@ from tutor_features import (
 import skills as skills_pkg
 
 _log = logging.getLogger("clicky.manager")
+MAX_NOTEBOOK_TASK_TEXT_CHARS = 4_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +267,87 @@ def _speakable(text: str) -> str:
     return t
 
 
+def _notebook_event_metadata(event: object) -> dict[str, object] | None:
+    """Expose planner progress without leaking images, ink, prompts, or paths."""
+
+    if not isinstance(event, Mapping):
+        return None
+    kind = event.get("type")
+    if kind == "task_started":
+        result: dict[str, object] = {"type": "task_started"}
+        task_id = event.get("task_id")
+        if isinstance(task_id, str) and task_id and len(task_id) <= 128 and task_id.isprintable():
+            result["task_id"] = task_id
+        return result
+    if kind == "plan":
+        result = {"type": "plan"}
+        components = event.get("component_ids")
+        if isinstance(components, list):
+            safe_components = [
+                component for component in components[:8]
+                if isinstance(component, str) and component and len(component) <= 128
+                and component.isprintable()
+            ]
+            if safe_components:
+                result["component_ids"] = safe_components
+        return result
+    if kind in {"tool_started", "tool_finished", "command_normalized"}:
+        result = {"type": kind}
+        for field in ("tool", "operation_id", "component_id", "outcome"):
+            value = event.get(field)
+            if isinstance(value, str) and value and len(value) <= 256 and value.isprintable():
+                result[field] = value
+        return result
+    if kind == "step":
+        result: dict[str, object] = {"type": "step"}
+        for field, limit in (("tool", 128), ("annotation_id", 256), ("narration", 1800)):
+            value = event.get(field)
+            if isinstance(value, str) and value and len(value) <= limit and value.isprintable():
+                result[field] = value
+        if event.get("structural_readback") is True:
+            result["structural_readback"] = True
+        return result
+    if kind == "verification":
+        result = {"type": "verification", "complete": event.get("complete") is True}
+        for flag in ("independent_output_reader", "structural_readback", "model_visual_assessment"):
+            if type(event.get(flag)) is bool:
+                result[flag] = event[flag]
+        assessment = event.get("assessment")
+        if (isinstance(assessment, str) and assessment and len(assessment) <= 1200
+                and assessment.isprintable()):
+            result["assessment"] = assessment
+        return result
+    if kind == "clarification":
+        question = event.get("question")
+        if isinstance(question, str) and question and len(question) <= 1200 and question.isprintable():
+            return {"type": "clarification", "question": question, "complete": False}
+        return {"type": "clarification", "complete": False}
+    if kind == "source_image_checkpoint":
+        # The planner event may contain source_image_seed JPEG data. Public
+        # task events retain only page identities and a count of references.
+        result = {"type": "source_checkpoint"}
+        for field in ("source_page_identity", "target_page_identity"):
+            identity = event.get(field)
+            if isinstance(identity, Mapping):
+                compact = {
+                    key: identity[key]
+                    for key in ("notebook_id", "page_id", "revision")
+                    if key in identity
+                    and (
+                        (isinstance(identity[key], str) and len(identity[key]) <= 128
+                         and identity[key].isprintable())
+                        or type(identity[key]) is int
+                    )
+                }
+                if compact:
+                    result[field] = compact
+        seed = event.get("source_image_seed")
+        if isinstance(seed, list):
+            result["reference_count"] = min(len(seed), 2)
+        return result
+    return None
+
+
 POINT_RE = re.compile(r'\[POINT:(\d+),(\d+):([^:\]]+):screen(\d+)\]')
 # A partial "[POINT..." prefix that hasn't closed yet — hold it back from display
 # until the next chunk so we never leak a half tag.
@@ -328,6 +411,7 @@ class CompanionManager(QObject):
     sig_walkthrough_progress = pyqtSignal(object)          # WalkthroughProgress
     sig_walkthrough_ended = pyqtSignal(str)                # content-free reason
     sig_task_followup_transcript = pyqtSignal(str)
+    sig_notebook_event = pyqtSignal(int, dict)  # turn ID, bounded planner metadata
     sig_realtime_status = pyqtSignal(str)
     sig_realtime_transcript = pyqtSignal(str)
     sig_optional_feature_result = pyqtSignal(object)
@@ -1532,7 +1616,7 @@ class CompanionManager(QObject):
         self._emit_state(AppState.SPEAKING, session)
         await self._speak_with_failure_fallback(response, session)
 
-    def on_hotkey_press(self):
+    def on_hotkey_press(self, *, notebook_pid: int | None = None) -> bool:
         with self._input_lock:
             if (
                 self._microphone_test_id is not None
@@ -1542,22 +1626,73 @@ class CompanionManager(QObject):
                     "Stop the active voice test or preview before starting "
                     "speech input."
                 )
-                return
+                return False
             if (
                 self._pressed_session is not None
                 and self._turns.is_current(self._pressed_session)
             ):
-                return
+                return False
             session = self._turns.start_capture()
             if session is None:
-                return
+                return False
             from automation.inknotes_mcp import foreground_notebook_pid
-            self._inknotes_pids[session.sequence] = foreground_notebook_pid()
+            self._inknotes_pids[session.sequence] = (
+                notebook_pid if notebook_pid is not None else foreground_notebook_pid()
+            )
             if self._begin_capture(session):
                 self._pressed_session = session
                 self._walkthrough.pause_for_voice()
+                return True
             else:
                 self._finish_turn(session)
+                return False
+
+    def submit_notebook_task(self, text: str, notebook_pid: int) -> int | str:
+        """Start one typed, notebook-bound task without opening the microphone.
+
+        The accepted sequence is the public task ID for status/events and can
+        be cancelled through :meth:`stop`.  Rejections are returned before a
+        turn is created so an API caller cannot accidentally interrupt a live
+        voice or notebook operation.
+        """
+
+        if not isinstance(text, str) or not (task_text := text.strip()):
+            return "Notebook task text is required."
+        if len(task_text) > MAX_NOTEBOOK_TASK_TEXT_CHARS:
+            return "Notebook task text exceeds the 4000-character limit."
+        if type(notebook_pid) is not int or notebook_pid <= 0:
+            return "Notebook task target is invalid."
+        if not screen_capture_allowed(cfg):
+            return "Screen capture permission is disabled for notebook tasks."
+        selection = self._response_selection()
+        if not selection.model_id:
+            return "Choose a validated model before starting a notebook task."
+        with self._input_lock:
+            if self._turns.active is not None:
+                return "A Clicky task is already active."
+            if self._loop is None:
+                return "Clicky task runner is unavailable."
+            session = self._turns.start_processing()
+            if session is None:
+                return "A Clicky task is already active."
+            self._inknotes_pids[session.sequence] = notebook_pid
+            self._turns.bind_cancel(session, "playback", self._cancel_outputs)
+            self._emit_state(AppState.THINKING, session)
+            self._emit_turn_signal(
+                session,
+                self.sig_notebook_event,
+                session.sequence,
+                {"type": "task_started", "notebook_pid": notebook_pid},
+            )
+            submitted = self._submit(
+                self._end_capture_and_process(session, submitted_text=task_text),
+                session,
+            )
+            if submitted is None:
+                # _submit has already invalidated the session when its loop is
+                # unavailable; do not leave a false accepted task ID behind.
+                return "Clicky task runner is unavailable."
+            return session.sequence
 
     def on_hotkey_release(self):
         with self._input_lock:
@@ -1979,85 +2114,116 @@ class CompanionManager(QObject):
         self._emit_state(AppState.THINKING, session)
         await self._end_capture_and_process(session)
 
-    async def _end_capture_and_process(self, session: TurnSession):
+    async def _end_capture_and_process(
+        self,
+        session: TurnSession,
+        *,
+        submitted_text: str | None = None,
+    ):
         if not self._turns.is_current(session):
             return
         tutor_video = getattr(self, "_tutor_video_captures", {}).get(session.sequence)
         recorded_timeline = []
-        try:
-            pcm = self._listener.stop_recording(session.sequence)
-            self._turns.unbind_cancel(session, "recording")
-            if pcm is not None and tutor_video is not None:
-                tutor_video.timer.cancel()
-                await asyncio.to_thread(tutor_video.recorder.stop_capture)
-                pcm = tutor_video.recorder.transcription_pcm()
-                recorded_timeline = tutor_video.recorder.timeline_frames()
-        except Exception as e:
-            _log.exception("mic stop failed")
-            self._emit_turn_signal(
-                session, self.sig_error, f"Microphone capture failed: {e}"
-            )
-            if self._walkthrough.paused_for_voice:
-                self._walkthrough.cancel("voice_input_failed")
-            self._finish_turn(session)
-            return
-        if pcm is None or not self._turns.is_current(session):
-            if self._walkthrough.paused_for_voice:
-                self._walkthrough.cancel("voice_input_failed")
-            self._finish_turn(session)
-            return
-        _log.info("captured %.1fs of audio", len(pcm) / 32000)
-        if len(pcm) < 3200:  # < 0.1s of audio — ignore
-            if self._walkthrough.paused_for_voice:
-                self._walkthrough.cancel("voice_input_failed")
-            self._finish_turn(session)
-            return
+        pcm = None
+        if submitted_text is None:
+            try:
+                pcm = self._listener.stop_recording(session.sequence)
+                self._turns.unbind_cancel(session, "recording")
+                if pcm is not None and tutor_video is not None:
+                    tutor_video.timer.cancel()
+                    await asyncio.to_thread(tutor_video.recorder.stop_capture)
+                    pcm = tutor_video.recorder.transcription_pcm()
+                    recorded_timeline = tutor_video.recorder.timeline_frames()
+            except Exception as e:
+                _log.exception("mic stop failed")
+                self._emit_turn_signal(
+                    session, self.sig_error, f"Microphone capture failed: {e}"
+                )
+                if self._walkthrough.paused_for_voice:
+                    self._walkthrough.cancel("voice_input_failed")
+                self._finish_turn(session)
+                return
+            if pcm is None or not self._turns.is_current(session):
+                if self._walkthrough.paused_for_voice:
+                    self._walkthrough.cancel("voice_input_failed")
+                self._finish_turn(session)
+                return
+            _log.info("captured %.1fs of audio", len(pcm) / 32000)
+            if len(pcm) < 3200:  # < 0.1s of audio — ignore
+                if self._walkthrough.paused_for_voice:
+                    self._walkthrough.cancel("voice_input_failed")
+                self._finish_turn(session)
+                return
 
         pointing_held = False  # track whether we told overlay to hold dwell
         side_tasks: list[asyncio.Task] = []
         video_input = None
         audio_b64 = None
         timeline_context = []
+        captured_media_intent = None
 
         try:
-            # 1. Transcribe — bounded so a hung/loading local STT model can
-            # never freeze the UI on "Thinking..." forever
-            try:
-                transcript, used_stt_provider = (
-                    await self._transcribe_with_configured_fallback(pcm, session)
-                )
-            except Exception:
-                if tutor_video is None:
-                    raise
-                self._emit_turn_signal(
-                    session, self.sig_error,
-                    "Speech transcription failed; no new answer was requested. "
-                    "Hold Ctrl+Win while speaking, then release both keys. "
-                    "You can retry now; the previous answer is still shown.",
-                )
-                return
+            # Bind the page at capture release, before transcription/model latency.
+            # A later page switch must not redirect an explanation to new work.
+            notebook_snapshot = None
+            notebook_pid = self._inknotes_pids.get(session.sequence)
+            if notebook_pid:
+                from automation.inknotes_mcp import InkNotesMcpClient, text_result
+                try:
+                    observed = await InkNotesMcpClient(notebook_pid).call("inknotes_read_page")
+                    if not observed.get("isError"):
+                        import json
+                        snapshot = json.loads(text_result(observed))
+                        notebook_snapshot = {
+                            key: snapshot[key] for key in ("notebook_id", "page_id", "revision")
+                        }
+                except Exception:
+                    pass  # Ordinary spoken help still works; writing fails closed below.
             if not self._turns.is_current(session):
                 return
-            _log.info("voice transcription completed (provider=%s)",
-                      used_stt_provider)
-            if not transcript.strip():
+            if submitted_text is None:
+                # 1. Transcribe — bounded so a hung/loading local STT model can
+                # never freeze the UI on "Thinking..." forever.
+                try:
+                    transcript, used_stt_provider = (
+                        await self._transcribe_with_configured_fallback(pcm, session)
+                    )
+                except Exception:
+                    if tutor_video is None:
+                        raise
+                    self._emit_turn_signal(
+                        session, self.sig_error,
+                        "Speech transcription failed; no new answer was requested. "
+                        "Hold Ctrl+Win while speaking, then release both keys. "
+                        "You can retry now; the previous answer is still shown.",
+                    )
+                    return
+                if not self._turns.is_current(session):
+                    return
+                _log.info("voice transcription completed (provider=%s)",
+                          used_stt_provider)
+                if not transcript.strip():
+                    if self._consume_task_followup_voice_capture():
+                        self.sig_task_followup_transcript.emit("")
+                    else:
+                        self._emit_turn_signal(session, self.sig_error,
+                            "No intelligible speech was returned. Try again or check "
+                            "Setup & Diagnostics → Microphone.")
+                    return
+                # Task Center voice is draft input only. It short-circuits before
+                # Tutor transcript UI, commands, screen capture, skills, history,
+                # or any response model.
                 if self._consume_task_followup_voice_capture():
-                    self.sig_task_followup_transcript.emit("")
-                else:
-                    self._emit_turn_signal(session, self.sig_error,
-                        "No intelligible speech was returned. Try again or check "
-                        "Setup & Diagnostics → Microphone.")
-                return
-            # Task Center voice is draft input only. It short-circuits before
-            # Tutor transcript UI, commands, screen capture, skills, history,
-            # or any response model.
-            if self._consume_task_followup_voice_capture():
-                if is_stop(transcript):
-                    self.sig_task_followup_transcript.emit("")
-                    self.stop()
-                else:
-                    self.sig_task_followup_transcript.emit(transcript)
-                return
+                    if is_stop(transcript):
+                        self.sig_task_followup_transcript.emit("")
+                        self.stop()
+                    else:
+                        self.sig_task_followup_transcript.emit(transcript)
+                    return
+            else:
+                transcript = submitted_text
+                used_stt_provider = None
+                _log.info("typed notebook task accepted")
 
             self._emit_turn_signal(
                 session, self.sig_transcript_final, session.sequence, transcript,
@@ -2066,37 +2232,53 @@ class CompanionManager(QObject):
             if tutor_video is not None:
                 if used_stt_provider != "openrouter":
                     raise RuntimeError("Voice/video Tutor requires Muse 1.2 transcription; no fallback was sent")
-                video_input = await asyncio.to_thread(tutor_video.recorder.finish)
                 from audio.stt.openrouter_stt import _pcm16_to_mp3
                 import base64
-                timeline_context = [(frame.seconds, base64.b64encode(frame.jpeg).decode("ascii"))
-                                    for frame in recorded_timeline]
+                # Decide before encoding the MP4.  ``recorded_timeline`` and
+                # ``pcm`` are already sealed, owned copies, so a static or
+                # frame-only request can release recorder buffers immediately.
+                captured_media_intent = build_media_context(
+                    transcript,
+                    timeline_frames=[(frame.seconds, "captured-frame")
+                                     for frame in recorded_timeline],
+                    video_available=True,
+                )
+                if captured_media_intent.include_video:
+                    video_input = await asyncio.to_thread(tutor_video.recorder.finish)
+                else:
+                    tutor_video.recorder.cancel()
+                if captured_media_intent.mode == "temporal":
+                    timeline_context = [
+                        (frame.seconds, base64.b64encode(frame.jpeg).decode("ascii"))
+                        for frame in recorded_timeline
+                    ]
                 audio_b64 = base64.b64encode(await asyncio.to_thread(_pcm16_to_mp3, pcm, 16000)).decode("ascii")
                 self._acquire_response_dispatch(tutor_video.selection)
                 if not self._video_sharing_allowed() or not getattr(cfg, "openrouter_voice_video_enabled", False):
                     raise RuntimeError("Voice/video Tutor permissions changed before response")
 
-            command = classify_voice_command(transcript)
+            command = None if submitted_text is not None else classify_voice_command(transcript)
             if command is VoiceCommand.STOP:
                 self.stop()
                 return
             title = active_window_title()
             ak = app_key(title)
-            if await self._handle_voice_command(command, ak, session):
+            if submitted_text is None and await self._handle_voice_command(command, ak, session):
                 return
 
             # User-created skills (run BEFORE the LLM, like built-ins above)
-            try:
-                skill = skills_pkg.match(transcript)
-                if skill:
-                    msg = await skill["handler"](self, transcript)
-                    if not self._turns.is_current(session):
+            if submitted_text is None:
+                try:
+                    skill = skills_pkg.match(transcript)
+                    if skill:
+                        msg = await skill["handler"](self, transcript)
+                        if not self._turns.is_current(session):
+                            return
+                        if msg:
+                            await self._reply_local(msg, session)
                         return
-                    if msg:
-                        await self._reply_local(msg, session)
-                    return
-            except Exception as e:
-                self._emit_turn_signal(session, self.sig_error, f"Skill error: {e}")
+                except Exception as e:
+                    self._emit_turn_signal(session, self.sig_error, f"Skill error: {e}")
 
             if not self._current_model:
                 self._emit_turn_signal(
@@ -2119,7 +2301,7 @@ class CompanionManager(QObject):
             sensitive = self._privacy_guard and is_sensitive_window(title)
             identity_q = is_identity_question(transcript)
             screen_permission = screen_capture_allowed(cfg)
-            if sensitive or identity_q or not screen_permission:
+            if submitted_text is not None or sensitive or identity_q or not screen_permission:
                 screenshots = []
             else:
                 screenshots = capture_all_screens()
@@ -2334,11 +2516,51 @@ class CompanionManager(QObject):
                     "textual screen map, OCR, and detected-figure context above; "
                     "do not claim direct visual inspection.\n"
                 )
-            from automation.tutor_notes import note_requested, NOTE_RESPONSE_CONTRACT
-            writing_note = note_requested(transcript)
+            media_context = None
+            if tutor_video is not None:
+                # A Tutor recording always keeps its separately captured audio
+                # and transcript.  The visual portion is selected once here so
+                # the provider never receives a default pile of every monitor,
+                # the complete MP4, and sampled frames from that same MP4.
+                media_context = build_media_context(
+                    transcript,
+                    current_screenshots_b64=images_b64,
+                    active_screenshot_b64=(
+                        active_shot.base64_jpeg if active_shot is not None else None
+                    ),
+                    timeline_frames=timeline_context,
+                    video_available=(
+                        captured_media_intent.include_video
+                        and video_input is not None
+                    ),
+                )
+                provider_images = (
+                    list(media_context.screenshots_b64)
+                    if supports_vision else []
+                )
+            from automation.tutor_notes import (drawn_letter_requested, note_requested,
+                                                NOTE_RESPONSE_CONTRACT)
+            # Typed notebook submission is an explicit execution request. It
+            # must not depend on conversational words such as "write" or
+            # "note" before entering the bound InkNotes planner.
+            writing_note = submitted_text is not None or note_requested(transcript)
+            direct_native_planner = False
             if writing_note:
-                from automation.inknotes_mcp import NOTE_RESPONSE_CONTRACT as mcp_note_contract
+                from automation.inknotes_mcp import (_explicit_new_page_requested,
+                                                     NOTE_RESPONSE_CONTRACT as mcp_note_contract)
                 system += mcp_note_contract
+                # A visible native lettering/redraw request has no useful
+                # prose-draft phase.  The InkNotes planner already receives the
+                # original request, source images, and the bound page identity;
+                # sending a separate response first only delays the first tool
+                # command and can falsely sound like completion.
+                direct_native_planner = bool(
+                    self._inknotes_pids.get(session.sequence)
+                    and notebook_snapshot
+                    and (submitted_text is not None
+                         or drawn_letter_requested(transcript)
+                         or _explicit_new_page_requested(transcript))
+                )
             walkthrough_requested = bool(
                 multistep
                 and screenshots
@@ -2354,11 +2576,32 @@ class CompanionManager(QObject):
                     )
                 )
 
-            full_response, walkthrough_overflow = await self._stream_tutor_response(
-                transcript, provider_images, history, system, session, walkthrough_requested,
-                selection=response_selection,
-                **({"video": video_input, "audio_b64": audio_b64, "timeline_frames": timeline_context} if video_input is not None else {}),
-            )
+            if writing_note:
+                self._emit_turn_signal(session, self.sig_response_chunk,
+                    ("Preparing the requested native InkNotes redraw…\n\n"
+                     if direct_native_planner else
+                     "Unconfirmed draft — checking the notebook before teaching:\n\n"))
+            if direct_native_planner:
+                # Keep all model turns inside write_explanation, where they are
+                # constrained to observation/tool JSON and verified receipts.
+                full_response = ""
+                walkthrough_overflow = False
+            else:
+                multimodal_arguments = {}
+                if tutor_video is not None:
+                    # Audio is the user's original speech and remains present
+                    # in every recording turn.  The selected visual evidence is
+                    # deliberately either static, temporal frames, or video.
+                    multimodal_arguments = {
+                        "video": video_input if media_context.include_video else None,
+                        "audio_b64": audio_b64,
+                        "timeline_frames": list(media_context.timeline_frames),
+                    }
+                full_response, walkthrough_overflow = await self._stream_tutor_response(
+                    transcript, provider_images, history, system, session, walkthrough_requested,
+                    selection=response_selection,
+                    **multimodal_arguments,
+                )
             if not self._turns.is_current(session):
                 return
 
@@ -2433,7 +2676,11 @@ class CompanionManager(QObject):
 
             # 6. Update per-app history
             history.append(Message(role="user", content=transcript))
-            history.append(Message(role="assistant", content=full_response))
+            history.append(Message(
+                role="assistant",
+                content=("Native InkNotes operation in progress."
+                         if direct_native_planner else full_response),
+            ))
             self._app_memory[ak] = history[-20:]
 
             # Preserve the text-only lesson fallback when the selected model
@@ -2448,26 +2695,117 @@ class CompanionManager(QObject):
                     self._lesson_steps = steps
                     self._lesson_step_idx = 0
 
+            note_complete = False
+            note_timed_out = False
+            note_clarification = ""
+            note_assessment = ""
+            note_status = ""
             clean = ANY_TAG_RE.sub("", full_response).strip()
-            if writing_note and clean:
+            if writing_note and (clean or direct_native_planner):
                 from automation.inknotes_mcp import InkNotesMcpClient, write_explanation
                 pid = self._inknotes_pids.get(session.sequence)
-                if pid:
-                    self._emit_turn_signal(session, self.sig_response_chunk, "\n\nWriting the explanation into InkNotes…")
+                if pid and notebook_snapshot:
+                    self._emit_turn_signal(session, self.sig_response_chunk, "\n\nPlanning the InkNotes drawing…")
                     try:
                         dispatch = self._acquire_response_dispatch(response_selection)
+
+                        async def present_teaching_step(event):
+                            nonlocal note_complete, note_clarification, note_assessment
+                            if not self._turns.is_current(session):
+                                return
+                            safe_event = _notebook_event_metadata(event)
+                            if safe_event is not None:
+                                self._emit_turn_signal(
+                                    session,
+                                    self.sig_notebook_event,
+                                    session.sequence,
+                                    safe_event,
+                                )
+                            if event.get("type") == "clarification":
+                                question = event.get("question", "")
+                                if isinstance(question, str) and question.strip():
+                                    note_clarification = question.strip()
+                                    note_complete = False
+                                return
+                            if note_clarification:
+                                return
+                            if event.get("type") == "verification":
+                                note_complete = event.get("complete") is True
+                                assessment = event.get("assessment", "")
+                                note_assessment = (
+                                    assessment.strip()[:1200]
+                                    if note_complete and isinstance(assessment, str)
+                                    else ""
+                                )
+                                return
+                            narration = event.get("narration", "")
+                            if event.get("type") != "step" or not narration:
+                                return
+                            self._emit_turn_signal(
+                                session, self.sig_response_chunk, "\n\n" + narration
+                            )
+
                         note_status = await write_explanation(
                             InkNotesMcpClient(pid), dispatch.backend, dispatch.selection.model_id,
-                            transcript, clean, lambda: self._turns.is_current(session)
+                            transcript,
+                            (clean if clean else
+                             "Perform the requested native InkNotes operation in visible bounded batches. "
+                             "Begin with the next required observation or tool command; do not draft a prose answer."),
+                            lambda: self._turns.is_current(session)
                             and self._response_selection() == response_selection,
+                            on_event=present_teaching_step,
+                            expected_page=notebook_snapshot,
+                            supports_vision=supports_vision,
+                        )
+                        note_timed_out = (
+                            isinstance(note_status, str)
+                            and note_status.startswith(
+                                "Notebook teaching reached its time limit."
+                            )
                         )
                     except Exception:
-                        note_status = "The notebook tool run could not be completed. Check InkNotes before retrying; the complete explanation remains here."
+                        note_status = (
+                            "Notebook teaching stopped for clarification. Check existing annotations; completion and saving were not verified."
+                            if note_clarification else
+                            ("The notebook tool run could not be completed. Check InkNotes before retrying; "
+                             "completion and saving were not verified."
+                             if direct_native_planner else
+                             "The notebook tool run could not be completed. Check InkNotes before retrying; "
+                             "the complete explanation remains here.")
+                        )
                 else:
                     note_status = "Open the updated InkNotes notebook and keep it in front when starting Ctrl+Win. The MCP connection was not available for this request."
                 if not self._turns.is_current(session):
                     return
-                clean = clean + "\n\n" + note_status
+                if note_clarification:
+                    clean = note_status if note_clarification in note_status else (
+                        "Clarification needed: " + note_clarification + "\n\n" + note_status)
+                elif note_timed_out:
+                    # The first model response remains a draft. Do not expose or
+                    # replay it as the result after the bounded planner expires.
+                    clean = note_status
+                elif note_complete and note_assessment:
+                    # The planner's final assessment is grounded in the read-back
+                    # image. Present it with the truthful operation status instead
+                    # of replaying the model's provisional opening response.
+                    clean = note_assessment + "\n\n" + note_status
+                    self._lesson_steps = []
+                    self._lesson_step_idx = 0
+                elif direct_native_planner:
+                    # There was intentionally no provider prose draft. Show
+                    # only the planner's truthful progress/result status.
+                    clean = note_status
+                else:
+                    # Planner status is the only truthful final result for a
+                    # notebook action. Its provisional prose draft is never
+                    # replayed after a partial or failed tool run.
+                    clean = note_status
+                if (direct_native_planner or note_clarification or note_timed_out
+                        or (note_complete and note_assessment)):
+                    history[-1] = Message(role="assistant", content=clean)
+                    self._app_memory[ak] = history[-20:]
+                    self._lesson_steps = []
+                    self._lesson_step_idx = 0
             self._emit_turn_signal(session, self.sig_response_done, clean)
             self._last_response = clean   # for "say it again"
 
@@ -2499,9 +2837,12 @@ class CompanionManager(QObject):
                 except Exception:
                     pass
 
-            # 7. TTS — hold the point visible while we speak. Switch voice
-            # to match the user's language for multilingual mode.
+            # 7. Speak only a grounded verified notebook completion. Planner
+            # progress, clarification, partial results and failures remain
+            # visible text; ending a tool run is not a teaching completion.
             if not self._turns.is_current(session):
+                return
+            if writing_note and not (note_complete and note_assessment):
                 return
             if cfg.tts_provider() == "edge_tts":
                 try:
@@ -2520,7 +2861,10 @@ class CompanionManager(QObject):
                     )
             self._turns.set_phase(session, TurnPhase.SPEAKING)
             self._emit_state(AppState.SPEAKING, session)
-            await self._play_lesson(full_response, clean, session)
+            if writing_note:
+                await self._speak_with_failure_fallback(_speakable(clean), session)
+            else:
+                await self._play_lesson(full_response, clean, session)
 
         except Exception as e:
             self._emit_turn_signal(session, self.sig_error,
@@ -2604,7 +2948,7 @@ class CompanionManager(QObject):
         dispatch = self._acquire_response_dispatch(selection)
         arguments = dict(user_text=transcript, screenshots_b64=provider_images,
                          history=history, system_prompt=system, model=dispatch.selection.model_id)
-        if video is not None:
+        if audio_b64 is not None:
             if not self._video_sharing_allowed() or not getattr(cfg, "openrouter_voice_video_enabled", False):
                 raise PermissionError("Voice/video Tutor sharing was revoked")
             captured = getattr(self, "_tutor_video_captures", {}).get(session.sequence)
@@ -2613,14 +2957,19 @@ class CompanionManager(QObject):
             captured.recorder.require_sharing_allowed()
             if dispatch.selection != captured.selection:
                 raise RuntimeError("Voice/video Tutor response selection changed")
+            visual_context = (
+                "the attached synchronized screen recording and focused current screenshot"
+                if video is not None else
+                ("the ordered timestamped history frames" if timeline_frames else
+                 "the focused current screenshot or relevant crop")
+            )
             arguments["system_prompt"] += (
                 "\n\nORIGINAL VOICE TURN: The transcript is a speech-recognition aid, not a prior answer. "
-                "Use the attached explicit audio and synchronized screen recording, current screenshots, "
-                "and conversation context to understand and answer the user. Muse 1.2 only transcribed; "
-                "you own the explanation and the existing POINT/DRAW/walkthrough response decisions. "
-                "For questions about what happened, examine the complete video timeline and describe "
-                "earlier-to-later changes. The final screenshot is not a substitute for the recording. "
-                "Use the current screenshot screen map for coordinates, not an earlier video frame. "
+                f"Use the attached explicit audio, {visual_context}, and conversation context "
+                "to understand and answer the user. Muse 1.2 only transcribed; you own the explanation "
+                "and the existing POINT/DRAW/walkthrough response decisions. "
+                "Timestamped history frames describe earlier-to-later state and are not current pointing maps. "
+                "Use a current screenshot for coordinates when one is attached. "
                 "Do not claim a desktop action was executed merely by describing it.\n"
             )
             if timeline_frames:
@@ -2659,7 +3008,7 @@ class CompanionManager(QObject):
         if not walkthrough_requested and (remainder := display.finish()):
             self._emit_turn_signal(session, self.sig_response_chunk, remainder)
         _log.info("response completed turn=%s model=%s multimodal=%s point_tags=%s chars=%s",
-                  session.sequence, dispatch.selection.model_id, video is not None,
+                  session.sequence, dispatch.selection.model_id, audio_b64 is not None,
                   len(POINT_RE.findall(full_response)), len(full_response))
         return full_response, walkthrough_overflow
 

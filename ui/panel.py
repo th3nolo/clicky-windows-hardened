@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from typing import Callable, Optional
 
 from PyQt6.QtWidgets import (
@@ -110,6 +111,7 @@ class CompanionPanel(QWidget):
 
     on_push_to_talk_pressed  = pyqtSignal()
     on_push_to_talk_released = pyqtSignal()
+    on_capture_cancelled = pyqtSignal()
     on_model_changed         = pyqtSignal(str)
     on_document_dropped      = pyqtSignal(str)
     _sig_copilot_code        = pyqtSignal(str, str)   # (user_code, verification_uri)
@@ -118,7 +120,9 @@ class CompanionPanel(QWidget):
     def __init__(self):
         super().__init__()
         self._state = AppState.IDLE
+        self._capture_active = False
         self._response_text = ""
+        self._replace_on_next_response = True
         self._transcript_session = 0
         self._setup_window()
         self._build_ui()
@@ -176,7 +180,7 @@ class CompanionPanel(QWidget):
             "QPushButton:hover { background: rgba(80,80,95,220); }"
         )
         self._min_btn.setToolTip("Hide panel (use tray to reopen)")
-        self._min_btn.clicked.connect(self.hide)
+        self._min_btn.clicked.connect(self.hide_by_user)
         header.addWidget(self._min_btn)
         root.addLayout(header)
 
@@ -238,11 +242,17 @@ class CompanionPanel(QWidget):
         root.addWidget(scroll, stretch=1)
 
         # Push-to-talk button
-        self._ptt_btn = QPushButton(f"Say 'Clicky' or hold {_hotkey_label()}")
+        self._ptt_btn = QPushButton("Start recording")
         self._ptt_btn.setObjectName("hotkey_btn")
         self._ptt_btn.setFont(FONT_LABEL)
         self._ptt_btn.setFixedHeight(44)
+        self._ptt_btn.setToolTip(f"Click to start, then click to stop and send. Or hold {_hotkey_label()}.")
+        self._ptt_btn.clicked.connect(self._toggle_capture)
         root.addWidget(self._ptt_btn)
+        self._cancel_capture_btn = QPushButton("Cancel recording")
+        self._cancel_capture_btn.clicked.connect(self._cancel_capture)
+        self._cancel_capture_btn.setVisible(False)
+        root.addWidget(self._cancel_capture_btn)
 
         # Footer: model selector + provider info
         footer = QHBoxLayout()
@@ -386,11 +396,73 @@ class CompanionPanel(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def nativeEvent(self, event_type, message):
+        # Preserve the foreground notebook only for recording controls. Other
+        # controls retain normal activation (combo popups and text selection).
+        if (sys.platform == "win32"
+                and bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG")
+                and message is not None and int(message) != 0):
+            import ctypes
+            from ctypes import wintypes
+            native = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+            if native.message == 0x0021:  # WM_MOUSEACTIVATE, before focus changes
+                position = self.mapFromGlobal(QCursor.pos())
+                controls = tuple(getattr(self, name, None) for name in (
+                    "_ptt_btn", "_cancel_capture_btn", "_min_btn"))
+                if any(button is not None and button.isVisible() and button.geometry().contains(position)
+                       for button in controls):
+                    return True, 3  # MA_NOACTIVATE: deliver click without activation
+        # QWidget's inherited SIP wrapper returns (False, None) in this runtime.
+        # Returning that from a Python override crashes when Qt marshals LRESULT.
+        return False, 0
+
+    def take_capture_target_pid(self):
+        # Resolve at the actual click, never reuse a previously focused notebook.
+        from automation.inknotes_mcp import foreground_notebook_pid
+        return foreground_notebook_pid()
+
+    def _toggle_capture(self):
+        if self._capture_active or self._state == AppState.LISTENING:
+            self._capture_active = False
+            self._ptt_btn.setEnabled(False)
+            self.on_push_to_talk_released.emit()
+        else:
+            self.clear_error()
+            self.on_push_to_talk_pressed.emit()
+
+    def capture_start_result(self, started: bool):
+        self._capture_active = started
+        self._refresh_capture_controls()
+
+    def _refresh_capture_controls(self):
+        listening = self._capture_active or self._state == AppState.LISTENING
+        self._ptt_btn.setText("Stop recording and send" if listening else "Start recording")
+        self._ptt_btn.setEnabled(listening or self._state != AppState.THINKING)
+        self._cancel_capture_btn.setVisible(listening)
+
+    def _cancel_capture(self):
+        self._capture_active = False
+        self.on_capture_cancelled.emit()
+        self._refresh_capture_controls()
+
+    def hide_by_user(self):
+        if self._capture_active or self._state == AppState.LISTENING:
+            self._cancel_capture()
+        self.hide()
+
+    def closeEvent(self, event):
+        self.hide_by_user()
+        event.ignore()
+
     def set_state(self, state: AppState):
         if (state in (AppState.LISTENING, AppState.THINKING)
                 and self._state not in (AppState.LISTENING, AppState.THINKING)):
             self.clear_error()
+            self._replace_on_next_response = True
         self._state = state
+        if state != AppState.LISTENING:
+            self._capture_active = False
+        self._refresh_capture_controls()
         color = STATE_COLORS[state]
         self._status_dot.setStyleSheet(
             f"color: rgb({color.red()},{color.green()},{color.blue()}); font-size: 10px;"
@@ -403,9 +475,10 @@ class CompanionPanel(QWidget):
             self._waveform.stop()
 
     def update_response(self, text: str):
-        """Append streaming text chunk."""
+        """Display the complete response, including final notebook status."""
         self._response_text = text
         self._response_label.setText(text)
+        self._replace_on_next_response = True
 
     def show_error(self, message: str):
         """Keep failures visible even when Windows suppresses tray notices."""
@@ -418,6 +491,7 @@ class CompanionPanel(QWidget):
         if session_id <= self._transcript_session:
             return
         self._transcript_session = session_id
+        self._replace_on_next_response = True
         self.clear_error()
         self._transcript_label.clear()
         self._transcript_label.setVisible(False)
@@ -447,6 +521,11 @@ class CompanionPanel(QWidget):
         self._transcript_label.setVisible(False)
 
     def append_response_chunk(self, chunk: str):
+        if not chunk:
+            return
+        if self._replace_on_next_response:
+            self._response_text = ""
+            self._replace_on_next_response = False
         self._response_text += chunk
         self._response_label.setText(self._response_text)
 

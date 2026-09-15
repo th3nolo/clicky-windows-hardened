@@ -10,12 +10,15 @@ The upstream MIT license permits modification and redistribution. The original c
 
 There are no releases yet. The repository contains source and CI configuration for review. Do not treat a local build as a trusted release artifact.
 
-The [notebook worker foundation](NOTEBOOK_WORKER.md) is a separate development
-entry point for the planned InkNotes integration. Its typed JSON protocol
-accepts text and optional audiovisual MP4 input with a supported Muse model.
-The [screen + voice and clipboard guide](VIDEO_INPUT.md) covers the new desktop
-capture actions and provider setup. Connecting the InkNotes WPF client and
-validating native Windows hardware remain separate steps.
+The experimental InkNotes integration can create notebook pages and draw editable
+native pen curves through the notebook MCP. The selected Clicky model generates
+the geometry. The opt-in [local control CLI](LOCAL_CONTROL.md) submits tasks to
+the running Clicky manager and exposes bounded progress and usage events.
+Handwriting quality, correction-loop completion, and physical Windows hardware
+validation remain separate acceptance gates; see [teaching status](TEACHING_STATUS.md).
+The [notebook worker foundation](NOTEBOOK_WORKER.md) remains a separate development
+entry point. The [screen + voice and clipboard guide](VIDEO_INPUT.md) covers
+desktop capture actions and provider setup.
 
 No codebase can be guaranteed completely safe. This derivative reduces the specific source, dependency, network, secret-storage, model-loading, and packaging risks documented in [SECURITY.md](SECURITY.md).
 

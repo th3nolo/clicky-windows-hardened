@@ -55,6 +55,22 @@ STATE_TO_CURSOR_MODE = {
 }
 
 
+def _wire_panel_capture(panel, manager):
+    """Use the same capture lifecycle as the physical shortcut."""
+    def start():
+        try:
+            started = manager.on_hotkey_press(notebook_pid=panel.take_capture_target_pid())
+        except Exception:
+            manager.stop()
+            started = False
+            panel.show_error("Recording could not start. Check microphone permissions and try again.")
+        panel.capture_start_result(bool(started))
+
+    panel.on_push_to_talk_pressed.connect(start)
+    panel.on_push_to_talk_released.connect(manager.on_hotkey_release)
+    panel.on_capture_cancelled.connect(manager.stop)
+
+
 def _copilot_login_flow(tray, panel, manager):
     """Run the GitHub device-flow login in a worker thread so the UI stays live."""
     import asyncio, threading
@@ -179,6 +195,19 @@ def main():
     panel   = CompanionPanel()
     overlay = CursorOverlay()
     tray    = TrayManager()
+    local_control = None
+    if os.environ.get("CLICKY_CONTROL_API") == "1":
+        from automation.local_control import default_endpoint_file
+        from automation.local_control_qt import ClickyLocalControl
+        endpoint_file = os.environ.get("CLICKY_CONTROL_ENDPOINT_FILE") or default_endpoint_file()
+        local_control = ClickyLocalControl(manager, endpoint_file, enabled=True)
+        try:
+            local_control.start()
+        except Exception:
+            local_control.close()
+            raise
+        app.aboutToQuit.connect(local_control.close)
+        runtime_log.info("Authenticated local Clicky control enabled on loopback")
     def _toggle_debug_screenshots(enabled: bool) -> None:
         from screen.capture_exclusion import (
             debug_screenshots_enabled, set_debug_screenshots_enabled,
@@ -622,6 +651,7 @@ def main():
 
     # Response streaming
     manager.sig_response_chunk.connect(panel.append_response_chunk)
+    manager.sig_response_done.connect(panel.update_response)
     manager.sig_transcript_begin.connect(panel.begin_transcript)
     manager.sig_transcript_partial.connect(panel.update_partial_transcript)
     manager.sig_transcript_final.connect(panel.update_final_transcript)
@@ -664,6 +694,7 @@ def main():
     )
 
     # Panel → Manager
+    _wire_panel_capture(panel, manager)
     def _select_model(model: str) -> None:
         _select_response_model(manager, panel, model)
 
@@ -683,7 +714,7 @@ def main():
 
     # Tray → UI / Manager
     tray.on_show_panel.connect(panel.show)
-    tray.on_hide_panel.connect(panel.hide)
+    tray.on_hide_panel.connect(panel.hide_by_user)
     tray.on_toggle_search.connect(manager.set_web_search)
     tray.on_toggle_wake_word.connect(manager.set_wake_word)
     tray.on_toggle_slow_mode.connect(manager.set_slow_mode)
